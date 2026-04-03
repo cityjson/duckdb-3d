@@ -1,0 +1,59 @@
+# name: test/sql/st_3d_from_wkb.test
+# description: test ST_3DFromWKB and ST_3DTryFromWKB constructors
+# group: [sql]
+
+require three_d
+
+# Helper: create a valid PolyhedralSurface Z WKB for a tetrahedron
+# WKB little-endian, type 1015 (PolyhedralSurface Z), 4 triangular faces
+# Each face: 1 ring, 4 points (3 + closing vertex)
+# Vertices: (0,0,0), (1,0,0), (0,1,0), (0,0,1)
+
+# Test: ST_3DFromWKB returns a non-null BLOB for valid input
+statement ok
+CREATE TABLE test_wkb AS
+SELECT ST_AsWKBPolyhedralTetra() AS wkb;
+
+query I
+SELECT ST_3DFromWKB(wkb) IS NOT NULL FROM test_wkb;
+----
+true
+
+# Test: typeof returns BLOB (SOLID_3D is alias over BLOB)
+query I
+SELECT typeof(ST_3DFromWKB(wkb)) FROM test_wkb;
+----
+BLOB
+
+# Test: NULL input returns NULL (standard null propagation)
+query I
+SELECT ST_3DFromWKB(NULL) IS NULL;
+----
+true
+
+# Test: ST_3DTryFromWKB returns NULL on invalid WKB (not a valid geometry)
+query I
+SELECT ST_3DTryFromWKB('\x00\x00\x00\x00'::BLOB) IS NULL;
+----
+true
+
+# Test: ST_3DFromWKB raises on invalid WKB
+statement error
+SELECT ST_3DFromWKB('\x00\x00\x00\x00'::BLOB);
+----
+WKB data truncated
+
+# Test: ST_3DTryFromWKB with NULL returns NULL
+query I
+SELECT ST_3DTryFromWKB(NULL) IS NULL;
+----
+true
+
+# Test: ST_3DTryFromWKB with valid input returns non-null
+query I
+SELECT ST_3DTryFromWKB(wkb) IS NOT NULL FROM test_wkb;
+----
+true
+
+statement ok
+DROP TABLE test_wkb;

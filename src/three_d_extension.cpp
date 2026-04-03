@@ -5,10 +5,118 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
+#include "kernel/wkb_parser.hpp"
+#include "kernel/model_builder.hpp"
+#include "kernel/wkb_export.hpp"
+#include "kernel/payload.hpp"
+
 namespace duckdb {
 
+// ──────────────────────────────────────────────────────────────
+// Helper: generate a test tetrahedron WKB (for SQL tests)
+// ──────────────────────────────────────────────────────────────
+static std::vector<uint8_t> BuildTetrahedronWKB() {
+	std::vector<uint8_t> buf;
+	auto u8 = [&](uint8_t v) { buf.push_back(v); };
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
+	};
+	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1,
+	                double x2, double y2, double z2) {
+		u32(4);
+		f64(x0); f64(y0); f64(z0);
+		f64(x1); f64(y1); f64(z1);
+		f64(x2); f64(y2); f64(z2);
+		f64(x0); f64(y0); f64(z0);
+	};
+
+	u8(1); u32(1015); u32(4);
+	u32(1); ring(0,0,0, 0,1,0, 1,0,0);
+	u32(1); ring(0,0,0, 1,0,0, 0,0,1);
+	u32(1); ring(1,0,0, 0,1,0, 0,0,1);
+	u32(1); ring(0,0,0, 0,0,1, 0,1,0);
+	return buf;
+}
+
+static void ST_AsWKBPolyhedralTetraFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildTetrahedronWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DFromWKB(wkb BLOB) → SOLID_3D (BLOB)
+// ──────────────────────────────────────────────────────────────
+static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &wkb_vec = args.data[0];
+	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, args.size(), [&](string_t wkb) {
+		using namespace duckdb_3d;
+		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+		auto model = BuildSolidModel(surfaces);
+		auto payload = SerializePayload(model);
+		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DTryFromWKB(wkb BLOB) → SOLID_3D (BLOB) or NULL
+// ──────────────────────────────────────────────────────────────
+static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &wkb_vec = args.data[0];
+	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(wkb_vec, result, args.size(),
+		[&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
+			using namespace duckdb_3d;
+			try {
+				auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+				auto model = BuildSolidModel(surfaces);
+				auto payload = SerializePayload(model);
+				return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+			} catch (...) {
+				mask.SetInvalid(idx);
+				return string_t();
+			}
+		});
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DAsWKB(solid SOLID_3D) → BLOB
+// ──────────────────────────────────────────────────────────────
+static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &solid_vec = args.data[0];
+	UnaryExecutor::Execute<string_t, string_t>(solid_vec, result, args.size(), [&](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		auto wkb = ExportWKB(model);
+		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size()));
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
+// Extension registration
+// ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
-	// TODO: Register SOLID_3D type and functions in Phase 1
+	// Register SOLID_3D type (alias over BLOB)
+	auto solid_3d_type = LogicalType(LogicalTypeId::BLOB);
+	solid_3d_type.SetAlias("SOLID_3D");
+	loader.RegisterType("SOLID_3D", solid_3d_type);
+
+	// Test helper: generate tetrahedron WKB
+	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
+
+	// ST_3DFromWKB(wkb BLOB) -> SOLID_3D
+	loader.RegisterFunction(ScalarFunction("st_3dfromwkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
+
+	// ST_3DTryFromWKB(wkb BLOB) -> SOLID_3D (NULL on failure)
+	loader.RegisterFunction(ScalarFunction("st_3dtryfromwkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
+
+	// ST_3DAsWKB(solid SOLID_3D) -> BLOB
+	loader.RegisterFunction(ScalarFunction("st_3daswkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
