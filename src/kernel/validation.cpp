@@ -130,28 +130,28 @@ ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t sh
 		directed_count[{e.from, e.to}]++;
 	}
 
-	for (auto &[edge, count] : undirected_count) {
-		if (count < 2) {
+	for (auto it = undirected_count.begin(); it != undirected_count.end(); ++it) {
+		if (it->second < 2) {
 			result.open_edges++;
 			result.is_closed = false;
-		} else if (count > 2) {
+		} else if (it->second > 2) {
 			result.non_manifold_edges++;
 			result.is_manifold = false;
 		}
 	}
 
 	// Orientation check: for each directed edge (a,b), the reverse (b,a) should exist exactly once
-	for (auto &[edge_pair, count] : directed_count) {
-		auto reverse = std::make_pair(edge_pair.second, edge_pair.first);
-		auto it = directed_count.find(reverse);
-		if (count > 1) {
+	for (auto dit = directed_count.begin(); dit != directed_count.end(); ++dit) {
+		auto reverse = std::make_pair(dit->first.second, dit->first.first);
+		auto rit = directed_count.find(reverse);
+		if (dit->second > 1) {
 			// Same directed edge appears more than once — orientation error or non-manifold
 			result.orientation_errors++;
 			result.is_oriented = false;
-		} else if (it == directed_count.end() || it->second == 0) {
+		} else if (rit == directed_count.end() || rit->second == 0) {
 			// No reverse edge — this is an orientation issue (if closed, edges should cancel)
 			// But only flag as orientation error if the edge exists twice undirected
-			UndirectedEdge ue(edge_pair.first, edge_pair.second);
+			UndirectedEdge ue(dit->first.first, dit->first.second);
 			auto uit = undirected_count.find(ue);
 			if (uit != undirected_count.end() && uit->second == 2) {
 				// Edge exists twice but both in same direction — orientation error
