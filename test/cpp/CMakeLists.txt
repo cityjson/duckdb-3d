@@ -17,6 +17,8 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/model_builder.cpp
     ${REPO_ROOT}/src/kernel/wkb_export.cpp
     ${REPO_ROOT}/src/kernel/validation.cpp
+    ${REPO_ROOT}/src/kernel/triangulation.cpp
+    ${REPO_ROOT}/src/kernel/measurements.cpp
 )
 
 # Test sources
@@ -26,6 +28,7 @@ set(TEST_SOURCES
     test_wkb_parser.cpp
     test_model_builder.cpp
     test_validation.cpp
+    test_measurements.cpp
 )
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})

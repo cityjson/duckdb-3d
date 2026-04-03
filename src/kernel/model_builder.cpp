@@ -1,5 +1,6 @@
 #include "kernel/model_builder.hpp"
 #include "kernel/validation.hpp"
+#include "kernel/triangulation.hpp"
 #include <unordered_map>
 #include <cmath>
 #include <functional>
@@ -105,6 +106,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 	model.face_triangle_offsets.resize(total_faces + 1, 0);
 
 	model.ComputeBBox();
+	TriangulateSolidModel(model);
 	ValidateSolidModel(model);
 
 	return model;

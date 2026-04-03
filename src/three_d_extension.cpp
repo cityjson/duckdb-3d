@@ -9,6 +9,8 @@
 #include "kernel/model_builder.hpp"
 #include "kernel/wkb_export.hpp"
 #include "kernel/payload.hpp"
+#include "kernel/measurements.hpp"
+#include "kernel/triangulation.hpp"
 
 namespace duckdb {
 
@@ -267,6 +269,31 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 }
 
 // ──────────────────────────────────────────────────────────────
+// Measurements: ST_3DSurfaceArea, ST_3DVolume
+// ──────────────────────────────────────────────────────────────
+static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		if (model.TriangleCount() == 0) {
+			TriangulateSolidModel(model);
+		}
+		return ComputeSurfaceArea(model);
+	});
+}
+
+static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		if (model.TriangleCount() == 0) {
+			TriangulateSolidModel(model);
+		}
+		return ComputeVolume(model);
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -325,6 +352,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	report_children.push_back({"message", LogicalType::VARCHAR});
 	auto report_type = LogicalType::STRUCT(std::move(report_children));
 	loader.RegisterFunction(ScalarFunction("st_3dvalidationreport", {LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
+
+	// Measurement functions
+	loader.RegisterFunction(ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
