@@ -166,6 +166,107 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 // ──────────────────────────────────────────────────────────────
+// Validation: ST_3DIsClosed, ST_3DIsManifold, ST_3DIsOriented
+// ──────────────────────────────────────────────────────────────
+static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return model.validation.is_closed;
+	});
+}
+
+static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return model.validation.is_manifold;
+	});
+}
+
+static void ST_3DIsOrientedFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return model.validation.is_oriented;
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DValidationReport
+// ──────────────────────────────────────────────────────────────
+static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &input = args.data[0];
+	auto count = args.size();
+
+	auto &entries = StructVector::GetEntries(result);
+	auto &is_valid_vec = *entries[0];
+	auto &is_closed_vec = *entries[1];
+	auto &is_manifold_vec = *entries[2];
+	auto &is_oriented_vec = *entries[3];
+	auto &solid_count_vec = *entries[4];
+	auto &shell_count_vec = *entries[5];
+	auto &face_count_vec = *entries[6];
+	auto &open_edge_vec = *entries[7];
+	auto &non_manifold_vec = *entries[8];
+	auto &degenerate_vec = *entries[9];
+	auto &orientation_err_vec = *entries[10];
+	auto &code_vec = *entries[11];
+	auto &message_vec = *entries[12];
+
+	UnifiedVectorFormat input_data;
+	input.ToUnifiedFormat(count, input_data);
+	auto input_strings = UnifiedVectorFormat::GetData<string_t>(input_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto idx = input_data.sel->get_index(i);
+		if (!input_data.validity.RowIsValid(idx)) {
+			result_validity.SetInvalid(i);
+			continue;
+		}
+
+		using namespace duckdb_3d;
+		auto &blob = input_strings[idx];
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+		auto &vc = model.validation;
+
+		FlatVector::GetData<bool>(is_valid_vec)[i] = vc.is_valid;
+		FlatVector::GetData<bool>(is_closed_vec)[i] = vc.is_closed;
+		FlatVector::GetData<bool>(is_manifold_vec)[i] = vc.is_manifold;
+		FlatVector::GetData<bool>(is_oriented_vec)[i] = vc.is_oriented;
+		FlatVector::GetData<int64_t>(solid_count_vec)[i] = model.SolidCount();
+		FlatVector::GetData<int64_t>(shell_count_vec)[i] = model.ShellCount();
+		FlatVector::GetData<int64_t>(face_count_vec)[i] = model.FaceCount();
+		FlatVector::GetData<int64_t>(open_edge_vec)[i] = vc.open_edge_count;
+		FlatVector::GetData<int64_t>(non_manifold_vec)[i] = vc.non_manifold_edge_count;
+		FlatVector::GetData<int64_t>(degenerate_vec)[i] = vc.degenerate_face_count;
+		FlatVector::GetData<int64_t>(orientation_err_vec)[i] = vc.orientation_error_count;
+
+		// Generate code and message
+		string code_str, msg_str;
+		if (vc.is_valid) {
+			code_str = "VALID";
+			msg_str = "Valid solid";
+		} else {
+			std::vector<string> issues;
+			if (!vc.is_closed) issues.push_back("not closed");
+			if (!vc.is_manifold) issues.push_back("non-manifold edges");
+			if (!vc.is_oriented) issues.push_back("orientation inconsistent");
+			if (vc.degenerate_face_count > 0) issues.push_back("degenerate faces");
+			code_str = "INVALID";
+			msg_str = "Invalid solid: ";
+			for (size_t j = 0; j < issues.size(); j++) {
+				if (j > 0) msg_str += ", ";
+				msg_str += issues[j];
+			}
+		}
+		FlatVector::GetData<string_t>(code_vec)[i] = StringVector::AddString(code_vec, code_str);
+		FlatVector::GetData<string_t>(message_vec)[i] = StringVector::AddString(message_vec, msg_str);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -201,6 +302,29 @@ static void LoadInternal(ExtensionLoader &loader) {
 	bbox_children.push_back({"max_z", LogicalType::DOUBLE});
 	auto bbox_type = LogicalType::STRUCT(std::move(bbox_children));
 	loader.RegisterFunction(ScalarFunction("st_3dbounds", {LogicalType::BLOB}, bbox_type, ST_3DBoundsFun));
+
+	// Validation functions
+	loader.RegisterFunction(ScalarFunction("st_3disclosed", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
+	loader.RegisterFunction(ScalarFunction("st_3dismanifold", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
+	loader.RegisterFunction(ScalarFunction("st_3disoriented", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
+
+	// Validation report
+	child_list_t<LogicalType> report_children;
+	report_children.push_back({"is_valid", LogicalType::BOOLEAN});
+	report_children.push_back({"is_closed", LogicalType::BOOLEAN});
+	report_children.push_back({"is_manifold", LogicalType::BOOLEAN});
+	report_children.push_back({"is_oriented", LogicalType::BOOLEAN});
+	report_children.push_back({"solid_count", LogicalType::BIGINT});
+	report_children.push_back({"shell_count", LogicalType::BIGINT});
+	report_children.push_back({"face_count", LogicalType::BIGINT});
+	report_children.push_back({"open_edge_count", LogicalType::BIGINT});
+	report_children.push_back({"non_manifold_edge_count", LogicalType::BIGINT});
+	report_children.push_back({"degenerate_face_count", LogicalType::BIGINT});
+	report_children.push_back({"orientation_error_count", LogicalType::BIGINT});
+	report_children.push_back({"code", LogicalType::VARCHAR});
+	report_children.push_back({"message", LogicalType::VARCHAR});
+	auto report_type = LogicalType::STRUCT(std::move(report_children));
+	loader.RegisterFunction(ScalarFunction("st_3dvalidationreport", {LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

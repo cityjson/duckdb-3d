@@ -1,0 +1,57 @@
+# name: test/sql/st_3d_validation.test
+# description: test ST_3D validation functions
+# group: [sql]
+
+require three_d
+
+# Create a tetrahedron solid (should be valid)
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# Test: ST_3DIsClosed
+query I
+SELECT ST_3DIsClosed(solid) FROM solids;
+----
+true
+
+# Test: ST_3DIsManifold
+query I
+SELECT ST_3DIsManifold(solid) FROM solids;
+----
+true
+
+# Test: ST_3DIsOriented
+query I
+SELECT ST_3DIsOriented(solid) FROM solids;
+----
+true
+
+# Test: ST_3DValidationReport returns struct with all fields
+query IIIIIIIIIIIII
+SELECT
+    r.is_valid,
+    r.is_closed,
+    r.is_manifold,
+    r.is_oriented,
+    r.solid_count,
+    r.shell_count,
+    r.face_count,
+    r.open_edge_count,
+    r.non_manifold_edge_count,
+    r.degenerate_face_count,
+    r.orientation_error_count,
+    r.code,
+    r.message
+FROM (SELECT ST_3DValidationReport(solid) AS r FROM solids);
+----
+true	true	true	true	1	1	4	0	0	0	0	VALID	Valid solid
+
+# Test: NULL propagation
+query IIII
+SELECT ST_3DIsClosed(NULL), ST_3DIsManifold(NULL), ST_3DIsOriented(NULL), ST_3DValidationReport(NULL) IS NULL;
+----
+NULL	NULL	NULL	true
+
+statement ok
+DROP TABLE solids;
