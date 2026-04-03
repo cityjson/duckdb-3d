@@ -1,0 +1,12 @@
+# name: test/sql/three_d.test
+# description: test three_d extension loads
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require three_d
+
+# Smoke test: extension loads without error
+query I
+SELECT 1;
+----
+1
