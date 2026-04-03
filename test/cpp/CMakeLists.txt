@@ -13,12 +13,14 @@ set(CATCH_INCLUDE_DIR "${REPO_ROOT}/duckdb/third_party/catch")
 set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/solid_model.cpp
     ${REPO_ROOT}/src/kernel/payload.cpp
+    ${REPO_ROOT}/src/kernel/wkb_parser.cpp
 )
 
 # Test sources
 set(TEST_SOURCES
     test_main.cpp
     test_payload.cpp
+    test_wkb_parser.cpp
 )
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
