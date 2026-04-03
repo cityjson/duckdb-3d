@@ -1,0 +1,44 @@
+# name: test/sql/st_3d_introspection.test
+# description: test ST_3D introspection functions (bounds, counts)
+# group: [sql]
+
+require three_d
+
+# Create a tetrahedron solid
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# Test: ST_3DNumSolids
+query I
+SELECT ST_3DNumSolids(solid) FROM solids;
+----
+1
+
+# Test: ST_3DNumShells
+query I
+SELECT ST_3DNumShells(solid) FROM solids;
+----
+1
+
+# Test: ST_3DNumFaces
+query I
+SELECT ST_3DNumFaces(solid) FROM solids;
+----
+4
+
+# Test: ST_3DBounds returns a struct with correct fields
+query IIIIII
+SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
+FROM (SELECT ST_3DBounds(solid) AS b FROM solids);
+----
+0.0	0.0	0.0	1.0	1.0	1.0
+
+# Test: NULL propagation for all introspection functions
+query IIII
+SELECT ST_3DNumSolids(NULL), ST_3DNumShells(NULL), ST_3DNumFaces(NULL), ST_3DBounds(NULL) IS NULL;
+----
+NULL	NULL	NULL	true
+
+statement ok
+DROP TABLE solids;
