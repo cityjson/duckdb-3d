@@ -14,6 +14,8 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/solid_model.cpp
     ${REPO_ROOT}/src/kernel/payload.cpp
     ${REPO_ROOT}/src/kernel/wkb_parser.cpp
+    ${REPO_ROOT}/src/kernel/model_builder.cpp
+    ${REPO_ROOT}/src/kernel/wkb_export.cpp
 )
 
 # Test sources
@@ -21,6 +23,7 @@ set(TEST_SOURCES
     test_main.cpp
     test_payload.cpp
     test_wkb_parser.cpp
+    test_model_builder.cpp
 )
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
