@@ -18,7 +18,8 @@ set(EXTENSION_SOURCES
     src/kernel/wkb_export.cpp
     src/kernel/validation.cpp
     src/kernel/triangulation.cpp
-    src/kernel/measurements.cpp)
+    src/kernel/measurements.cpp
+    src/kernel/metadata_parser.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

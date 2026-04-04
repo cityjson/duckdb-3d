@@ -19,6 +19,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/validation.cpp
     ${REPO_ROOT}/src/kernel/triangulation.cpp
     ${REPO_ROOT}/src/kernel/measurements.cpp
+    ${REPO_ROOT}/src/kernel/metadata_parser.cpp
 )
 
 # Test sources
@@ -29,6 +30,7 @@ set(TEST_SOURCES
     test_model_builder.cpp
     test_validation.cpp
     test_measurements.cpp
+    test_metadata.cpp
 )
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})

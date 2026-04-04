@@ -11,6 +11,8 @@
 #include "kernel/payload.hpp"
 #include "kernel/measurements.hpp"
 #include "kernel/triangulation.hpp"
+#include "kernel/metadata_parser.hpp"
+#include "duckdb/function/function_set.hpp"
 
 namespace duckdb {
 
@@ -84,6 +86,99 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 				return string_t();
 			}
 		});
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DFromWKB(wkb BLOB, geometry_properties VARCHAR) → SOLID_3D
+// ──────────────────────────────────────────────────────────────
+static void ST_3DFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &wkb_vec = args.data[0];
+	auto &meta_vec = args.data[1];
+	auto count = args.size();
+
+	UnifiedVectorFormat wkb_data, meta_data;
+	wkb_vec.ToUnifiedFormat(count, wkb_data);
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto wkb_idx = wkb_data.sel->get_index(i);
+		auto meta_idx = meta_data.sel->get_index(i);
+
+		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		using namespace duckdb_3d;
+		auto &wkb = wkb_strings[wkb_idx];
+		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+
+		SolidModel model;
+		if (meta_data.validity.RowIsValid(meta_idx)) {
+			auto &meta_str = meta_strings[meta_idx];
+			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+			model = BuildSolidModel(surfaces, metadata);
+		} else {
+			model = BuildSolidModel(surfaces);
+		}
+
+		auto payload = SerializePayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DTryFromWKB(wkb BLOB, geometry_properties VARCHAR) → SOLID_3D or NULL
+// ──────────────────────────────────────────────────────────────
+static void ST_3DTryFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &wkb_vec = args.data[0];
+	auto &meta_vec = args.data[1];
+	auto count = args.size();
+
+	UnifiedVectorFormat wkb_data, meta_data;
+	wkb_vec.ToUnifiedFormat(count, wkb_data);
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto wkb_idx = wkb_data.sel->get_index(i);
+		auto meta_idx = meta_data.sel->get_index(i);
+
+		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		try {
+			using namespace duckdb_3d;
+			auto &wkb = wkb_strings[wkb_idx];
+			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+
+			SolidModel model;
+			if (meta_data.validity.RowIsValid(meta_idx)) {
+				auto &meta_str = meta_strings[meta_idx];
+				auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+				model = BuildSolidModel(surfaces, metadata);
+			} else {
+				model = BuildSolidModel(surfaces);
+			}
+
+			auto payload = SerializePayload(model);
+			FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		} catch (...) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+		}
+	}
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -305,11 +400,21 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Test helper: generate tetrahedron WKB
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 
-	// ST_3DFromWKB(wkb BLOB) -> SOLID_3D
-	loader.RegisterFunction(ScalarFunction("st_3dfromwkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
+	// ST_3DFromWKB: 1-arg and 2-arg overloads
+	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
+	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
+	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DFromWKBWithMetaFun);
+	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	from_wkb_set.AddFunction(from_wkb_2arg);
+	loader.RegisterFunction(from_wkb_set);
 
-	// ST_3DTryFromWKB(wkb BLOB) -> SOLID_3D (NULL on failure)
-	loader.RegisterFunction(ScalarFunction("st_3dtryfromwkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
+	// ST_3DTryFromWKB: 1-arg and 2-arg overloads
+	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
+	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
+	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DTryFromWKBWithMetaFun);
+	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	try_from_wkb_set.AddFunction(try_from_wkb_2arg);
+	loader.RegisterFunction(try_from_wkb_set);
 
 	// ST_3DAsWKB(solid SOLID_3D) -> BLOB
 	loader.RegisterFunction(ScalarFunction("st_3daswkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));

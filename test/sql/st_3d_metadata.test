@@ -1,0 +1,46 @@
+# name: test/sql/st_3d_metadata.test
+# description: test ST_3DFromWKB and ST_3DTryFromWKB with geometry_properties
+# group: [sql]
+
+require three_d
+
+# Test: 2-arg ST_3DFromWKB with NULL metadata behaves like 1-arg
+query I
+SELECT ST_3DNumShells(ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), NULL));
+----
+1
+
+# Test: 2-arg ST_3DFromWKB with empty JSON behaves like 1-arg
+query I
+SELECT ST_3DNumShells(ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{}'));
+----
+1
+
+# Test: 2-arg ST_3DTryFromWKB with NULL metadata behaves like 1-arg
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), NULL) IS NOT NULL;
+----
+true
+
+# Test: 2-arg ST_3DTryFromWKB with conflicting metadata returns NULL
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [3, 3]}') IS NULL;
+----
+true
+
+# Test: 2-arg ST_3DFromWKB with conflicting metadata raises
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [3, 3]}');
+----
+face count mismatch
+
+# Test: NULL propagation for both args
+query I
+SELECT ST_3DFromWKB(NULL, '{}') IS NULL;
+----
+true
+
+query I
+SELECT ST_3DTryFromWKB(NULL, '{}') IS NULL;
+----
+true
