@@ -1,0 +1,23 @@
+# name: test/sql/st_3d_as_wkb.test
+# description: test ST_3DAsWKB export function
+# group: [sql]
+
+require three_d
+
+# Test: round-trip - import and export should produce valid WKB
+query I
+SELECT ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra())) IS NOT NULL;
+----
+true
+
+# Test: re-import the exported WKB should succeed
+query I
+SELECT ST_3DFromWKB(ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()))) IS NOT NULL;
+----
+true
+
+# Test: NULL input returns NULL
+query I
+SELECT ST_3DAsWKB(NULL) IS NULL;
+----
+true

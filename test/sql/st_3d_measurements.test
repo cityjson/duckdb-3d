@@ -1,0 +1,33 @@
+# name: test/sql/st_3d_measurements.test
+# description: test ST_3DSurfaceArea and ST_3DVolume
+# group: [sql]
+
+require three_d
+
+# Create a tetrahedron solid
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# Test: ST_3DSurfaceArea returns a positive number
+query I
+SELECT ST_3DSurfaceArea(solid) > 0 FROM solids;
+----
+true
+
+# Test: ST_3DVolume returns approximately 1/6 for the standard tetrahedron
+# Vertices: (0,0,0), (1,0,0), (0,1,0), (0,0,1)
+# Volume = |det| / 6 = 1/6 ≈ 0.16667
+query I
+SELECT ROUND(ST_3DVolume(solid), 5) FROM solids;
+----
+0.16667
+
+# Test: NULL propagation
+query II
+SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL);
+----
+NULL	NULL
+
+statement ok
+DROP TABLE solids;
