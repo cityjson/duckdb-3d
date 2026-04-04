@@ -28,11 +28,23 @@ SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount
 ----
 true
 
+# Test: malformed JSON returns NULL in TRY mode
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{') IS NULL;
+----
+true
+
 # Test: 2-arg ST_3DFromWKB with conflicting metadata raises
 statement error
 SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [3, 3]}');
 ----
 face count mismatch
+
+# Test: malformed JSON raises in non-TRY mode
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{');
+----
+JSON
 
 # Test: NULL propagation for both args
 query I

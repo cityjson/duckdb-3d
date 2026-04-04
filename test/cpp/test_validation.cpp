@@ -137,6 +137,31 @@ SolidModel MakeDegenerateFace() {
 	return model;
 }
 
+SolidModel MakeCubeWithTopHole() {
+	Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
+	Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
+	Vertex3D h00={0.25,0.25,1}, h10={0.75,0.25,1}, h11={0.75,0.75,1}, h01={0.25,0.75,1};
+
+	WKBBuilder b;
+	b.byteOrder();
+	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.u32(6);
+
+	b.u32(1); b.ring({v000, v010, v110, v100});
+	b.u32(2);
+	b.ring({v001, v101, v111, v011});
+	b.ring({h00, h01, h11, h10});
+	b.u32(1); b.ring({v000, v100, v101, v001});
+	b.u32(1); b.ring({v010, v011, v111, v110});
+	b.u32(1); b.ring({v000, v001, v011, v010});
+	b.u32(1); b.ring({v100, v110, v111, v101});
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+	auto model = BuildSolidModel(surfaces);
+	ValidateSolidModel(model);
+	return model;
+}
+
 } // anonymous namespace
 
 TEST_CASE("Validation: valid closed tetrahedron", "[validation]") {
@@ -178,4 +203,11 @@ TEST_CASE("Validation: degenerate face", "[validation]") {
 	auto model = MakeDegenerateFace();
 	REQUIRE(model.validation.degenerate_face_count > 0);
 	REQUIRE(model.validation.is_valid == false);
+}
+
+TEST_CASE("Validation: hole boundaries count as open edges", "[validation]") {
+	auto model = MakeCubeWithTopHole();
+	REQUIRE(model.validation.is_closed == false);
+	REQUIRE(model.validation.is_valid == false);
+	REQUIRE(model.validation.open_edge_count >= 4);
 }

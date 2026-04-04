@@ -8,22 +8,36 @@ namespace duckdb_3d {
 
 namespace {
 
-//! Compute face normal using Newell's method
-Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
-	uint32_t ring_start = model.face_ring_offsets[face_idx];
-	uint32_t vi_start = model.ring_vertex_offsets[ring_start];
-	uint32_t vi_end = model.ring_vertex_offsets[ring_start + 1];
+Vertex3D ComputeRingNormal(const SolidModel &model, uint32_t ring_idx) {
+	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
 	uint32_t n = vi_end - vi_start;
 
-	double nx = 0, ny = 0, nz = 0;
+	Vertex3D normal = {0, 0, 0};
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
 		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
 		const auto &cur = model.vertices[idx_cur];
 		const auto &next = model.vertices[idx_next];
-		nx += (cur.y - next.y) * (cur.z + next.z);
-		ny += (cur.z - next.z) * (cur.x + next.x);
-		nz += (cur.x - next.x) * (cur.y + next.y);
+		normal.x += (cur.y - next.y) * (cur.z + next.z);
+		normal.y += (cur.z - next.z) * (cur.x + next.x);
+		normal.z += (cur.x - next.x) * (cur.y + next.y);
+	}
+
+	return normal;
+}
+
+//! Compute face normal using Newell's method
+Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
+	uint32_t ring_start = model.face_ring_offsets[face_idx];
+	double nx = 0, ny = 0, nz = 0;
+	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+
+	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+		auto ring_normal = ComputeRingNormal(model, ring_idx);
+		nx += ring_normal.x;
+		ny += ring_normal.y;
+		nz += ring_normal.z;
 	}
 
 	double len = std::sqrt(nx * nx + ny * ny + nz * nz);
@@ -173,12 +187,13 @@ void TriangulateSolidModel(SolidModel &model) {
 
 		auto normal = ComputeFaceNormal(model, f);
 
-		// Triangulate exterior ring only (v1: no hole handling)
 		uint32_t ring_start = model.face_ring_offsets[f];
-		uint32_t vi_start = model.ring_vertex_offsets[ring_start];
-		uint32_t vi_end = model.ring_vertex_offsets[ring_start + 1];
-
-		EarClipTriangulate(model, normal, vi_start, vi_end, model.triangle_vertex_indices);
+		uint32_t ring_end = model.face_ring_offsets[f + 1];
+		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+			uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+			EarClipTriangulate(model, normal, vi_start, vi_end, model.triangle_vertex_indices);
+		}
 
 		uint32_t new_tris = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3) - tri_offset;
 		tri_offset += new_tris;

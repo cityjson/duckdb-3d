@@ -147,6 +147,23 @@ TEST_CASE("Payload rejects truncated data", "[payload]") {
 	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), 10), Catch::Contains("truncated"));
 }
 
+TEST_CASE("Payload rejects inconsistent offset arrays", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	model.shell_face_offsets = {0, 3};
+
+	auto bytes = SerializePayload(model);
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()), Catch::Contains("offset"));
+}
+
+TEST_CASE("Payload rejects out-of-range vertex indices", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	model.ring_vertex_indices[0] = 99;
+
+	auto bytes = SerializePayload(model);
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()),
+	                    Catch::Contains("vertex index"));
+}
+
 TEST_CASE("SolidModel ComputeBBox", "[solid_model]") {
 	SolidModel model;
 	model.vertices = {{-1.0, -2.0, -3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}};

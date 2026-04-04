@@ -116,6 +116,13 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
                            const GeometryMetadata &metadata) {
+	bool requests_multi_solid = metadata.solid_count > 1 || metadata.type == "MultiSolid" ||
+	                           metadata.type == "CompositeSolid";
+	if (requests_multi_solid) {
+		throw std::runtime_error(
+		    "geometry_properties: metadata-aware import for multi-solid geometries is unsupported in v1");
+	}
+
 	// If no shell splitting requested, delegate to the plain overload
 	if (metadata.shell_face_counts.empty() || metadata.shell_count <= 1) {
 		return BuildSolidModel(surfaces);
@@ -124,8 +131,8 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	// Validate: shell_face_counts must be provided and sum to total face count
 	// For v1: only supported for single PolyhedralSurface (single surface input)
 	if (surfaces.size() != 1) {
-		// For multi-surface (GeometryCollection), v1 treats each as a separate one-shell solid
-		return BuildSolidModel(surfaces);
+		throw std::runtime_error(
+		    "geometry_properties: metadata-aware shell grouping is unsupported for multi-surface input in v1");
 	}
 
 	const auto &surface = surfaces[0];

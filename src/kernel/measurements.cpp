@@ -4,6 +4,44 @@
 
 namespace duckdb_3d {
 
+namespace {
+
+Vertex3D ComputeRingAreaVector(const SolidModel &model, uint32_t ring_idx) {
+	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+	uint32_t n = vi_end - vi_start;
+
+	Vertex3D area = {0, 0, 0};
+	for (uint32_t i = 0; i < n; i++) {
+		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
+		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+		const auto &cur = model.vertices[idx_cur];
+		const auto &next = model.vertices[idx_next];
+		area.x += (cur.y - next.y) * (cur.z + next.z);
+		area.y += (cur.z - next.z) * (cur.x + next.x);
+		area.z += (cur.x - next.x) * (cur.y + next.y);
+	}
+
+	return area;
+}
+
+double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx) {
+	uint32_t i0 = model.triangle_vertex_indices[triangle_idx * 3 + 0];
+	uint32_t i1 = model.triangle_vertex_indices[triangle_idx * 3 + 1];
+	uint32_t i2 = model.triangle_vertex_indices[triangle_idx * 3 + 2];
+
+	const auto &a = model.vertices[i0];
+	const auto &b = model.vertices[i1];
+	const auto &c = model.vertices[i2];
+
+	double cross_x = b.y * c.z - b.z * c.y;
+	double cross_y = b.z * c.x - b.x * c.z;
+	double cross_z = b.x * c.y - b.y * c.x;
+	return a.x * cross_x + a.y * cross_y + a.z * cross_z;
+}
+
+} // namespace
+
 double ComputeSurfaceArea(const SolidModel &model) {
 	if (model.validation.degenerate_face_count > 0) {
 		throw std::runtime_error("ST_3DSurfaceArea: solid contains degenerate faces");
@@ -13,25 +51,22 @@ double ComputeSurfaceArea(const SolidModel &model) {
 	}
 
 	double total_area = 0.0;
-	uint32_t tri_count = model.TriangleCount();
+	uint32_t face_count = model.FaceCount();
 
-	for (uint32_t t = 0; t < tri_count; t++) {
-		uint32_t i0 = model.triangle_vertex_indices[t * 3 + 0];
-		uint32_t i1 = model.triangle_vertex_indices[t * 3 + 1];
-		uint32_t i2 = model.triangle_vertex_indices[t * 3 + 2];
+	for (uint32_t face_idx = 0; face_idx < face_count; face_idx++) {
+		uint32_t ring_start = model.face_ring_offsets[face_idx];
+		uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+		Vertex3D face_area = {0, 0, 0};
 
-		const auto &a = model.vertices[i0];
-		const auto &b = model.vertices[i1];
-		const auto &c = model.vertices[i2];
+		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+			auto ring_area = ComputeRingAreaVector(model, ring_idx);
+			face_area.x += ring_area.x;
+			face_area.y += ring_area.y;
+			face_area.z += ring_area.z;
+		}
 
-		// Cross product (b-a) x (c-a)
-		double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
-		double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
-		double cx = uy * vz - uz * vy;
-		double cy = uz * vx - ux * vz;
-		double cz = ux * vy - uy * vx;
-
-		total_area += 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+		total_area += 0.5 * std::sqrt(face_area.x * face_area.x + face_area.y * face_area.y +
+		                              face_area.z * face_area.z);
 	}
 
 	return total_area;
@@ -54,31 +89,31 @@ double ComputeVolume(const SolidModel &model) {
 		throw std::runtime_error("ST_3DVolume: solid has no triangulation cache");
 	}
 
-	// Signed volume using divergence theorem:
-	// V = (1/6) * sum over triangles of: dot(a, cross(b, c))
-	// where a, b, c are the triangle vertices in order
 	double total_volume = 0.0;
-	uint32_t tri_count = model.TriangleCount();
+	uint32_t solid_count = model.SolidCount();
 
-	for (uint32_t t = 0; t < tri_count; t++) {
-		uint32_t i0 = model.triangle_vertex_indices[t * 3 + 0];
-		uint32_t i1 = model.triangle_vertex_indices[t * 3 + 1];
-		uint32_t i2 = model.triangle_vertex_indices[t * 3 + 2];
+	for (uint32_t solid_idx = 0; solid_idx < solid_count; solid_idx++) {
+		double solid_volume = 0.0;
+		uint32_t shell_start = model.solid_shell_offsets[solid_idx];
+		uint32_t shell_end = model.solid_shell_offsets[solid_idx + 1];
 
-		const auto &a = model.vertices[i0];
-		const auto &b = model.vertices[i1];
-		const auto &c = model.vertices[i2];
+		for (uint32_t shell_idx = shell_start; shell_idx < shell_end; shell_idx++) {
+			uint32_t face_start = model.shell_face_offsets[shell_idx];
+			uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
 
-		// Signed tetrahedral volume contribution:
-		// (1/6) * a . (b x c)
-		double cross_x = b.y * c.z - b.z * c.y;
-		double cross_y = b.z * c.x - b.x * c.z;
-		double cross_z = b.x * c.y - b.y * c.x;
+			for (uint32_t face_idx = face_start; face_idx < face_end; face_idx++) {
+				uint32_t tri_start = model.face_triangle_offsets[face_idx];
+				uint32_t tri_end = model.face_triangle_offsets[face_idx + 1];
+				for (uint32_t tri_idx = tri_start; tri_idx < tri_end; tri_idx++) {
+					solid_volume += SignedTriangleVolume(model, tri_idx);
+				}
+			}
+		}
 
-		total_volume += a.x * cross_x + a.y * cross_y + a.z * cross_z;
+		total_volume += std::abs(solid_volume);
 	}
 
-	return std::abs(total_volume) / 6.0;
+	return total_volume / 6.0;
 }
 
 } // namespace duckdb_3d

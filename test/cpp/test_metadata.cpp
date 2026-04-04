@@ -84,6 +84,10 @@ TEST_CASE("ParseGeometryProperties: empty JSON", "[metadata]") {
 	REQUIRE(meta.solid_count == 1);
 }
 
+TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
+	REQUIRE_THROWS_WITH(ParseGeometryProperties("{"), Catch::Contains("JSON"));
+}
+
 TEST_CASE("BuildSolidModel with metadata: split into 2 shells", "[metadata]") {
 	auto wkb = MakeTwoShellWKB();
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());
@@ -123,4 +127,22 @@ TEST_CASE("BuildSolidModel with metadata: conflict raises", "[metadata]") {
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta),
 	                     Catch::Contains("face count mismatch"));
+}
+
+TEST_CASE("BuildSolidModel with metadata: unsupported multi-surface metadata raises", "[metadata]") {
+	auto shell_wkb = MakeTwoShellWKB();
+	WKBBuilder b;
+	b.byteOrder();
+	b.geomType(WKBGeometryType::GeometryCollectionZ);
+	b.u32(2);
+	b.buffer.insert(b.buffer.end(), shell_wkb.begin(), shell_wkb.end());
+	b.buffer.insert(b.buffer.end(), shell_wkb.begin(), shell_wkb.end());
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+
+	GeometryMetadata meta;
+	meta.type = "MultiSolid";
+	meta.solid_count = 2;
+
+	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("unsupported"));
 }

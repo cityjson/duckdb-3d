@@ -35,44 +35,61 @@ struct UndirectedEdgeHash {
 	}
 };
 
-//! Cross product of (b-a) x (c-a)
-Vertex3D Cross(const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
-	double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
-	double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
-	return {uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx};
-}
-
 double Magnitude(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-//! Check if a face is degenerate (area near zero).
-//! Uses the sum of cross products over the ring to compute face normal area.
-bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
-	uint32_t ring_start = model.face_ring_offsets[face_idx];
-	// Only check exterior ring for degeneracy
-	uint32_t vi_start = model.ring_vertex_offsets[ring_start];
-	uint32_t vi_end = model.ring_vertex_offsets[ring_start + 1];
+Vertex3D ComputeRingAreaVector(const SolidModel &model, uint32_t ring_idx) {
+	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
 	uint32_t n = vi_end - vi_start;
 
+	Vertex3D area = {0, 0, 0};
 	if (n < 3) {
-		return true;
+		return area;
 	}
 
-	// Newell's method for polygon normal/area
-	double nx = 0, ny = 0, nz = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
 		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
 		const auto &cur = model.vertices[idx_cur];
 		const auto &next = model.vertices[idx_next];
-		nx += (cur.y - next.y) * (cur.z + next.z);
-		ny += (cur.z - next.z) * (cur.x + next.x);
-		nz += (cur.x - next.x) * (cur.y + next.y);
+		area.x += (cur.y - next.y) * (cur.z + next.z);
+		area.y += (cur.z - next.z) * (cur.x + next.x);
+		area.z += (cur.x - next.x) * (cur.y + next.y);
 	}
 
-	double area = 0.5 * std::sqrt(nx * nx + ny * ny + nz * nz);
-	return area < EPSILON;
+	return area;
+}
+
+//! Check if a face is degenerate (area near zero).
+//! Uses the sum of all ring area vectors to account for faces with holes.
+bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
+	uint32_t ring_start = model.face_ring_offsets[face_idx];
+	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+	if (ring_start == ring_end) {
+		return true;
+	}
+
+	Vertex3D face_area = {0, 0, 0};
+	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+		uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+		if (vi_end - vi_start < 3) {
+			return true;
+		}
+
+		auto ring_area = ComputeRingAreaVector(model, ring_idx);
+		if (Magnitude(ring_area) < EPSILON) {
+			return true;
+		}
+
+		face_area.x += ring_area.x;
+		face_area.y += ring_area.y;
+		face_area.z += ring_area.z;
+	}
+
+	return Magnitude(face_area) < EPSILON;
 }
 
 //! Collect directed edges from a shell's faces
@@ -83,15 +100,18 @@ void CollectShellEdges(const SolidModel &model, uint32_t shell_idx,
 
 	for (uint32_t f = face_start; f < face_end; f++) {
 		uint32_t ring_start = model.face_ring_offsets[f];
-		// Only analyze the exterior ring for edge topology
-		uint32_t vi_start = model.ring_vertex_offsets[ring_start];
-		uint32_t vi_end = model.ring_vertex_offsets[ring_start + 1];
-		uint32_t n = vi_end - vi_start;
+		uint32_t ring_end = model.face_ring_offsets[f + 1];
 
-		for (uint32_t i = 0; i < n; i++) {
-			uint32_t from = model.ring_vertex_indices[vi_start + i];
-			uint32_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-			directed_edges.push_back({from, to});
+		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+			uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+			uint32_t n = vi_end - vi_start;
+
+			for (uint32_t i = 0; i < n; i++) {
+				uint32_t from = model.ring_vertex_indices[vi_start + i];
+				uint32_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+				directed_edges.push_back({from, to});
+			}
 		}
 	}
 }

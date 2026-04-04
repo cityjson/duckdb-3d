@@ -31,8 +31,7 @@ public:
 	}
 };
 
-//! Build a valid unit cube with consistent outward-facing winding
-SolidModel MakeValidCube() {
+std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false) {
 	Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
 	Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
 
@@ -40,14 +39,27 @@ SolidModel MakeValidCube() {
 	b.byteOrder();
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(6);
-	b.u32(1); b.ring({v000, v010, v110, v100}); // bottom
-	b.u32(1); b.ring({v001, v101, v111, v011}); // top
-	b.u32(1); b.ring({v000, v100, v101, v001}); // front
-	b.u32(1); b.ring({v010, v011, v111, v110}); // back
-	b.u32(1); b.ring({v000, v001, v011, v010}); // left
-	b.u32(1); b.ring({v100, v110, v111, v101}); // right
 
-	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+	auto maybe_reverse = [&](std::vector<Vertex3D> ring) {
+		if (reverse_winding) {
+			std::reverse(ring.begin(), ring.end());
+		}
+		return ring;
+	};
+
+	b.u32(1); b.ring(maybe_reverse({v000, v010, v110, v100}));
+	b.u32(1); b.ring(maybe_reverse({v001, v101, v111, v011}));
+	b.u32(1); b.ring(maybe_reverse({v000, v100, v101, v001}));
+	b.u32(1); b.ring(maybe_reverse({v010, v011, v111, v110}));
+	b.u32(1); b.ring(maybe_reverse({v000, v001, v011, v010}));
+	b.u32(1); b.ring(maybe_reverse({v100, v110, v111, v101}));
+	return b.buffer;
+}
+
+//! Build a valid unit cube with consistent outward-facing winding
+SolidModel MakeValidCube() {
+	auto wkb = BuildCubeWKB();
+	auto surfaces = ParseWKB(wkb.data(), wkb.size());
 	auto model = BuildSolidModel(surfaces);
 	TriangulateSolidModel(model);
 	return model;
@@ -65,6 +77,31 @@ SolidModel MakeValidTetrahedron() {
 	b.u32(1); b.ring({v0, v1, v3});
 	b.u32(1); b.ring({v1, v2, v3});
 	b.u32(1); b.ring({v2, v0, v3});
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+	auto model = BuildSolidModel(surfaces);
+	TriangulateSolidModel(model);
+	return model;
+}
+
+SolidModel MakeCubeWithTopHole() {
+	Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
+	Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
+	Vertex3D h00={0.25,0.25,1}, h10={0.75,0.25,1}, h11={0.75,0.75,1}, h01={0.25,0.75,1};
+
+	WKBBuilder b;
+	b.byteOrder();
+	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.u32(6);
+
+	b.u32(1); b.ring({v000, v010, v110, v100});
+	b.u32(2);
+	b.ring({v001, v101, v111, v011});
+	b.ring({h00, h01, h11, h10});
+	b.u32(1); b.ring({v000, v100, v101, v001});
+	b.u32(1); b.ring({v010, v011, v111, v110});
+	b.u32(1); b.ring({v000, v001, v011, v010});
+	b.u32(1); b.ring({v100, v110, v111, v101});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -104,6 +141,12 @@ TEST_CASE("Surface area: tetrahedron", "[measurements]") {
 	REQUIRE(area == Approx(expected).epsilon(1e-10));
 }
 
+TEST_CASE("Surface area: face holes subtract from total area", "[measurements]") {
+	auto model = MakeCubeWithTopHole();
+	double area = ComputeSurfaceArea(model);
+	REQUIRE(area == Approx(5.75).epsilon(1e-10));
+}
+
 TEST_CASE("Volume: unit cube = 1.0", "[measurements]") {
 	auto model = MakeValidCube();
 	double vol = ComputeVolume(model);
@@ -119,29 +162,32 @@ TEST_CASE("Volume: tetrahedron = 1/6", "[measurements]") {
 
 TEST_CASE("Volume: multi-solid sums volumes", "[measurements]") {
 	// Two identical cubes
-	auto cube_wkb_fn = []() {
-		Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
-		Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
-		WKBBuilder b;
-		b.byteOrder();
-		b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
-		b.u32(6);
-		b.u32(1); b.ring({v000, v010, v110, v100});
-		b.u32(1); b.ring({v001, v101, v111, v011});
-		b.u32(1); b.ring({v000, v100, v101, v001});
-		b.u32(1); b.ring({v010, v011, v111, v110});
-		b.u32(1); b.ring({v000, v001, v011, v010});
-		b.u32(1); b.ring({v100, v110, v111, v101});
-		return b.buffer;
-	};
-
-	auto cube1 = cube_wkb_fn();
+	auto cube1 = BuildCubeWKB();
 	WKBBuilder gc;
 	gc.byteOrder();
 	gc.geomType(WKBGeometryType::GeometryCollectionZ);
 	gc.u32(2);
 	gc.buffer.insert(gc.buffer.end(), cube1.begin(), cube1.end());
 	gc.buffer.insert(gc.buffer.end(), cube1.begin(), cube1.end());
+
+	auto surfaces = ParseWKB(gc.buffer.data(), gc.buffer.size());
+	auto model = BuildSolidModel(surfaces);
+	TriangulateSolidModel(model);
+
+	double vol = ComputeVolume(model);
+	REQUIRE(vol == Approx(2.0).epsilon(1e-10));
+}
+
+TEST_CASE("Volume: multi-solid does not cancel globally reversed solids", "[measurements]") {
+	auto cube1 = BuildCubeWKB();
+	auto cube2 = BuildCubeWKB(true);
+
+	WKBBuilder gc;
+	gc.byteOrder();
+	gc.geomType(WKBGeometryType::GeometryCollectionZ);
+	gc.u32(2);
+	gc.buffer.insert(gc.buffer.end(), cube1.begin(), cube1.end());
+	gc.buffer.insert(gc.buffer.end(), cube2.begin(), cube2.end());
 
 	auto surfaces = ParseWKB(gc.buffer.data(), gc.buffer.size());
 	auto model = BuildSolidModel(surfaces);

@@ -56,6 +56,73 @@ public:
 	}
 };
 
+void ValidateOffsets(const std::vector<uint32_t> &offsets, uint32_t expected_last, const char *name) {
+	if (offsets.empty()) {
+		throw std::runtime_error(std::string("SOLID_3D payload: missing ") + name + " offsets");
+	}
+	if (offsets.front() != 0) {
+		throw std::runtime_error(std::string("SOLID_3D payload: invalid ") + name + " offsets");
+	}
+	for (size_t i = 1; i < offsets.size(); i++) {
+		if (offsets[i] < offsets[i - 1]) {
+			throw std::runtime_error(std::string("SOLID_3D payload: non-monotonic ") + name + " offsets");
+		}
+	}
+	if (offsets.back() != expected_last) {
+		throw std::runtime_error(std::string("SOLID_3D payload: inconsistent ") + name + " offsets");
+	}
+}
+
+void ValidatePayloadModel(const SolidModel &model, uint32_t vertex_count, uint32_t solid_count, uint32_t shell_count,
+                          uint32_t face_count, uint32_t ring_count, uint32_t triangle_count) {
+	ValidateOffsets(model.solid_shell_offsets, shell_count, "solid-shell");
+	ValidateOffsets(model.shell_face_offsets, face_count, "shell-face");
+	ValidateOffsets(model.face_ring_offsets, ring_count, "face-ring");
+	ValidateOffsets(model.face_triangle_offsets, triangle_count, "face-triangle");
+
+	if (model.ring_vertex_offsets.empty() || model.ring_vertex_offsets.front() != 0) {
+		throw std::runtime_error("SOLID_3D payload: invalid ring-vertex offsets");
+	}
+	for (size_t i = 1; i < model.ring_vertex_offsets.size(); i++) {
+		if (model.ring_vertex_offsets[i] < model.ring_vertex_offsets[i - 1]) {
+			throw std::runtime_error("SOLID_3D payload: non-monotonic ring-vertex offsets");
+		}
+	}
+
+	if (model.vertices.size() != vertex_count || model.SolidCount() != solid_count || model.ShellCount() != shell_count ||
+	    model.FaceCount() != face_count || model.RingCount() != ring_count ||
+	    model.TriangleCount() != triangle_count) {
+		throw std::runtime_error("SOLID_3D payload: header counts do not match payload body");
+	}
+
+	for (uint32_t i = 0; i < solid_count; i++) {
+		if (model.solid_shell_offsets[i] == model.solid_shell_offsets[i + 1]) {
+			throw std::runtime_error("SOLID_3D payload: solids must contain at least one shell");
+		}
+	}
+	for (uint32_t i = 0; i < shell_count; i++) {
+		if (model.shell_face_offsets[i] == model.shell_face_offsets[i + 1]) {
+			throw std::runtime_error("SOLID_3D payload: shells must contain at least one face");
+		}
+	}
+	for (uint32_t i = 0; i < face_count; i++) {
+		if (model.face_ring_offsets[i] == model.face_ring_offsets[i + 1]) {
+			throw std::runtime_error("SOLID_3D payload: faces must contain at least one ring");
+		}
+	}
+
+	for (uint32_t idx : model.ring_vertex_indices) {
+		if (idx >= vertex_count) {
+			throw std::runtime_error("SOLID_3D payload: ring vertex index out of range");
+		}
+	}
+	for (uint32_t idx : model.triangle_vertex_indices) {
+		if (idx >= vertex_count) {
+			throw std::runtime_error("SOLID_3D payload: triangle vertex index out of range");
+		}
+	}
+}
+
 } // anonymous namespace
 
 std::vector<uint8_t> SerializePayload(const SolidModel &model) {
@@ -215,6 +282,8 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	model.validation.is_manifold = (summary_flags & 0x02) != 0;
 	model.validation.is_oriented = (summary_flags & 0x04) != 0;
 	model.validation.is_valid = (summary_flags & 0x08) != 0;
+
+	ValidatePayloadModel(model, vertex_count, solid_count, shell_count, face_count, ring_count, triangle_count);
 
 	return model;
 }
