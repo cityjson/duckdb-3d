@@ -22,6 +22,13 @@ public:
 	}
 	void byteOrder() { u8(1); }
 	void geomType(WKBGeometryType t) { u32(static_cast<uint32_t>(t)); }
+	//! Per ISO WKB, each Polygon nested under a PolyhedralSurface is its own
+	//! WKB value with byte-order + type code + num_rings header.
+	void polyHeader(uint32_t num_rings) {
+		byteOrder();
+		geomType(WKBGeometryType::PolygonZ);
+		u32(num_rings);
+	}
 	void ring(const std::vector<Vertex3D> &pts) {
 		u32(static_cast<uint32_t>(pts.size()) + 1);
 		for (auto &p : pts) { f64(p.x); f64(p.y); f64(p.z); }
@@ -41,16 +48,16 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 	b.u32(8); // 8 faces total
 
 	// Outer shell: 4 faces
-	b.u32(1); b.ring({v0, v2, v1});
-	b.u32(1); b.ring({v0, v1, v3});
-	b.u32(1); b.ring({v1, v2, v3});
-	b.u32(1); b.ring({v2, v0, v3});
+	b.polyHeader(1); b.ring({v0, v2, v1});
+	b.polyHeader(1); b.ring({v0, v1, v3});
+	b.polyHeader(1); b.ring({v1, v2, v3});
+	b.polyHeader(1); b.ring({v2, v0, v3});
 
 	// Inner shell: 4 faces (reversed winding for interior)
-	b.u32(1); b.ring({i0, i1, i2});
-	b.u32(1); b.ring({i0, i3, i1});
-	b.u32(1); b.ring({i1, i3, i2});
-	b.u32(1); b.ring({i2, i3, i0});
+	b.polyHeader(1); b.ring({i0, i1, i2});
+	b.polyHeader(1); b.ring({i0, i3, i1});
+	b.polyHeader(1); b.ring({i1, i3, i2});
+	b.polyHeader(1); b.ring({i2, i3, i0});
 
 	return b.buffer;
 }

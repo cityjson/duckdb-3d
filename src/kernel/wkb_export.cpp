@@ -60,6 +60,11 @@ void WritePolyhedralSurface(WKBWriter &writer, const SolidModel &model, uint32_t
 			uint32_t ring_start = model.face_ring_offsets[f];
 			uint32_t ring_end = model.face_ring_offsets[f + 1];
 			uint32_t num_rings = ring_end - ring_start;
+
+			// Per ISO WKB, each child Polygon under a PolyhedralSurface is a
+			// full nested WKB value with its own byte-order byte and type code.
+			writer.WriteByteOrder();
+			writer.WriteGeometryType(WKBGeometryType::PolygonZ);
 			writer.WriteU32LE(num_rings);
 
 			for (uint32_t r = ring_start; r < ring_end; r++) {

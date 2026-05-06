@@ -38,6 +38,11 @@ public:
 		return false;
 	}
 
+	char PeekChar() {
+		SkipWS();
+		return pos < input.size() ? input[pos] : '\0';
+	}
+
 	std::string ParseString() {
 		SkipWS();
 		if (pos >= input.size() || input[pos] != '"') {
@@ -272,7 +277,14 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 			parser.Expect(':', "':'");
 
 			if (key == "type") {
-				type = parser.ParseString();
+				// Upstream encoders (e.g. duckdb-cityjson) may emit the WKB
+				// numeric type code in this field. The CityJSON-side name
+				// lives in `cityjsonType`. Accept either form.
+				if (parser.PeekChar() == '"') {
+					type = parser.ParseString();
+				} else {
+					parser.SkipValue();
+				}
 			} else if (key == "cityjsonType") {
 				cityjson_type = parser.ParseString();
 			} else if (key == "shellCount") {

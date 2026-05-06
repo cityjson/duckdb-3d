@@ -78,7 +78,18 @@ ParsedPolyhedralSurface ParsePolyhedralSurface(WKBReader &reader) {
 	result.polygon_ring_counts.resize(num_polygons);
 	result.ring_vertex_counts.reserve(num_polygons); // at least one ring per polygon
 
+	// Per ISO WKB, each child Polygon under a PolyhedralSurface is a full
+	// nested WKB value with its own byte-order byte and type code (1003).
+	bool outer_swap = reader.swap_bytes;
 	for (uint32_t p = 0; p < num_polygons; p++) {
+		reader.ReadByteOrder();
+		auto poly_type = reader.ReadGeometryType();
+		if (poly_type != WKBGeometryType::PolygonZ) {
+			throw std::runtime_error(
+			    "Unsupported polygon type in PolyhedralSurface Z: expected Polygon Z (1003), got type code " +
+			    std::to_string(static_cast<uint32_t>(poly_type)));
+		}
+
 		uint32_t num_rings = reader.ReadU32();
 		result.polygon_ring_counts[p] = num_rings;
 
@@ -103,6 +114,8 @@ ParsedPolyhedralSurface ParsePolyhedralSurface(WKBReader &reader) {
 			result.ring_vertex_counts.push_back(static_cast<uint32_t>(ring_pts.size()));
 			result.vertices.insert(result.vertices.end(), ring_pts.begin(), ring_pts.end());
 		}
+
+		reader.swap_bytes = outer_swap;
 	}
 
 	return result;

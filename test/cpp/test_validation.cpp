@@ -22,6 +22,13 @@ public:
 	}
 	void byteOrder() { u8(1); }
 	void geomType(WKBGeometryType t) { u32(static_cast<uint32_t>(t)); }
+	//! Per ISO WKB, each Polygon nested under a PolyhedralSurface is its own
+	//! WKB value with byte-order + type code + num_rings header.
+	void polyHeader(uint32_t num_rings) {
+		byteOrder();
+		geomType(WKBGeometryType::PolygonZ);
+		u32(num_rings);
+	}
 	void ring(const std::vector<Vertex3D> &pts) {
 		u32(static_cast<uint32_t>(pts.size()) + 1);
 		for (auto &p : pts) { f64(p.x); f64(p.y); f64(p.z); }
@@ -41,10 +48,10 @@ SolidModel MakeValidTetrahedron() {
 	// Outward-facing CCW winding (when viewed from outside)
 	// Face 0: v0,v1,v2 (bottom, normal points down -Z... but let's use consistent winding)
 	// For a proper tetrahedron with outward normals:
-	b.u32(1); b.ring({v0, v2, v1}); // bottom face (normal -Z)
-	b.u32(1); b.ring({v0, v1, v3}); // front face
-	b.u32(1); b.ring({v1, v2, v3}); // right face
-	b.u32(1); b.ring({v2, v0, v3}); // left face
+	b.polyHeader(1); b.ring({v0, v2, v1}); // bottom face (normal -Z)
+	b.polyHeader(1); b.ring({v0, v1, v3}); // front face
+	b.polyHeader(1); b.ring({v1, v2, v3}); // right face
+	b.polyHeader(1); b.ring({v2, v0, v3}); // left face
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -63,12 +70,12 @@ SolidModel MakeValidCube() {
 	b.u32(6);
 
 	// Outward-facing CCW winding
-	b.u32(1); b.ring({v000, v010, v110, v100}); // bottom (normal -Z)
-	b.u32(1); b.ring({v001, v101, v111, v011}); // top (normal +Z)
-	b.u32(1); b.ring({v000, v100, v101, v001}); // front (normal -Y)
-	b.u32(1); b.ring({v010, v011, v111, v110}); // back (normal +Y)
-	b.u32(1); b.ring({v000, v001, v011, v010}); // left (normal -X)
-	b.u32(1); b.ring({v100, v110, v111, v101}); // right (normal +X)
+	b.polyHeader(1); b.ring({v000, v010, v110, v100}); // bottom (normal -Z)
+	b.polyHeader(1); b.ring({v001, v101, v111, v011}); // top (normal +Z)
+	b.polyHeader(1); b.ring({v000, v100, v101, v001}); // front (normal -Y)
+	b.polyHeader(1); b.ring({v010, v011, v111, v110}); // back (normal +Y)
+	b.polyHeader(1); b.ring({v000, v001, v011, v010}); // left (normal -X)
+	b.polyHeader(1); b.ring({v100, v110, v111, v101}); // right (normal +X)
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -85,9 +92,9 @@ SolidModel MakeOpenSurface() {
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(3); // only 3 faces — missing one to close the tetrahedron
 
-	b.u32(1); b.ring({v0, v2, v1});
-	b.u32(1); b.ring({v0, v1, v3});
-	b.u32(1); b.ring({v1, v2, v3});
+	b.polyHeader(1); b.ring({v0, v2, v1});
+	b.polyHeader(1); b.ring({v0, v1, v3});
+	b.polyHeader(1); b.ring({v1, v2, v3});
 	// Missing: {v2, v0, v3}
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
@@ -105,10 +112,10 @@ SolidModel MakeInconsistentOrientation() {
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(4);
 
-	b.u32(1); b.ring({v0, v2, v1}); // bottom - normal down
-	b.u32(1); b.ring({v0, v1, v3}); // front - normal out
-	b.u32(1); b.ring({v1, v2, v3}); // right - normal out
-	b.u32(1); b.ring({v0, v2, v3}); // left - FLIPPED winding (should be v2,v0,v3)
+	b.polyHeader(1); b.ring({v0, v2, v1}); // bottom - normal down
+	b.polyHeader(1); b.ring({v0, v1, v3}); // front - normal out
+	b.polyHeader(1); b.ring({v1, v2, v3}); // right - normal out
+	b.polyHeader(1); b.ring({v0, v2, v3}); // left - FLIPPED winding (should be v2,v0,v3)
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -125,11 +132,11 @@ SolidModel MakeDegenerateFace() {
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(4);
 
-	b.u32(1); b.ring({v0, v2, v1});
-	b.u32(1); b.ring({v0, v1, v3});
-	b.u32(1); b.ring({v1, v2, v3});
+	b.polyHeader(1); b.ring({v0, v2, v1});
+	b.polyHeader(1); b.ring({v0, v1, v3});
+	b.polyHeader(1); b.ring({v1, v2, v3});
 	// Degenerate face: all points collinear
-	b.u32(1); b.ring({{0,0,0}, {0.5,0,0}, {1,0,0}});
+	b.polyHeader(1); b.ring({{0,0,0}, {0.5,0,0}, {1,0,0}});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -147,14 +154,14 @@ SolidModel MakeCubeWithTopHole() {
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(6);
 
-	b.u32(1); b.ring({v000, v010, v110, v100});
-	b.u32(2);
+	b.polyHeader(1); b.ring({v000, v010, v110, v100});
+	b.polyHeader(2);
 	b.ring({v001, v101, v111, v011});
 	b.ring({h00, h01, h11, h10});
-	b.u32(1); b.ring({v000, v100, v101, v001});
-	b.u32(1); b.ring({v010, v011, v111, v110});
-	b.u32(1); b.ring({v000, v001, v011, v010});
-	b.u32(1); b.ring({v100, v110, v111, v101});
+	b.polyHeader(1); b.ring({v000, v100, v101, v001});
+	b.polyHeader(1); b.ring({v010, v011, v111, v110});
+	b.polyHeader(1); b.ring({v000, v001, v011, v010});
+	b.polyHeader(1); b.ring({v100, v110, v111, v101});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);

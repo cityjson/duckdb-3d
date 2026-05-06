@@ -45,6 +45,8 @@ std::vector<uint8_t> MakeTetrahedronWKB() {
 	Vertex3D v0 = {0, 0, 0}, v1 = {1, 0, 0}, v2 = {0.5, 1, 0}, v3 = {0.5, 0.5, 1};
 
 	auto writeFace = [&](Vertex3D a, Vertex3D vb, Vertex3D c) {
+		b.WriteByteOrder();
+		b.WriteGeometryType(WKBGeometryType::PolygonZ);
 		b.WriteU32LE(1); // 1 ring
 		b.WriteRing({a, vb, c});
 	};
@@ -67,6 +69,8 @@ std::vector<uint8_t> MakeUnitCubeWKB() {
 	Vertex3D v001 = {0,0,1}, v101 = {1,0,1}, v111 = {1,1,1}, v011 = {0,1,1};
 
 	auto writeFace = [&](const std::vector<Vertex3D> &pts) {
+		b.WriteByteOrder();
+		b.WriteGeometryType(WKBGeometryType::PolygonZ);
 		b.WriteU32LE(1);
 		b.WriteRing(pts);
 	};
@@ -146,6 +150,9 @@ TEST_CASE("BuildSolidModel removes duplicate consecutive ring vertices", "[model
 	b.WriteByteOrder();
 	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.WriteU32LE(1); // 1 polygon
+	// Nested WKBPolygon Z header
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolygonZ);
 	b.WriteU32LE(1); // 1 ring
 	// Ring with 6 points: 0,0,0 -> 1,0,0 -> 1,0,0 (dup) -> 0,1,0 -> 0,0,0 (closing)
 	b.WriteU32LE(5);

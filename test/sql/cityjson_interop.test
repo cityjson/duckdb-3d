@@ -1,0 +1,77 @@
+# name: test/sql/cityjson_interop.test
+# description: smoke test composing duckdb-cityjson with three_d (design doc §12)
+# group: [sql]
+
+# This test exercises the design-doc §12 composition: read CityJSON via the
+# `cityjson` community extension, then run `ST_3D*` over the resulting
+# (geometry, geometry_properties) pair.
+#
+# `require cityjson` makes the sqllogic-test runner skip this test when
+# cityjson isn't pre-registered with the runner. To run it locally:
+#
+#   ./build/debug/duckdb -unsigned -c \
+#     "INSTALL cityjson FROM community; LOAD cityjson; LOAD three_d; \
+#      <queries from this test>"
+#
+# Or see docs/CITYJSON_INTEROP.md for an automated path.
+require cityjson
+
+require three_d
+
+# ──────────────────────────────────────────────────────────────
+# Pipe a CityJSON Solid through three_d and check core operations.
+# Fixture: a unit cube authored at LoD 2.2.
+# ──────────────────────────────────────────────────────────────
+
+statement ok
+CREATE TABLE buildings AS
+SELECT id,
+       ST_3DFromWKB(geometry, geometry_properties) AS solid
+FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2')
+WHERE geometry IS NOT NULL;
+
+# We get exactly one Building back, with a non-null SOLID_3D payload.
+query II
+SELECT id, solid IS NOT NULL FROM buildings;
+----
+cube	true
+
+# Topology is what we expect for a closed unit cube.
+query IIII
+SELECT
+    ST_3DNumSolids(solid),
+    ST_3DNumShells(solid),
+    ST_3DNumFaces(solid),
+    ST_3DIsClosed(solid)
+FROM buildings;
+----
+1	1	6	true
+
+# Bounds reflect the post-transform real-world extent (1m × 1m × 1m).
+query IIIIII
+SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
+FROM (SELECT ST_3DBounds(solid) AS b FROM buildings);
+----
+0.0	0.0	0.0	1.0	1.0	1.0
+
+# Surface area = 6 * 1m² = 6.0.
+query I
+SELECT ROUND(ST_3DSurfaceArea(solid), 6) FROM buildings;
+----
+6.0
+
+# Volume = 1m³.
+query I
+SELECT ROUND(ST_3DVolume(solid), 6) FROM buildings;
+----
+1.0
+
+# Validation report end-to-end.
+query IIII
+SELECT r.is_valid, r.is_closed, r.is_manifold, r.is_oriented
+FROM (SELECT ST_3DValidationReport(solid) AS r FROM buildings);
+----
+true	true	true	true
+
+statement ok
+DROP TABLE buildings;

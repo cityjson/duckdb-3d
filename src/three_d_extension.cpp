@@ -38,17 +38,58 @@ static std::vector<uint8_t> BuildTetrahedronWKB() {
 		f64(x2); f64(y2); f64(z2);
 		f64(x0); f64(y0); f64(z0);
 	};
+	auto poly_header = [&](uint32_t num_rings) {
+		u8(1); u32(1003); u32(num_rings); // byte-order, PolygonZ, num_rings
+	};
 
 	u8(1); u32(1015); u32(4);
-	u32(1); ring(0,0,0, 0,1,0, 1,0,0);
-	u32(1); ring(0,0,0, 1,0,0, 0,0,1);
-	u32(1); ring(1,0,0, 0,1,0, 0,0,1);
-	u32(1); ring(0,0,0, 0,0,1, 0,1,0);
+	poly_header(1); ring(0,0,0, 0,1,0, 1,0,0);
+	poly_header(1); ring(0,0,0, 1,0,0, 0,0,1);
+	poly_header(1); ring(1,0,0, 0,1,0, 0,0,1);
+	poly_header(1); ring(0,0,0, 0,0,1, 0,1,0);
 	return buf;
 }
 
 static void ST_AsWKBPolyhedralTetraFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto wkb = BuildTetrahedronWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+// Test helper: a tetrahedron with the bottom face removed → open shell (3 faces).
+static std::vector<uint8_t> BuildOpenTetrahedronWKB() {
+	std::vector<uint8_t> buf;
+	auto u8 = [&](uint8_t v) { buf.push_back(v); };
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
+	};
+	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1,
+	                double x2, double y2, double z2) {
+		u32(4);
+		f64(x0); f64(y0); f64(z0);
+		f64(x1); f64(y1); f64(z1);
+		f64(x2); f64(y2); f64(z2);
+		f64(x0); f64(y0); f64(z0);
+	};
+	auto poly_header = [&](uint32_t num_rings) {
+		u8(1); u32(1003); u32(num_rings); // byte-order, PolygonZ, num_rings
+	};
+
+	u8(1); u32(1015); u32(3);
+	poly_header(1); ring(0,0,0, 1,0,0, 0,0,1);
+	poly_header(1); ring(1,0,0, 0,1,0, 0,0,1);
+	poly_header(1); ring(0,0,0, 0,0,1, 0,1,0);
+	return buf;
+}
+
+static void ST_AsWKBOpenTetraFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildOpenTetrahedronWKB();
 	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
@@ -130,6 +171,10 @@ static void ST_3DFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, Vec
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
 		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -178,6 +223,10 @@ static void ST_3DTryFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, 
 			result_validity.SetInvalid(i);
 			FlatVector::GetData<string_t>(result)[i] = string_t();
 		}
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
@@ -399,6 +448,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Test helper: generate tetrahedron WKB
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");

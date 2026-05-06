@@ -70,6 +70,8 @@ std::vector<uint8_t> MakeUnitCubeWKB() {
 	std::vector<Vertex3D> right = {{1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 1, 0}};
 
 	auto write_polygon = [&](const std::vector<Vertex3D> &ring) {
+		b.WriteByteOrder();
+		b.WriteGeometryType(WKBGeometryType::PolygonZ);
 		b.WriteU32LE(1); // 1 ring per polygon
 		b.WriteRing(ring);
 	};
@@ -90,6 +92,9 @@ std::vector<uint8_t> MakeTriangleWKB() {
 	b.WriteByteOrder();
 	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.WriteU32LE(1); // 1 polygon
+	// Nested WKBPolygon Z header
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolygonZ);
 	b.WriteU32LE(1); // 1 ring
 	b.WriteRing({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
 	return b.buffer;

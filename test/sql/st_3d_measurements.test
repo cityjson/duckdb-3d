@@ -31,3 +31,34 @@ NULL	NULL
 
 statement ok
 DROP TABLE solids;
+
+# ──────────────────────────────────────────────────────────────
+# Precondition tests: ST_3DVolume must raise on invalid topology
+# ──────────────────────────────────────────────────────────────
+
+# An open shell (tetrahedron missing one face) imports successfully but
+# is_closed = false → ST_3DVolume must raise per design doc §5.3.1.
+statement ok
+CREATE TABLE open_solid AS
+SELECT ST_3DFromWKB(ST_AsWKBOpenTetra()) AS solid;
+
+# Sanity: the shell is detected as not closed
+query I
+SELECT ST_3DIsClosed(solid) FROM open_solid;
+----
+false
+
+# ST_3DVolume raises with the documented message
+statement error
+SELECT ST_3DVolume(solid) FROM open_solid;
+----
+not closed
+
+# ST_3DSurfaceArea still works on an open surface (no closedness requirement)
+query I
+SELECT ST_3DSurfaceArea(solid) > 0 FROM open_solid;
+----
+true
+
+statement ok
+DROP TABLE open_solid;
