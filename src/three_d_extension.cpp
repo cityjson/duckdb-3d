@@ -18,6 +18,7 @@
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
+#include <cstring>
 
 namespace duckdb {
 
@@ -485,19 +486,59 @@ static void ST_HasZFun(DataChunk &args, ExpressionState &state, Vector &result) 
 	});
 }
 
+//! Peek at the payload magic to decide whether a BLOB is a SOLID_3D or GEOM_3D value.
+enum class PayloadKind { Solid, Geom, Unknown };
+
+static PayloadKind GetPayloadKind(const uint8_t *data, size_t size) {
+	using namespace duckdb_3d;
+	if (size >= 4) {
+		if (std::memcmp(data, duckdb_3d::PAYLOAD_MAGIC, 4) == 0) {
+			return PayloadKind::Solid;
+		}
+		if (std::memcmp(data, GEOM_PAYLOAD_MAGIC, 4) == 0) {
+			return PayloadKind::Geom;
+		}
+	}
+	return PayloadKind::Unknown;
+}
+
 static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return model.bbox.min_z;
+		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
+		auto size = blob.GetSize();
+		switch (GetPayloadKind(data, size)) {
+		case PayloadKind::Solid: {
+			auto model = DeserializePayload(data, size);
+			return model.bbox.min_z;
+		}
+		case PayloadKind::Geom: {
+			auto model = DeserializeGeomPayload(data, size);
+			return model.bbox.min_z;
+		}
+		default:
+			throw InvalidInputException("ST_ZMin: argument is not a SOLID_3D or GEOM_3D value");
+		}
 	});
 }
 
 static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return model.bbox.max_z;
+		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
+		auto size = blob.GetSize();
+		switch (GetPayloadKind(data, size)) {
+		case PayloadKind::Solid: {
+			auto model = DeserializePayload(data, size);
+			return model.bbox.max_z;
+		}
+		case PayloadKind::Geom: {
+			auto model = DeserializeGeomPayload(data, size);
+			return model.bbox.max_z;
+		}
+		default:
+			throw InvalidInputException("ST_ZMax: argument is not a SOLID_3D or GEOM_3D value");
+		}
 	});
 }
 
@@ -946,8 +987,21 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Accessor functions
 	loader.RegisterFunction(ScalarFunction("st_ndims", {LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));
 	loader.RegisterFunction(ScalarFunction("st_hasz", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
-	loader.RegisterFunction(ScalarFunction("st_zmin", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
-	loader.RegisterFunction(ScalarFunction("st_zmax", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
+
+	// ST_ZMin / ST_ZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
+	// and plain BLOB values. Multiple overloads are needed because DuckDB treats
+	// named type aliases as distinct for function resolution.
+	ScalarFunctionSet zmin_set("st_zmin");
+	zmin_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
+	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
+	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
+	loader.RegisterFunction(zmin_set);
+
+	ScalarFunctionSet zmax_set("st_zmax");
+	zmax_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
+	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
+	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
+	loader.RegisterFunction(zmax_set);
 
 	// Transform functions
 	loader.RegisterFunction(ScalarFunction("st_translate",

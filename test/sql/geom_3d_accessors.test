@@ -35,5 +35,24 @@ SELECT ST_CoordDim(NULL::GEOM_3D);
 ----
 NULL
 
+# ST_ZMin / ST_ZMax: read the cached bounding box of a GEOM_3D value
+query II
+SELECT ST_ZMin(p), ST_ZMax(p) FROM pts;
+----
+3.0	3.0
+
+# ST_ZMin / ST_ZMax: linestring spans Z in [0, 12]
+query II
+SELECT ST_ZMin(ST_Geom3DFromWKB(ST_AsWKBLineZ())),
+       ST_ZMax(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+0.0	12.0
+
+# ST_ZMin / ST_ZMax: NULL propagates
+query II
+SELECT ST_ZMin(NULL::GEOM_3D), ST_ZMax(NULL::GEOM_3D);
+----
+NULL	NULL
+
 statement ok
 DROP TABLE pts;

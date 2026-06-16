@@ -46,7 +46,7 @@ SELECT ST_ZMax(solid) - ST_ZMin(solid) FROM solids;
 
 # ST_ZMin / ST_ZMax: NULL propagates
 query II
-SELECT ST_ZMin(NULL), ST_ZMax(NULL);
+SELECT ST_ZMin(NULL::SOLID_3D), ST_ZMax(NULL::SOLID_3D);
 ----
 NULL	NULL
 
