@@ -1,0 +1,24 @@
+# name: test/sql/geom_3d_accessors.test
+# description: GEOM_3D point accessors (ST_X, ST_Y, ST_Z)
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE TABLE pts AS
+SELECT ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)) AS p;
+
+# ST_X / ST_Y / ST_Z return the point's ordinates
+query III
+SELECT ST_X(p), ST_Y(p), ST_Z(p) FROM pts;
+----
+1.0	2.0	3.0
+
+# NULL propagation
+query III
+SELECT ST_X(NULL::GEOM_3D), ST_Y(NULL::GEOM_3D), ST_Z(NULL::GEOM_3D);
+----
+NULL	NULL	NULL
+
+statement ok
+DROP TABLE pts;

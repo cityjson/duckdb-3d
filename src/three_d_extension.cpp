@@ -716,6 +716,39 @@ static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &
 	});
 }
 
+// Point ordinate accessors: ST_X / ST_Y / ST_Z(point GEOM_3D) → DOUBLE.
+enum class Ordinate { X, Y, Z };
+
+static double PointOrdinate(string_t geom, Ordinate ord) {
+	using namespace duckdb_3d;
+	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+	if (model.type != GeomType::Point) {
+		throw InvalidInputException("ST_X/ST_Y/ST_Z: argument is not a Point");
+	}
+	if (model.vertices.empty()) {
+		throw InvalidInputException("ST_X/ST_Y/ST_Z: empty point");
+	}
+	const auto &v = model.vertices[0];
+	switch (ord) {
+	case Ordinate::X: return v.x;
+	case Ordinate::Y: return v.y;
+	default: return v.z;
+	}
+}
+
+static void ST_XFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
+		[](string_t geom) { return PointOrdinate(geom, Ordinate::X); });
+}
+static void ST_YFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
+		[](string_t geom) { return PointOrdinate(geom, Ordinate::Y); });
+}
+static void ST_ZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
+		[](string_t geom) { return PointOrdinate(geom, Ordinate::Z); });
+}
+
 // ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
@@ -740,6 +773,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
 	loader.RegisterFunction(ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
+	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
+	loader.RegisterFunction(ScalarFunction("st_y", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
+	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
