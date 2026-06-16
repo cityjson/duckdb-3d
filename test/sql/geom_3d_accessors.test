@@ -78,5 +78,23 @@ SELECT ST_HasZ(NULL::GEOM_3D);
 ----
 NULL
 
+# ST_Dimension: topological dimension of a Point is 0
+query I
+SELECT ST_Dimension(p) FROM pts;
+----
+0
+
+# ST_Dimension: topological dimension of a LineString is 1
+query I
+SELECT ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+1
+
+# ST_Dimension: NULL propagates
+query I
+SELECT ST_Dimension(NULL::GEOM_3D);
+----
+NULL
+
 statement ok
 DROP TABLE pts;
