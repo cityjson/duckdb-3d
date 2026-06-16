@@ -683,18 +683,47 @@ static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &r
 // Test helper: build a LineString Z WKB from (0,0,0) to (3,4,12).
 static void ST_AsWKBLineZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
-	buf.push_back(1); // little-endian
-	uint32_t type = 1002; // LineString Z
-	buf.push_back(type & 0xFF); buf.push_back((type >> 8) & 0xFF);
-	buf.push_back((type >> 16) & 0xFF); buf.push_back((type >> 24) & 0xFF);
-	uint32_t point_count = 2;
-	buf.push_back(point_count & 0xFF); buf.push_back((point_count >> 8) & 0xFF);
-	buf.push_back((point_count >> 16) & 0xFF); buf.push_back((point_count >> 24) & 0xFF);
+	auto push_u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
 	auto push_f64 = [&](double v) {
 		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
 	};
+	buf.push_back(1); // little-endian
+	push_u32(1002); // LineString Z
+	push_u32(2);
 	push_f64(0.0); push_f64(0.0); push_f64(0.0);
 	push_f64(3.0); push_f64(4.0); push_f64(12.0);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
+// Test helper: build a MultiLineString Z with lengths 13 and 5.
+static void ST_AsWKBMultiLineZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	auto push_u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto push_f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	auto push_line = [&](double x0, double y0, double z0, double x1, double y1, double z1) {
+		buf.push_back(1); // little-endian child
+		push_u32(1002); // LineString Z
+		push_u32(2);
+		push_f64(x0); push_f64(y0); push_f64(z0);
+		push_f64(x1); push_f64(y1); push_f64(z1);
+	};
+
+	buf.push_back(1); // little-endian
+	push_u32(1005); // MultiLineString Z
+	push_u32(2);
+	push_line(0.0, 0.0, 0.0, 3.0, 4.0, 12.0);
+	push_line(10.0, 10.0, 10.0, 13.0, 14.0, 10.0);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
@@ -773,20 +802,32 @@ static void ST_ZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 static double Geom3DLength(string_t geom) {
 	using namespace duckdb_3d;
 	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-	if (model.type != GeomType::LineString || model.vertices.size() < 2) {
-		return 0.0;
-	}
+	auto sum_segments = [&](size_t begin, size_t end) {
+		double length = 0.0;
+		for (size_t i = begin + 1; i < end; i++) {
+			const auto &a = model.vertices[i - 1];
+			const auto &b = model.vertices[i];
+			double dx = b.x - a.x;
+			double dy = b.y - a.y;
+			double dz = b.z - a.z;
+			length += std::sqrt(dx * dx + dy * dy + dz * dz);
+		}
+		return length;
+	};
 
-	double length = 0.0;
-	for (size_t i = 1; i < model.vertices.size(); i++) {
-		const auto &a = model.vertices[i - 1];
-		const auto &b = model.vertices[i];
-		double dx = b.x - a.x;
-		double dy = b.y - a.y;
-		double dz = b.z - a.z;
-		length += std::sqrt(dx * dx + dy * dy + dz * dz);
+	if (model.type == GeomType::LineString) {
+		return sum_segments(0, model.vertices.size());
 	}
-	return length;
+	if (model.type == GeomType::MultiLineString) {
+		double length = 0.0;
+		for (size_t part = 1; part < model.part_offsets.size(); part++) {
+			size_t begin = model.part_offsets[part - 1];
+			size_t end = model.part_offsets[part];
+			length += sum_segments(begin, end);
+		}
+		return length;
+	}
+	return 0.0;
 }
 
 static void ST_3DLengthFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -815,6 +856,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBPointZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkblinez", {}, LogicalType::BLOB, ST_AsWKBLineZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbmultilinez", {}, LogicalType::BLOB, ST_AsWKBMultiLineZFun));
 
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));

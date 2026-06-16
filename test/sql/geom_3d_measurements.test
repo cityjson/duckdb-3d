@@ -16,6 +16,14 @@ SELECT ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
 ----
 13.0
 
+# A MultiLineString Z is recognised and length is summed over its parts
+query II
+SELECT
+    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ())),
+    ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
+----
+ST_MultiLineString	18.0
+
 # ST_3DLength of a point is 0
 query I
 SELECT ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));

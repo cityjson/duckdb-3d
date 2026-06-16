@@ -38,6 +38,22 @@ struct Cursor {
 	}
 };
 
+Vertex3D ReadPointZ(Cursor &cur) {
+	Vertex3D v;
+	v.x = cur.F64();
+	v.y = cur.F64();
+	v.z = cur.F64();
+	return v;
+}
+
+void ReadLineStringZ(Cursor &cur, GeomModel &model) {
+	uint32_t point_count = cur.U32();
+	model.vertices.reserve(model.vertices.size() + point_count);
+	for (uint32_t i = 0; i < point_count; i++) {
+		model.vertices.push_back(ReadPointZ(cur));
+	}
+}
+
 } // namespace
 
 GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
@@ -53,23 +69,30 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	switch (wkb_type) {
 	case 1001: { // Point Z
 		model.type = GeomType::Point;
-		Vertex3D v;
-		v.x = cur.F64();
-		v.y = cur.F64();
-		v.z = cur.F64();
-		model.vertices.push_back(v);
+		model.vertices.push_back(ReadPointZ(cur));
 		break;
 	}
 	case 1002: { // LineString Z
 		model.type = GeomType::LineString;
-		uint32_t point_count = cur.U32();
-		model.vertices.reserve(point_count);
-		for (uint32_t i = 0; i < point_count; i++) {
-			Vertex3D v;
-			v.x = cur.F64();
-			v.y = cur.F64();
-			v.z = cur.F64();
-			model.vertices.push_back(v);
+		ReadLineStringZ(cur, model);
+		break;
+	}
+	case 1005: { // MultiLineString Z
+		model.type = GeomType::MultiLineString;
+		uint32_t line_count = cur.U32();
+		model.part_offsets.reserve(line_count + 1);
+		model.part_offsets.push_back(0);
+		for (uint32_t i = 0; i < line_count; i++) {
+			uint8_t child_byte_order = cur.U8();
+			if (child_byte_order != 1) {
+				throw std::runtime_error("ParseGeomWKB: only little-endian WKB is supported");
+			}
+			uint32_t child_type = cur.U32();
+			if (child_type != 1002) {
+				throw std::runtime_error("ParseGeomWKB: MultiLineString Z child is not LineString Z");
+			}
+			ReadLineStringZ(cur, model);
+			model.part_offsets.push_back(static_cast<uint32_t>(model.vertices.size()));
 		}
 		break;
 	}
