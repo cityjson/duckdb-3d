@@ -54,5 +54,17 @@ SELECT ST_ZMin(NULL::GEOM_3D), ST_ZMax(NULL::GEOM_3D);
 ----
 NULL	NULL
 
+# ST_NDims: a GEOM_3D value has coordinate dimension 3
+query I
+SELECT ST_NDims(p) FROM pts;
+----
+3
+
+# ST_NDims: NULL propagates
+query I
+SELECT ST_NDims(NULL::GEOM_3D);
+----
+NULL
+
 statement ok
 DROP TABLE pts;

@@ -16,7 +16,7 @@ SELECT ST_NDims(solid) FROM solids;
 
 # ST_NDims: NULL propagates
 query I
-SELECT ST_NDims(NULL);
+SELECT ST_NDims(NULL::SOLID_3D);
 ----
 NULL
 
