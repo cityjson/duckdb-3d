@@ -21,4 +21,9 @@ double ComputeVolume(const SolidModel &model);
 //! orientation sign. No validity preconditions beyond a parseable model.
 double ComputeFootprintArea(const SolidModel &model);
 
+//! Compute the 3D perimeter: the total length of boundary edges, i.e. edges
+//! incident to exactly one face. A closed shell has no boundary edges and
+//! returns 0; an open shell returns the length of its open boundary loop.
+double ComputePerimeter(const SolidModel &model);
+
 } // namespace duckdb_3d

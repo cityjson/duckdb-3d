@@ -1,6 +1,8 @@
 #include "kernel/measurements.hpp"
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <utility>
 
 namespace duckdb_3d {
 
@@ -137,6 +139,37 @@ double ComputeFootprintArea(const SolidModel &model) {
 	}
 
 	return total_projected * 0.5;
+}
+
+double ComputePerimeter(const SolidModel &model) {
+	// Count how many faces reference each undirected edge. Boundary edges are
+	// those used exactly once; their total length is the perimeter.
+	std::map<std::pair<uint32_t, uint32_t>, uint32_t> edge_use;
+	uint32_t ring_count = model.RingCount();
+
+	for (uint32_t ring_idx = 0; ring_idx < ring_count; ring_idx++) {
+		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+		uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+		uint32_t n = vi_end - vi_start;
+		for (uint32_t i = 0; i < n; i++) {
+			uint32_t a = model.ring_vertex_indices[vi_start + i];
+			uint32_t b = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+			auto key = std::minmax(a, b);
+			edge_use[{key.first, key.second}]++;
+		}
+	}
+
+	double perimeter = 0.0;
+	for (const auto &entry : edge_use) {
+		if (entry.second == 1) {
+			const auto &va = model.vertices[entry.first.first];
+			const auto &vb = model.vertices[entry.first.second];
+			double dx = va.x - vb.x, dy = va.y - vb.y, dz = va.z - vb.z;
+			perimeter += std::sqrt(dx * dx + dy * dy + dz * dz);
+		}
+	}
+
+	return perimeter;
 }
 
 } // namespace duckdb_3d
