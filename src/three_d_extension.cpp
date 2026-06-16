@@ -817,6 +817,54 @@ static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_RotateX / ST_RotateY / ST_RotateZ(geom, radians) → GEOM_3D
+// ──────────────────────────────────────────────────────────────
+static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, RotationAxis axis) {
+	using namespace duckdb_3d;
+	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+
+	double c = std::cos(radians);
+	double s = std::sin(radians);
+	for (auto &v : model.vertices) {
+		double x = v.x, y = v.y, z = v.z;
+		switch (axis) {
+		case RotationAxis::X:
+			v.y = y * c - z * s;
+			v.z = y * s + z * c;
+			break;
+		case RotationAxis::Y:
+			v.x = x * c + z * s;
+			v.z = -x * s + z * c;
+			break;
+		case RotationAxis::Z:
+			v.x = x * c - y * s;
+			v.y = x * s + y * c;
+			break;
+		}
+	}
+	model.ComputeBBox();
+
+	auto payload = SerializeGeomPayload(model);
+	return StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+}
+
+static void ST_RotateXGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::X); });
+}
+
+static void ST_RotateYGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Y); });
+}
+
+static void ST_RotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Z); });
+}
+
+// ──────────────────────────────────────────────────────────────
 // GEOM_3D: general geometry construction and accessors
 // ──────────────────────────────────────────────────────────────
 
@@ -1196,12 +1244,23 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    {geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	    geom_3d_type, ST_ScaleGeomFun));
 	loader.RegisterFunction(scale_set);
-	loader.RegisterFunction(ScalarFunction("st_rotatex", {LogicalType::BLOB, LogicalType::DOUBLE},
-	    LogicalType::BLOB, ST_RotateXFun));
-	loader.RegisterFunction(ScalarFunction("st_rotatey", {LogicalType::BLOB, LogicalType::DOUBLE},
-	    LogicalType::BLOB, ST_RotateYFun));
-	loader.RegisterFunction(ScalarFunction("st_rotatez", {LogicalType::BLOB, LogicalType::DOUBLE},
-	    LogicalType::BLOB, ST_RotateZFun));
+	ScalarFunctionSet rotatex_set("st_rotatex");
+	rotatex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateXFun));
+	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateXFun));
+	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateXGeomFun));
+	loader.RegisterFunction(rotatex_set);
+
+	ScalarFunctionSet rotatey_set("st_rotatey");
+	rotatey_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateYFun));
+	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateYFun));
+	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateYGeomFun));
+	loader.RegisterFunction(rotatey_set);
+
+	ScalarFunctionSet rotatez_set("st_rotatez");
+	rotatez_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateZFun));
+	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateZFun));
+	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateZGeomFun));
+	loader.RegisterFunction(rotatez_set);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

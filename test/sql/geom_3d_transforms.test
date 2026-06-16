@@ -43,3 +43,32 @@ query I
 SELECT ST_Scale(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
+
+# ST_RotateZ rotates (1,0,0) by 90 deg to (0,1,0)
+query III
+SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
+FROM (SELECT ST_RotateZ(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
+----
+0.0	1.0	0.0
+
+# ST_RotateX rotates (0,1,0) by 90 deg to (0,0,1)
+query III
+SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
+FROM (SELECT ST_RotateX(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 1.0, 0.0)), radians(90)) AS r) q;
+----
+0.0	0.0	1.0
+
+# ST_RotateY rotates (1,0,0) by 90 deg to (0,0,-1)
+query III
+SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
+FROM (SELECT ST_RotateY(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
+----
+0.0	0.0	-1.0
+
+# ST_RotateZ: NULL propagates
+query III
+SELECT ST_RotateX(NULL::GEOM_3D, 1.0) IS NULL,
+       ST_RotateY(NULL::GEOM_3D, 1.0) IS NULL,
+       ST_RotateZ(NULL::GEOM_3D, 1.0) IS NULL;
+----
+true	true	true

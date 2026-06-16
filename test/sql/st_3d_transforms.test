@@ -89,7 +89,9 @@ true
 
 # NULL propagates for each axis
 query III
-SELECT ST_RotateX(NULL, 1.0) IS NULL, ST_RotateY(NULL, 1.0) IS NULL, ST_RotateZ(NULL, 1.0) IS NULL;
+SELECT ST_RotateX(NULL::SOLID_3D, 1.0) IS NULL,
+       ST_RotateY(NULL::SOLID_3D, 1.0) IS NULL,
+       ST_RotateZ(NULL::SOLID_3D, 1.0) IS NULL;
 ----
 true	true	true
 
