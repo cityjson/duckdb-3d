@@ -969,6 +969,29 @@ static void ST_DimensionFun(DataChunk &args, ExpressionState &state, Vector &res
 	});
 }
 
+// ST_NumGeometries(geom GEOM_3D) → INTEGER
+static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
+	using namespace duckdb_3d;
+	switch (model.type) {
+	case GeomType::MultiPoint:
+	case GeomType::MultiLineString:
+	case GeomType::MultiPolygon:
+	case GeomType::GeometryCollection:
+		return model.part_offsets.empty() ? 0
+		                                  : static_cast<int32_t>(model.part_offsets.size() - 1);
+	default:
+		return 1;
+	}
+}
+
+static void ST_NumGeometriesFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return GeomNumGeometries(model);
+	});
+}
+
 // ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
@@ -1000,6 +1023,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
 	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
 	loader.RegisterFunction(ScalarFunction("st_dimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
+	loader.RegisterFunction(ScalarFunction("st_numgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads

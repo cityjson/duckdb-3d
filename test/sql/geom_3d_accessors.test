@@ -96,5 +96,23 @@ SELECT ST_Dimension(NULL::GEOM_3D);
 ----
 NULL
 
+# ST_NumGeometries: a single Point has one geometry
+query I
+SELECT ST_NumGeometries(p) FROM pts;
+----
+1
+
+# ST_NumGeometries: a MultiLineString has two parts
+query I
+SELECT ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
+----
+2
+
+# ST_NumGeometries: NULL propagates
+query I
+SELECT ST_NumGeometries(NULL::GEOM_3D);
+----
+NULL
+
 statement ok
 DROP TABLE pts;
