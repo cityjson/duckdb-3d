@@ -1,0 +1,44 @@
+# name: test/sql/st_3d_transforms.test
+# description: test ST_3D transform functions (Translate)
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# ST_Translate shifts the bounding box by the given offsets
+query IIIIII
+SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
+FROM (SELECT ST_3DBounds(ST_Translate(solid, 10.0, 20.0, 30.0)) AS b FROM solids);
+----
+10.0	20.0	30.0	11.0	21.0	31.0
+
+# ST_Translate preserves volume (rigid motion)
+query I
+SELECT ST_3DVolume(ST_Translate(solid, 10.0, 20.0, 30.0)) = ST_3DVolume(solid) FROM solids;
+----
+true
+
+# ST_Translate preserves validity (rigid motion)
+query I
+SELECT ST_3DIsClosed(ST_Translate(solid, 5.0, -5.0, 1.5)) FROM solids;
+----
+true
+
+# Translate then inverse-translate round-trips the bounds
+query IIIIII
+SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
+FROM (SELECT ST_3DBounds(ST_Translate(ST_Translate(solid, 7.0, 8.0, 9.0), -7.0, -8.0, -9.0)) AS b FROM solids);
+----
+0.0	0.0	0.0	1.0	1.0	1.0
+
+# NULL propagates
+query I
+SELECT ST_Translate(NULL, 1.0, 2.0, 3.0) IS NULL;
+----
+true
+
+statement ok
+DROP TABLE solids;

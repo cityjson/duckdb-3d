@@ -471,6 +471,63 @@ static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) 
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_Translate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
+// ──────────────────────────────────────────────────────────────
+static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+
+	UnifiedVectorFormat solid_data, dx_data, dy_data, dz_data;
+	args.data[0].ToUnifiedFormat(count, solid_data);
+	args.data[1].ToUnifiedFormat(count, dx_data);
+	args.data[2].ToUnifiedFormat(count, dy_data);
+	args.data[3].ToUnifiedFormat(count, dz_data);
+
+	auto solid_strings = UnifiedVectorFormat::GetData<string_t>(solid_data);
+	auto dx_vals = UnifiedVectorFormat::GetData<double>(dx_data);
+	auto dy_vals = UnifiedVectorFormat::GetData<double>(dy_data);
+	auto dz_vals = UnifiedVectorFormat::GetData<double>(dz_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto solid_idx = solid_data.sel->get_index(i);
+		auto dx_idx = dx_data.sel->get_index(i);
+		auto dy_idx = dy_data.sel->get_index(i);
+		auto dz_idx = dz_data.sel->get_index(i);
+
+		if (!solid_data.validity.RowIsValid(solid_idx) || !dx_data.validity.RowIsValid(dx_idx) ||
+		    !dy_data.validity.RowIsValid(dy_idx) || !dz_data.validity.RowIsValid(dz_idx)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		using namespace duckdb_3d;
+		auto &blob = solid_strings[solid_idx];
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+
+		double dx = dx_vals[dx_idx], dy = dy_vals[dy_idx], dz = dz_vals[dz_idx];
+		// Translation is a rigid motion: shift every vertex and the cached bbox;
+		// topology, triangulation indices, and validation flags are unchanged.
+		for (auto &v : model.vertices) {
+			v.x += dx;
+			v.y += dy;
+			v.z += dz;
+		}
+		model.bbox.min_x += dx; model.bbox.max_x += dx;
+		model.bbox.min_y += dy; model.bbox.max_y += dy;
+		model.bbox.min_z += dz; model.bbox.max_z += dz;
+
+		auto payload = SerializePayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -550,6 +607,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_hasz", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
 	loader.RegisterFunction(ScalarFunction("st_zmin", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
 	loader.RegisterFunction(ScalarFunction("st_zmax", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
+
+	// Transform functions
+	loader.RegisterFunction(ScalarFunction("st_translate",
+	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	    LogicalType::BLOB, ST_TranslateFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
