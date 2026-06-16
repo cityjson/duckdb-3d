@@ -437,6 +437,14 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 	});
 }
 
+static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return ComputeFootprintArea(model);
+	});
+}
+
 // ──────────────────────────────────────────────────────────────
 // Accessors: ST_NDims
 // ──────────────────────────────────────────────────────────────
@@ -601,6 +609,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Measurement functions
 	loader.RegisterFunction(ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
+	loader.RegisterFunction(ScalarFunction("st_area", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
 
 	// Accessor functions
 	loader.RegisterFunction(ScalarFunction("st_ndims", {LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));

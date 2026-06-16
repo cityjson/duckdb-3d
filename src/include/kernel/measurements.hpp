@@ -14,4 +14,11 @@ double ComputeSurfaceArea(const SolidModel &model);
 //! Throws if preconditions are not met.
 double ComputeVolume(const SolidModel &model);
 
+//! Compute the 2D footprint area: the area of the geometry's projection onto
+//! the XY plane. Computed as half the total absolute XY-projected face area,
+//! which is exact for vertically-simple solids (every vertical line meets the
+//! boundary once above and once below) and independent of the global
+//! orientation sign. No validity preconditions beyond a parseable model.
+double ComputeFootprintArea(const SolidModel &model);
+
 } // namespace duckdb_3d

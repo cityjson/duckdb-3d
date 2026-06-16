@@ -23,11 +23,18 @@ SELECT ROUND(ST_3DVolume(solid), 5) FROM solids;
 ----
 0.16667
 
-# Test: NULL propagation
-query II
-SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL);
+# Test: ST_Area returns the XY footprint area.
+# For the tetrahedron the footprint is the base triangle (0,0),(0,1),(1,0) = 0.5
+query I
+SELECT ROUND(ST_Area(solid), 5) FROM solids;
 ----
-NULL	NULL
+0.5
+
+# Test: NULL propagation
+query III
+SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL);
+----
+NULL	NULL	NULL
 
 statement ok
 DROP TABLE solids;

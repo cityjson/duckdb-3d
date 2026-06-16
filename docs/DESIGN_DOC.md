@@ -856,13 +856,16 @@ coordinates are transformed `DOUBLE` XYZ (§6.3).
 #### 16.10.2 Measurement — `must`
 
 **`ST_Area(geom GEOM_3D) → DOUBLE`**
-- Area of the **XY projection** (footprint), summed over polygonal/surface faces using the
-  shoelace formula on projected coordinates; 0 for point/line inputs.
-- Precondition: none beyond parseability. Self-overlapping projections are summed per-face
-  (no planar union in v1 — document this limitation).
-- Open decision to pin in the first test: the exact footprint definition (area of the 2D
-  union of downward-facing faces vs. area of the XY bounding polygon of the lowest shell).
-  Record the chosen definition in code + test.
+- Area of the **XY projection** (footprint).
+- **Chosen definition (implemented):** half the total absolute XY-projected face area —
+  i.e. `0.5 · Σ_faces |projected signed area of face|`. Each up-facing and each down-facing
+  face projects onto the footprint exactly once, so summing absolute projected areas counts
+  the footprint twice; halving recovers it. This is exact for **vertically-simple** solids
+  (every vertical line meets the boundary once above and once below), independent of the
+  global orientation sign, and requires no triangulation or validity preconditions. It is
+  approximate for overhangs/re-entrant profiles (documented limitation; no planar union in
+  v1). Implemented in `ComputeFootprintArea` (`src/kernel/measurements.cpp`).
+- Precondition: none beyond a parseable model.
 
 #### 16.10.3 Distance — `must`
 
