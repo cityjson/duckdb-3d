@@ -23,3 +23,23 @@ query I
 SELECT ST_Translate(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
+
+# ST_Scale scales a Point Z about the origin
+query III
+SELECT ST_X(s), ST_Y(s), ST_Z(s)
+FROM (SELECT ST_Scale(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS s) q;
+----
+10.0	40.0	90.0
+
+# ST_Scale scales the bounding box of a LineString Z
+query II
+SELECT ST_ZMin(s), ST_ZMax(s)
+FROM (SELECT ST_Scale(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 1.0, 1.0, 2.0) AS s) q;
+----
+0.0	24.0
+
+# ST_Scale: NULL propagates
+query I
+SELECT ST_Scale(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
+----
+true

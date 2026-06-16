@@ -61,7 +61,7 @@ true
 
 # NULL propagates
 query I
-SELECT ST_Scale(NULL, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_Scale(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
