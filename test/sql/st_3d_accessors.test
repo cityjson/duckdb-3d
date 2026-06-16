@@ -32,5 +32,23 @@ SELECT ST_HasZ(NULL);
 ----
 NULL
 
+# ST_ZMin / ST_ZMax: tetrahedron spans Z in [0, 1]
+query II
+SELECT ST_ZMin(solid), ST_ZMax(solid) FROM solids;
+----
+0.0	1.0
+
+# ST_ZMax - ST_ZMin is the building height
+query I
+SELECT ST_ZMax(solid) - ST_ZMin(solid) FROM solids;
+----
+1.0
+
+# ST_ZMin / ST_ZMax: NULL propagates
+query II
+SELECT ST_ZMin(NULL), ST_ZMax(NULL);
+----
+NULL	NULL
+
 statement ok
 DROP TABLE solids;

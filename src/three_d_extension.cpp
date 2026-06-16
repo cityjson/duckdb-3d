@@ -454,6 +454,22 @@ static void ST_HasZFun(DataChunk &args, ExpressionState &state, Vector &result) 
 	});
 }
 
+static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return model.bbox.min_z;
+	});
+}
+
+static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
+		using namespace duckdb_3d;
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return model.bbox.max_z;
+	});
+}
+
 // ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
@@ -532,6 +548,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Accessor functions
 	loader.RegisterFunction(ScalarFunction("st_ndims", {LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));
 	loader.RegisterFunction(ScalarFunction("st_hasz", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
+	loader.RegisterFunction(ScalarFunction("st_zmin", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
+	loader.RegisterFunction(ScalarFunction("st_zmax", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
