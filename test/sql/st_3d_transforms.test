@@ -65,5 +65,33 @@ SELECT ST_Scale(NULL, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
+# ST_RotateX / ST_RotateY / ST_RotateZ are rigid rotations: volume is preserved
+query III
+SELECT ROUND(ST_3DVolume(ST_RotateX(solid, radians(90))), 5),
+       ROUND(ST_3DVolume(ST_RotateY(solid, radians(37))), 5),
+       ROUND(ST_3DVolume(ST_RotateZ(solid, radians(90))), 5)
+FROM solids;
+----
+0.16667	0.16667	0.16667
+
+# ST_RotateZ by 90 deg maps (x,y) -> (-y,x): X extent becomes [-1, 0]
+query II
+SELECT ROUND(b.min_x, 5), ROUND(b.max_x, 5)
+FROM (SELECT ST_3DBounds(ST_RotateZ(solid, radians(90))) AS b FROM solids);
+----
+-1.0	0.0
+
+# Rotations preserve validity
+query I
+SELECT ST_3DIsClosed(ST_RotateX(solid, radians(45))) FROM solids;
+----
+true
+
+# NULL propagates for each axis
+query III
+SELECT ST_RotateX(NULL, 1.0) IS NULL, ST_RotateY(NULL, 1.0) IS NULL, ST_RotateZ(NULL, 1.0) IS NULL;
+----
+true	true	true
+
 statement ok
 DROP TABLE solids;

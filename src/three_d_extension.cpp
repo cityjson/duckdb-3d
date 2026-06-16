@@ -14,6 +14,8 @@
 #include "kernel/metadata_parser.hpp"
 #include "duckdb/function/function_set.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 
 // ──────────────────────────────────────────────────────────────
@@ -592,6 +594,59 @@ static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result)
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_RotateX / ST_RotateY / ST_RotateZ(solid, radians) → SOLID_3D
+// ──────────────────────────────────────────────────────────────
+enum class RotationAxis { X, Y, Z };
+
+static string_t RotateSolidBlob(Vector &result, string_t solid, double radians, RotationAxis axis) {
+	using namespace duckdb_3d;
+	auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+
+	double c = std::cos(radians);
+	double s = std::sin(radians);
+	// Right-handed, counter-clockwise rotation about the chosen axis (PostGIS
+	// convention). A rigid motion: topology, winding, and validation flags are
+	// preserved; only the bbox is recomputed.
+	for (auto &v : model.vertices) {
+		double x = v.x, y = v.y, z = v.z;
+		switch (axis) {
+		case RotationAxis::X:
+			v.y = y * c - z * s;
+			v.z = y * s + z * c;
+			break;
+		case RotationAxis::Y:
+			v.x = x * c + z * s;
+			v.z = -x * s + z * c;
+			break;
+		case RotationAxis::Z:
+			v.x = x * c - y * s;
+			v.y = x * s + y * c;
+			break;
+		}
+	}
+	model.ComputeBBox();
+
+	auto payload = SerializePayload(model);
+	return StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+}
+
+static void ST_RotateXFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::X); });
+}
+
+static void ST_RotateYFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Y); });
+}
+
+static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
+		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Z); });
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -682,6 +737,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_scale",
 	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	    LogicalType::BLOB, ST_ScaleFun));
+	loader.RegisterFunction(ScalarFunction("st_rotatex", {LogicalType::BLOB, LogicalType::DOUBLE},
+	    LogicalType::BLOB, ST_RotateXFun));
+	loader.RegisterFunction(ScalarFunction("st_rotatey", {LogicalType::BLOB, LogicalType::DOUBLE},
+	    LogicalType::BLOB, ST_RotateYFun));
+	loader.RegisterFunction(ScalarFunction("st_rotatez", {LogicalType::BLOB, LogicalType::DOUBLE},
+	    LogicalType::BLOB, ST_RotateZFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
