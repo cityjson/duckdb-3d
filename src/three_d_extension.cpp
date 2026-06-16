@@ -600,6 +600,61 @@ static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_Translate(geom GEOM_3D, dx, dy, dz DOUBLE) → GEOM_3D
+// ──────────────────────────────────────────────────────────────
+static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+
+	UnifiedVectorFormat geom_data, dx_data, dy_data, dz_data;
+	args.data[0].ToUnifiedFormat(count, geom_data);
+	args.data[1].ToUnifiedFormat(count, dx_data);
+	args.data[2].ToUnifiedFormat(count, dy_data);
+	args.data[3].ToUnifiedFormat(count, dz_data);
+
+	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
+	auto dx_vals = UnifiedVectorFormat::GetData<double>(dx_data);
+	auto dy_vals = UnifiedVectorFormat::GetData<double>(dy_data);
+	auto dz_vals = UnifiedVectorFormat::GetData<double>(dz_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto geom_idx = geom_data.sel->get_index(i);
+		auto dx_idx = dx_data.sel->get_index(i);
+		auto dy_idx = dy_data.sel->get_index(i);
+		auto dz_idx = dz_data.sel->get_index(i);
+
+		if (!geom_data.validity.RowIsValid(geom_idx) || !dx_data.validity.RowIsValid(dx_idx) ||
+		    !dy_data.validity.RowIsValid(dy_idx) || !dz_data.validity.RowIsValid(dz_idx)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		using namespace duckdb_3d;
+		auto &blob = geom_strings[geom_idx];
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+
+		double dx = dx_vals[dx_idx], dy = dy_vals[dy_idx], dz = dz_vals[dz_idx];
+		for (auto &v : model.vertices) {
+			v.x += dx;
+			v.y += dy;
+			v.z += dz;
+		}
+		model.bbox.min_x += dx; model.bbox.max_x += dx;
+		model.bbox.min_y += dy; model.bbox.max_y += dy;
+		model.bbox.min_z += dz; model.bbox.max_z += dz;
+
+		auto payload = SerializeGeomPayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Transforms: ST_Scale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -1004,9 +1059,17 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(zmax_set);
 
 	// Transform functions
-	loader.RegisterFunction(ScalarFunction("st_translate",
+	ScalarFunctionSet translate_set("st_translate");
+	translate_set.AddFunction(ScalarFunction(
 	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	    LogicalType::BLOB, ST_TranslateFun));
+	translate_set.AddFunction(ScalarFunction(
+	    {solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	    solid_3d_type, ST_TranslateFun));
+	translate_set.AddFunction(ScalarFunction(
+	    {geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	    geom_3d_type, ST_TranslateGeomFun));
+	loader.RegisterFunction(translate_set);
 	loader.RegisterFunction(ScalarFunction("st_scale",
 	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	    LogicalType::BLOB, ST_ScaleFun));

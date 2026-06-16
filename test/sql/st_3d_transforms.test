@@ -36,7 +36,7 @@ FROM (SELECT ST_3DBounds(ST_Translate(ST_Translate(solid, 7.0, 8.0, 9.0), -7.0, 
 
 # NULL propagates
 query I
-SELECT ST_Translate(NULL, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_Translate(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 

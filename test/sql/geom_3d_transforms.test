@@ -1,0 +1,25 @@
+# name: test/sql/geom_3d_transforms.test
+# description: GEOM_3D transform functions (ST_Translate)
+# group: [sql]
+
+require three_d
+
+# ST_Translate shifts a Point Z by (dx, dy, dz)
+query III
+SELECT ST_X(t), ST_Y(t), ST_Z(t)
+FROM (SELECT ST_Translate(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS t) q;
+----
+11.0	22.0	33.0
+
+# ST_Translate shifts the bounding box of a LineString Z
+query II
+SELECT ST_ZMin(t), ST_ZMax(t)
+FROM (SELECT ST_Translate(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 0.0, 0.0, 5.0) AS t) q;
+----
+5.0	17.0
+
+# ST_Translate: NULL propagates
+query I
+SELECT ST_Translate(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
+----
+true
