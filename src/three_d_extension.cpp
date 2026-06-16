@@ -536,6 +536,62 @@ static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_Scale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
+// ──────────────────────────────────────────────────────────────
+static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+
+	UnifiedVectorFormat solid_data, sx_data, sy_data, sz_data;
+	args.data[0].ToUnifiedFormat(count, solid_data);
+	args.data[1].ToUnifiedFormat(count, sx_data);
+	args.data[2].ToUnifiedFormat(count, sy_data);
+	args.data[3].ToUnifiedFormat(count, sz_data);
+
+	auto solid_strings = UnifiedVectorFormat::GetData<string_t>(solid_data);
+	auto sx_vals = UnifiedVectorFormat::GetData<double>(sx_data);
+	auto sy_vals = UnifiedVectorFormat::GetData<double>(sy_data);
+	auto sz_vals = UnifiedVectorFormat::GetData<double>(sz_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto solid_idx = solid_data.sel->get_index(i);
+		auto sx_idx = sx_data.sel->get_index(i);
+		auto sy_idx = sy_data.sel->get_index(i);
+		auto sz_idx = sz_data.sel->get_index(i);
+
+		if (!solid_data.validity.RowIsValid(solid_idx) || !sx_data.validity.RowIsValid(sx_idx) ||
+		    !sy_data.validity.RowIsValid(sy_idx) || !sz_data.validity.RowIsValid(sz_idx)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		using namespace duckdb_3d;
+		auto &blob = solid_strings[solid_idx];
+		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+
+		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
+		// Scale about the origin. Topology and winding consistency are preserved
+		// for non-degenerate factors, so validation flags carry over; only the
+		// bbox is recomputed (factors may be negative and swap min/max).
+		for (auto &v : model.vertices) {
+			v.x *= sx;
+			v.y *= sy;
+			v.z *= sz;
+		}
+		model.ComputeBBox();
+
+		auto payload = SerializePayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -623,6 +679,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_translate",
 	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	    LogicalType::BLOB, ST_TranslateFun));
+	loader.RegisterFunction(ScalarFunction("st_scale",
+	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	    LogicalType::BLOB, ST_ScaleFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

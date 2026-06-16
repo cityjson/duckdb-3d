@@ -40,5 +40,30 @@ SELECT ST_Translate(NULL, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
+# ST_Scale scales the bounding box about the origin
+query IIIIII
+SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
+FROM (SELECT ST_3DBounds(ST_Scale(solid, 2.0, 3.0, 4.0)) AS b FROM solids);
+----
+0.0	0.0	0.0	2.0	3.0	4.0
+
+# ST_Scale multiplies volume by sx*sy*sz (here 2*3*4 = 24 → 1/6 * 24 = 4)
+query I
+SELECT ROUND(ST_3DVolume(ST_Scale(solid, 2.0, 3.0, 4.0)), 5) FROM solids;
+----
+4.0
+
+# ST_Scale preserves validity for non-degenerate factors
+query I
+SELECT ST_3DIsClosed(ST_Scale(solid, 2.0, 2.0, 2.0)) FROM solids;
+----
+true
+
+# NULL propagates
+query I
+SELECT ST_Scale(NULL, 1.0, 2.0, 3.0) IS NULL;
+----
+true
+
 statement ok
 DROP TABLE solids;
