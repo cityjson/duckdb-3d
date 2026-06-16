@@ -20,5 +20,17 @@ SELECT ST_NDims(NULL);
 ----
 NULL
 
+# ST_HasZ: a 3D solid carries a Z ordinate
+query I
+SELECT ST_HasZ(solid) FROM solids;
+----
+true
+
+# ST_HasZ: NULL propagates
+query I
+SELECT ST_HasZ(NULL);
+----
+NULL
+
 statement ok
 DROP TABLE solids;

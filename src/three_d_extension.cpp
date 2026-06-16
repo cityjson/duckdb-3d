@@ -447,6 +447,13 @@ static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result)
 	});
 }
 
+static void ST_HasZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+		// v1 geometries always carry a Z ordinate.
+		return true;
+	});
+}
+
 // ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
@@ -524,6 +531,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Accessor functions
 	loader.RegisterFunction(ScalarFunction("st_ndims", {LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));
+	loader.RegisterFunction(ScalarFunction("st_hasz", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {
