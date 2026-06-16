@@ -12,6 +12,9 @@
 #include "kernel/measurements.hpp"
 #include "kernel/triangulation.hpp"
 #include "kernel/metadata_parser.hpp"
+#include "kernel/geom_model.hpp"
+#include "kernel/geom_wkb_parser.hpp"
+#include "kernel/geom_payload.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -655,6 +658,65 @@ static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 // ──────────────────────────────────────────────────────────────
+// GEOM_3D: general geometry construction and accessors
+// ──────────────────────────────────────────────────────────────
+
+// Test helper: build a Point Z WKB from x, y, z.
+static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	TernaryExecutor::Execute<double, double, double, string_t>(
+	    args.data[0], args.data[1], args.data[2], result, args.size(),
+	    [&](double x, double y, double z) {
+		    std::vector<uint8_t> buf;
+		    buf.push_back(1); // little-endian
+		    uint32_t type = 1001; // Point Z
+		    buf.push_back(type & 0xFF); buf.push_back((type >> 8) & 0xFF);
+		    buf.push_back((type >> 16) & 0xFF); buf.push_back((type >> 24) & 0xFF);
+		    auto push_f64 = [&](double v) {
+			    uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		    };
+		    push_f64(x); push_f64(y); push_f64(z);
+		    return StringVector::AddStringOrBlob(
+		        result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	    });
+}
+
+// ST_Geom3DFromWKB(wkb BLOB) → GEOM_3D
+// (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
+static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t wkb) {
+		using namespace duckdb_3d;
+		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+		auto payload = SerializeGeomPayload(model);
+		return StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
+static const char *GeomTypeName(duckdb_3d::GeomType type) {
+	using namespace duckdb_3d;
+	switch (type) {
+	case GeomType::Point: return "ST_Point";
+	case GeomType::LineString: return "ST_LineString";
+	case GeomType::Polygon: return "ST_Polygon";
+	case GeomType::MultiPoint: return "ST_MultiPoint";
+	case GeomType::MultiLineString: return "ST_MultiLineString";
+	case GeomType::MultiPolygon: return "ST_MultiPolygon";
+	case GeomType::GeometryCollection: return "ST_GeometryCollection";
+	case GeomType::PolyhedralSurface: return "ST_PolyhedralSurface";
+	default: return "ST_Geometry";
+	}
+}
+
+// ST_GeometryType(geom GEOM_3D) → VARCHAR
+static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return StringVector::AddString(result, GeomTypeName(model.type));
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -672,6 +734,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Test helper: generate tetrahedron WKB
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
+	    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBPointZFun));
+
+	// GEOM_3D construction and accessors
+	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
+	loader.RegisterFunction(ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
