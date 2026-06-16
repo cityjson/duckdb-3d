@@ -608,6 +608,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Measurement functions
 	loader.RegisterFunction(ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
+	loader.RegisterFunction(ScalarFunction("st_3darea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
 	loader.RegisterFunction(ScalarFunction("st_area", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
 

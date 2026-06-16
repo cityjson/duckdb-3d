@@ -30,6 +30,12 @@ SELECT ROUND(ST_Area(solid), 5) FROM solids;
 ----
 0.5
 
+# Test: ST_3DArea is the 3D surface area (alias-aligned with ST_3DSurfaceArea)
+query I
+SELECT ST_3DArea(solid) = ST_3DSurfaceArea(solid) FROM solids;
+----
+true
+
 # Test: NULL propagation
 query III
 SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL);
