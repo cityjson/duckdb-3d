@@ -60,6 +60,19 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		model.vertices.push_back(v);
 		break;
 	}
+	case 1002: { // LineString Z
+		model.type = GeomType::LineString;
+		uint32_t point_count = cur.U32();
+		model.vertices.reserve(point_count);
+		for (uint32_t i = 0; i < point_count; i++) {
+			Vertex3D v;
+			v.x = cur.F64();
+			v.y = cur.F64();
+			v.z = cur.F64();
+			model.vertices.push_back(v);
+		}
+		break;
+	}
 	default:
 		throw std::runtime_error("ParseGeomWKB: unsupported geometry class");
 	}

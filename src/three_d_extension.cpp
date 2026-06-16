@@ -680,6 +680,27 @@ static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &r
 	    });
 }
 
+// Test helper: build a LineString Z WKB from (0,0,0) to (3,4,12).
+static void ST_AsWKBLineZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	buf.push_back(1); // little-endian
+	uint32_t type = 1002; // LineString Z
+	buf.push_back(type & 0xFF); buf.push_back((type >> 8) & 0xFF);
+	buf.push_back((type >> 16) & 0xFF); buf.push_back((type >> 24) & 0xFF);
+	uint32_t point_count = 2;
+	buf.push_back(point_count & 0xFF); buf.push_back((point_count >> 8) & 0xFF);
+	buf.push_back((point_count >> 16) & 0xFF); buf.push_back((point_count >> 24) & 0xFF);
+	auto push_f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	push_f64(0.0); push_f64(0.0); push_f64(0.0);
+	push_f64(3.0); push_f64(4.0); push_f64(12.0);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
 // ST_Geom3DFromWKB(wkb BLOB) → GEOM_3D
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -749,6 +770,30 @@ static void ST_ZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		[](string_t geom) { return PointOrdinate(geom, Ordinate::Z); });
 }
 
+static double Geom3DLength(string_t geom) {
+	using namespace duckdb_3d;
+	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+	if (model.type != GeomType::LineString || model.vertices.size() < 2) {
+		return 0.0;
+	}
+
+	double length = 0.0;
+	for (size_t i = 1; i < model.vertices.size(); i++) {
+		const auto &a = model.vertices[i - 1];
+		const auto &b = model.vertices[i];
+		double dx = b.x - a.x;
+		double dy = b.y - a.y;
+		double dz = b.z - a.z;
+		length += std::sqrt(dx * dx + dy * dy + dz * dz);
+	}
+	return length;
+}
+
+static void ST_3DLengthFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
+		[](string_t geom) { return Geom3DLength(geom); });
+}
+
 // ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
@@ -769,6 +814,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBPointZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkblinez", {}, LogicalType::BLOB, ST_AsWKBLineZFun));
 
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
@@ -776,6 +822,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
 	loader.RegisterFunction(ScalarFunction("st_y", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
 	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
+	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");

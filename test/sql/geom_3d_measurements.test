@@ -1,0 +1,29 @@
+# name: test/sql/geom_3d_measurements.test
+# description: GEOM_3D measurements (ST_3DLength)
+# group: [sql]
+
+require three_d
+
+# A LineString Z is recognised by ST_GeometryType
+query I
+SELECT ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+ST_LineString
+
+# ST_3DLength of the 2-point line (0,0,0)->(3,4,12) is sqrt(9+16+144) = 13
+query I
+SELECT ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+13.0
+
+# ST_3DLength of a point is 0
+query I
+SELECT ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
+----
+0.0
+
+# NULL propagation
+query I
+SELECT ST_3DLength(NULL::GEOM_3D);
+----
+NULL
