@@ -438,6 +438,16 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 // ──────────────────────────────────────────────────────────────
+// Accessors: ST_NDims
+// ──────────────────────────────────────────────────────────────
+static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t solid) {
+		// v1 stores transformed XYZ coordinates only: coordinate dimension is always 3.
+		return static_cast<int32_t>(3);
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -511,6 +521,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Measurement functions
 	loader.RegisterFunction(ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
+
+	// Accessor functions
+	loader.RegisterFunction(ScalarFunction("st_ndims", {LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

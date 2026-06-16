@@ -1,0 +1,24 @@
+# name: test/sql/st_3d_accessors.test
+# description: test ST_3D accessor functions (NDims, HasZ, ZMin, ZMax)
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# ST_NDims: a 3D solid has coordinate dimension 3
+query I
+SELECT ST_NDims(solid) FROM solids;
+----
+3
+
+# ST_NDims: NULL propagates
+query I
+SELECT ST_NDims(NULL);
+----
+NULL
+
+statement ok
+DROP TABLE solids;
