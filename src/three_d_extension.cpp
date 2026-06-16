@@ -1046,7 +1046,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ndims_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::INTEGER, ST_NDimsFun));
 	loader.RegisterFunction(ndims_set);
 
-	loader.RegisterFunction(ScalarFunction("st_hasz", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
+	ScalarFunctionSet hasz_set("st_hasz");
+	hasz_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
+	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
+	hasz_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
+	loader.RegisterFunction(hasz_set);
 
 	// ST_ZMin / ST_ZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
 	// and plain BLOB values. Multiple overloads are needed because DuckDB treats

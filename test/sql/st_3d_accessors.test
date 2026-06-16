@@ -28,7 +28,7 @@ true
 
 # ST_HasZ: NULL propagates
 query I
-SELECT ST_HasZ(NULL);
+SELECT ST_HasZ(NULL::SOLID_3D);
 ----
 NULL
 

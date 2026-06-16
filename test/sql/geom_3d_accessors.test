@@ -66,5 +66,17 @@ SELECT ST_NDims(NULL::GEOM_3D);
 ----
 NULL
 
+# ST_HasZ: a GEOM_3D value carries a Z ordinate
+query I
+SELECT ST_HasZ(p) FROM pts;
+----
+true
+
+# ST_HasZ: NULL propagates
+query I
+SELECT ST_HasZ(NULL::GEOM_3D);
+----
+NULL
+
 statement ok
 DROP TABLE pts;
