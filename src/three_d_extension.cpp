@@ -663,6 +663,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	solid_3d_type.SetAlias("SOLID_3D");
 	loader.RegisterType("SOLID_3D", solid_3d_type);
 
+	// Register GEOM_3D type: a general 3D geometry (point/line/polygon/multi/
+	// polyhedral-surface), also an alias over BLOB with its own payload (§16.2).
+	auto geom_3d_type = LogicalType(LogicalTypeId::BLOB);
+	geom_3d_type.SetAlias("GEOM_3D");
+	loader.RegisterType("GEOM_3D", geom_3d_type);
+
 	// Test helper: generate tetrahedron WKB
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));

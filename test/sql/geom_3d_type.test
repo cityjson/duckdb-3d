@@ -1,0 +1,11 @@
+# name: test/sql/geom_3d_type.test
+# description: GEOM_3D general geometry type registration and construction
+# group: [sql]
+
+require three_d
+
+# The GEOM_3D type is registered and usable in casts
+query I
+SELECT NULL::GEOM_3D IS NULL;
+----
+true
