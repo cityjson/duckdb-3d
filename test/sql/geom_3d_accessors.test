@@ -20,5 +20,20 @@ SELECT ST_X(NULL::GEOM_3D), ST_Y(NULL::GEOM_3D), ST_Z(NULL::GEOM_3D);
 ----
 NULL	NULL	NULL
 
+# ST_CoordDim reports XYZ coordinate dimension for GEOM_3D values
+query II
+SELECT
+    ST_CoordDim(p),
+    ST_CoordDim(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()))
+FROM pts;
+----
+3	3
+
+# ST_CoordDim: NULL propagates
+query I
+SELECT ST_CoordDim(NULL::GEOM_3D);
+----
+NULL
+
 statement ok
 DROP TABLE pts;

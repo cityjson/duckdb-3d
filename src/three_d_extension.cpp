@@ -461,10 +461,20 @@ static void ST_3DPerimeterFun(DataChunk &args, ExpressionState &state, Vector &r
 // ──────────────────────────────────────────────────────────────
 // Accessors: ST_NDims
 // ──────────────────────────────────────────────────────────────
+static int32_t CoordinateDimension3D() {
+	// v1 stores transformed XYZ coordinates only.
+	return 3;
+}
+
 static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t solid) {
-		// v1 stores transformed XYZ coordinates only: coordinate dimension is always 3.
-		return static_cast<int32_t>(3);
+		return CoordinateDimension3D();
+	});
+}
+
+static void ST_CoordDimFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
+		return CoordinateDimension3D();
 	});
 }
 
@@ -864,6 +874,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
 	loader.RegisterFunction(ScalarFunction("st_y", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
 	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
+	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
