@@ -1142,6 +1142,42 @@ static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &res
 	    });
 }
 
+// ST_3DMaxDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
+static double Geom3DMaxDistanceSQL(string_t g1, string_t g2) {
+	using namespace duckdb_3d;
+	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
+	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
+	return Geom3DMaxDistance(m1, m2);
+}
+
+static void ST_3DMaxDistanceFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, string_t, double>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [](string_t g1, string_t g2) { return Geom3DMaxDistanceSQL(g1, g2); });
+}
+
+// ST_3DDFullyWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
+static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(
+	    args.data[0], args.data[1], args.data[2], result, args.size(),
+	    [](string_t g1, string_t g2, double dist) {
+		    if (dist < 0.0) {
+			    return false;
+		    }
+		    return Geom3DMaxDistanceSQL(g1, g2) <= dist;
+	    });
+}
+
+// ST_3DIntersects(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN
+// Two geometries intersect when their minimum 3D distance is zero (touching
+// counts as intersecting), tested within a small tolerance.
+static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	constexpr double kIntersectEps = 1e-9;
+	BinaryExecutor::Execute<string_t, string_t, bool>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2) <= kIntersectEps; });
+}
+
 // ST_Dimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
@@ -1233,6 +1269,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
 	loader.RegisterFunction(ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
 	                                       LogicalType::BOOLEAN, ST_3DDWithinFun));
+	loader.RegisterFunction(ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type},
+	                                       LogicalType::DOUBLE, ST_3DMaxDistanceFun));
+	loader.RegisterFunction(ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
+	                                       LogicalType::BOOLEAN, ST_3DDFullyWithinFun));
+	loader.RegisterFunction(ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type},
+	                                       LogicalType::BOOLEAN, ST_3DIntersectsFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");

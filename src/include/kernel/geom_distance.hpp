@@ -32,4 +32,7 @@ double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex
 //! Minimum 3D distance between two general geometries. 0 if they intersect.
 double Geom3DDistance(const GeomModel &g1, const GeomModel &g2);
 
+//! Maximum 3D distance between two general geometries (attained at vertices).
+double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2);
+
 } // namespace duckdb_3d

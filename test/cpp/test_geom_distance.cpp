@@ -149,3 +149,19 @@ TEST_CASE("Geom3DDistance: two coplanar polygons with a gap", "[geom_distance]")
 TEST_CASE("Geom3DDistance: point inside a polygon footprint is zero", "[geom_distance]") {
 	REQUIRE(Geom3DDistance(Point(2, 2, 0), Square(0, 0, 0, 4)) == Approx(0.0).margin(kEps));
 }
+
+TEST_CASE("Geom3DMaxDistance: point to point equals the min distance", "[geom_distance]") {
+	REQUIRE(Geom3DMaxDistance(Point(0, 0, 0), Point(3, 4, 0)) == Approx(5.0).epsilon(kEps));
+}
+
+TEST_CASE("Geom3DMaxDistance: point to the farthest polygon vertex", "[geom_distance]") {
+	// Square corners (0,0,0)..(4,4,0); farthest from origin is (4,4,0) → sqrt(32).
+	REQUIRE(Geom3DMaxDistance(Point(0, 0, 0), Square(0, 0, 0, 4)) ==
+	        Approx(std::sqrt(32.0)).epsilon(kEps));
+}
+
+TEST_CASE("Geom3DMaxDistance: two squares, farthest corner pair", "[geom_distance]") {
+	// A: x[0,4], B: x[10,14]; farthest corner pair spans dx=14, dy=4 → sqrt(212).
+	REQUIRE(Geom3DMaxDistance(Square(0, 0, 0, 4), Square(10, 0, 0, 4)) ==
+	        Approx(std::sqrt(212.0)).epsilon(kEps));
+}

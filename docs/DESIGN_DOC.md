@@ -761,9 +761,9 @@ The proximity primitives for building-to-building queries.
 | --- | --- | --- | --- | --- |
 | `ST_3DDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented. Minimum 3D cartesian distance. 0 if they intersect. |
 | `ST_3DDWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | must | kernel | ✅ implemented. True if `ST_3DDistance ≤ dist`; negative `dist` → false. |
-| `ST_3DMaxDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | should | kernel | Maximum 3D distance between geometries. |
-| `ST_3DDFullyWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | should | kernel | True if `ST_3DMaxDistance ≤ dist`. |
-| `ST_3DIntersects` | `(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN` | should | kernel | 3D intersection test for points/lines/surfaces/solids. |
+| `ST_3DMaxDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented. Maximum 3D distance between geometries (vertex/vertex sweep). |
+| `ST_3DDFullyWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | should | kernel | ✅ implemented. True if `ST_3DMaxDistance ≤ dist`; negative `dist` → false. |
+| `ST_3DIntersects` | `(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN` | should | kernel | ✅ implemented. True when minimum 3D distance is 0 within tolerance (touching counts). |
 | `ST_3DClosestPoint` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | 3D point on `g1` closest to `g2`. |
 | `ST_3DShortestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | 3D shortest line between geometries. |
 | `ST_3DLongestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | want | kernel | 3D longest line. |

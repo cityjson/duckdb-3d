@@ -279,6 +279,18 @@ double ElementDistance(const Element &e1, const Element &e2) {
 
 } // namespace
 
+double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2) {
+	// The maximum distance between two bounded geometries is attained at a pair
+	// of vertices, so a vertex/vertex sweep is exact.
+	double best = 0.0;
+	for (const auto &a : g1.vertices) {
+		for (const auto &b : g2.vertices) {
+			best = std::max(best, DistPointPoint(a, b));
+		}
+	}
+	return best;
+}
+
 double Geom3DDistance(const GeomModel &g1, const GeomModel &g2) {
 	auto e1 = Decompose(g1);
 	auto e2 = Decompose(g2);
