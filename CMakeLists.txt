@@ -25,7 +25,8 @@ set(EXTENSION_SOURCES
     src/kernel/geom_payload.cpp
     src/kernel/geom_distance.cpp
     src/kernel/geom_construct.cpp
-    src/kernel/geom_analysis.cpp)
+    src/kernel/geom_analysis.cpp
+    src/kernel/geom_serialize.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

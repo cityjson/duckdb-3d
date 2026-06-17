@@ -18,6 +18,7 @@
 #include "kernel/geom_distance.hpp"
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_analysis.hpp"
+#include "kernel/geom_serialize.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -1268,6 +1269,37 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 	    });
 }
 
+// ST_AsText(geom GEOM_3D) → VARCHAR
+static void ST_AsTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		auto text = Geom3DAsText(model);
+		return StringVector::AddString(result, text);
+	});
+}
+
+// ST_AsGeoJSON(geom GEOM_3D) → VARCHAR
+static void ST_AsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		auto text = Geom3DAsGeoJSON(model);
+		return StringVector::AddString(result, text);
+	});
+}
+
+// ST_AsBinary(geom GEOM_3D) → BLOB
+static void ST_AsBinaryFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		auto binary = Geom3DAsBinary(model);
+		return StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(binary.data()), binary.size()));
+	});
+}
+
 // ST_IsPlanar(geom GEOM_3D) → BOOLEAN
 static void ST_IsPlanarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t geom) {
@@ -1421,6 +1453,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                       geom_3d_type, ST_3DClosestPointFun));
 	loader.RegisterFunction(ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type},
 	                                       geom_3d_type, ST_3DShortestLineFun));
+	loader.RegisterFunction(ScalarFunction("st_astext", {geom_3d_type}, LogicalType::VARCHAR, ST_AsTextFun));
+	loader.RegisterFunction(ScalarFunction("st_asgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_AsGeoJSONFun));
+	loader.RegisterFunction(ScalarFunction("st_asbinary", {geom_3d_type}, LogicalType::BLOB, ST_AsBinaryFun));
 	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
 	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));

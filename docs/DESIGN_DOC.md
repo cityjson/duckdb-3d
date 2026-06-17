@@ -667,13 +667,12 @@ implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
 The distance-family `should` functions `ST_3DMaxDistance`, `ST_3DDFullyWithin`, and
 `ST_3DIntersects` are implemented on `GEOM_3D`, and `ST_3DExtrude` (footprint → LoD1
 solid) is implemented (kernel: `src/kernel/geom_construct.cpp`).
-The `should` analysis/transform functions `ST_IsPlanar`, `ST_3DCentroid`,
-`ST_Force3D`, and `ST_ConvexHull` are implemented on `GEOM_3D`
-(kernel: `src/kernel/geom_analysis.cpp`).
-The distance witness functions `ST_3DClosestPoint` and `ST_3DShortestLine`
-are implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
-Remaining work: serialization functions (`ST_AsText`, `ST_AsGeoJSON`,
-`ST_AsBinary`).
+All `should` functions in §16.3–§16.7 are now implemented on `GEOM_3D`:
+analysis/transform (`ST_IsPlanar`, `ST_3DCentroid`, `ST_Force3D`,
+`ST_ConvexHull`) in `src/kernel/geom_analysis.cpp`; distance witness
+(`ST_3DClosestPoint`, `ST_3DShortestLine`) in `src/kernel/geom_distance.cpp`;
+serialization (`ST_AsText`, `ST_AsGeoJSON`, `ST_AsBinary`) in
+`src/kernel/geom_serialize.cpp`.
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
 parity is a non-goal** — this is a curated subset chosen for 3D city-model workflows.
@@ -799,9 +798,9 @@ The proximity primitives for building-to-building queries.
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_AsText` | `(geom GEOM_3D) → VARCHAR` | should | kernel | ISO WKT (with Z). Inspection / debugging. |
-| `ST_AsGeoJSON` | `(geom GEOM_3D) → VARCHAR` | should | kernel | GeoJSON; note GeoJSON has limited solid support. |
-| `ST_AsBinary` | `(geom GEOM_3D) → BLOB` | should | kernel | OGC/ISO WKB (complements solid-only `ST_3DAsWKB`, §5.1). |
+| `ST_AsText` | `(geom GEOM_3D) → VARCHAR` | should | kernel | ✅ implemented. ISO WKT (with Z). Inspection / debugging. |
+| `ST_AsGeoJSON` | `(geom GEOM_3D) → VARCHAR` | should | kernel | ✅ implemented. GeoJSON; PolyhedralSurface emitted as MultiPolygon. |
+| `ST_AsBinary` | `(geom GEOM_3D) → BLOB` | should | kernel | ✅ implemented. OGC/ISO WKB (complements solid-only `ST_3DAsWKB`, §5.1). |
 | `ST_AsX3D` | `(geom GEOM_3D) → VARCHAR` | want | kernel | X3D XML for 3D viewers. |
 | `ST_AsGML` | `(geom GEOM_3D) → VARCHAR` | want | kernel | GML output. |
 | `ST_AsKML` | `(geom GEOM_3D) → VARCHAR` | want | kernel | KML output. |
@@ -855,7 +854,9 @@ Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel hel
 primitive-distance kernel `Geom3DDistance`, its point/segment/triangle primitives,
 and the closest-point-pair kernel `Geom3DClosestPoints`
 (`src/kernel/geom_distance.cpp`); the analysis helpers `Geom3DIsPlanar` and
-`Geom3DCentroid` (`src/kernel/geom_analysis.cpp`).
+`Geom3DCentroid` (`src/kernel/geom_analysis.cpp`); the serialization helpers
+`Geom3DAsText`, `Geom3DAsGeoJSON`, and `Geom3DAsBinary`
+(`src/kernel/geom_serialize.cpp`).
 
 | `duckdb-3d` function | Signature | Priority | PostGIS analogue |
 | --- | --- | --- | --- |
@@ -892,6 +893,9 @@ and the closest-point-pair kernel `Geom3DClosestPoints`
 | `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_ConvexHull` |
 | `ST_3DClosestPoint` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | `ST_3DClosestPoint` |
 | `ST_3DShortestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | `ST_3DShortestLine` |
+| `ST_AsText` | `(geom GEOM_3D) → VARCHAR` | should | `ST_AsText` |
+| `ST_AsGeoJSON` | `(geom GEOM_3D) → VARCHAR` | should | `ST_AsGeoJSON` |
+| `ST_AsBinary` | `(geom GEOM_3D) → BLOB` | should | `ST_AsBinary` |
 
 > Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
 > (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered
