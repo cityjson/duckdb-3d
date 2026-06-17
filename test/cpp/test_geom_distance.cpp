@@ -150,6 +150,25 @@ TEST_CASE("Geom3DDistance: point inside a polygon footprint is zero", "[geom_dis
 	REQUIRE(Geom3DDistance(Point(2, 2, 0), Square(0, 0, 0, 4)) == Approx(0.0).margin(kEps));
 }
 
+TEST_CASE("Geom3DClosestPoints: two points", "[geom_distance]") {
+	auto pair = Geom3DClosestPoints(Point(0, 0, 0), Point(3, 4, 0));
+	REQUIRE(pair.p.x == Approx(0.0));
+	REQUIRE(pair.q.x == Approx(3.0));
+}
+
+TEST_CASE("Geom3DClosestPoints: point above a polygon", "[geom_distance]") {
+	auto pair = Geom3DClosestPoints(Point(2, 2, 5), Square(0, 0, 0, 4));
+	REQUIRE(pair.p.z == Approx(5.0));
+	REQUIRE(pair.q.x == Approx(2.0));
+	REQUIRE(pair.q.y == Approx(2.0));
+	REQUIRE(pair.q.z == Approx(0.0));
+}
+
+TEST_CASE("Geom3DClosestPoints: intersecting geometries coincide", "[geom_distance]") {
+	auto pair = Geom3DClosestPoints(Point(2, 1.5, 0), Square(0, 0, 0, 4));
+	REQUIRE(DistPointPoint(pair.p, pair.q) == Approx(0.0).margin(kEps));
+}
+
 TEST_CASE("Geom3DMaxDistance: point to point equals the min distance", "[geom_distance]") {
 	REQUIRE(Geom3DMaxDistance(Point(0, 0, 0), Point(3, 4, 0)) == Approx(5.0).epsilon(kEps));
 }

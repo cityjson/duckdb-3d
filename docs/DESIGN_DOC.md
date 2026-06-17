@@ -670,9 +670,10 @@ solid) is implemented (kernel: `src/kernel/geom_construct.cpp`).
 The `should` analysis/transform functions `ST_IsPlanar`, `ST_3DCentroid`,
 `ST_Force3D`, and `ST_ConvexHull` are implemented on `GEOM_3D`
 (kernel: `src/kernel/geom_analysis.cpp`).
-Remaining work: distance witness functions (`ST_3DClosestPoint`,
-`ST_3DShortestLine`) and serialization functions (`ST_AsText`,
-`ST_AsGeoJSON`, `ST_AsBinary`).
+The distance witness functions `ST_3DClosestPoint` and `ST_3DShortestLine`
+are implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
+Remaining work: serialization functions (`ST_AsText`, `ST_AsGeoJSON`,
+`ST_AsBinary`).
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
 parity is a non-goal** — this is a curated subset chosen for 3D city-model workflows.
@@ -769,8 +770,8 @@ The proximity primitives for building-to-building queries.
 | `ST_3DMaxDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented. Maximum 3D distance between geometries (vertex/vertex sweep). |
 | `ST_3DDFullyWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | should | kernel | ✅ implemented. True if `ST_3DMaxDistance ≤ dist`; negative `dist` → false. |
 | `ST_3DIntersects` | `(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN` | should | kernel | ✅ implemented. True when minimum 3D distance is 0 within tolerance (touching counts). |
-| `ST_3DClosestPoint` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | 3D point on `g1` closest to `g2`. |
-| `ST_3DShortestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | 3D shortest line between geometries. |
+| `ST_3DClosestPoint` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. 3D point on `g1` closest to `g2`; reuses `Geom3DClosestPoints`. |
+| `ST_3DShortestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. 3D shortest LineString between geometries; reuses `Geom3DClosestPoints`. |
 | `ST_3DLongestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | want | kernel | 3D longest line. |
 
 ### 16.6 Transformations And Construction
@@ -851,7 +852,8 @@ baseline this roadmap extends. Listed here with their nearest PostGIS analogue.
 
 Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel helpers:
 `ComputeFootprintArea`, `ComputePerimeter` (`src/kernel/measurements.cpp`); the
-primitive-distance kernel `Geom3DDistance` and its point/segment/triangle primitives
+primitive-distance kernel `Geom3DDistance`, its point/segment/triangle primitives,
+and the closest-point-pair kernel `Geom3DClosestPoints`
 (`src/kernel/geom_distance.cpp`); the analysis helpers `Geom3DIsPlanar` and
 `Geom3DCentroid` (`src/kernel/geom_analysis.cpp`).
 
@@ -888,6 +890,8 @@ primitive-distance kernel `Geom3DDistance` and its point/segment/triangle primit
 | `ST_3DCentroid` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_3DCentroid` |
 | `ST_Force3D` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_Force3D` |
 | `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_ConvexHull` |
+| `ST_3DClosestPoint` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | `ST_3DClosestPoint` |
+| `ST_3DShortestLine` | `(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D` | should | `ST_3DShortestLine` |
 
 > Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
 > (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered

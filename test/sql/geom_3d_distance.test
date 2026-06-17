@@ -115,3 +115,37 @@ SELECT ST_3DIntersects(NULL::GEOM_3D,
     ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
 ----
 NULL
+
+# ST_3DClosestPoint: point above polygon returns the point itself
+query III
+SELECT
+    ST_X(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Y(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Z(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+2.0	1.5	10.0
+
+# ST_3DShortestLine: point above polygon is a LineString of length 5
+query II
+SELECT
+    ST_GeometryType(ST_3DShortestLine(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DLength(ST_3DShortestLine(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+ST_LineString	5.0
+
+# ST_3DClosestPoint: NULL propagation
+query I
+SELECT ST_3DClosestPoint(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL

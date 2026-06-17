@@ -35,4 +35,13 @@ double Geom3DDistance(const GeomModel &g1, const GeomModel &g2);
 //! Maximum 3D distance between two general geometries (attained at vertices).
 double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2);
 
+//! Pair of closest points (p on g1, q on g2) realising the minimum distance.
+//! When the geometries intersect/touch, p and q coincide.
+struct ClosestPointPair {
+	Vertex3D p;
+	Vertex3D q;
+};
+
+ClosestPointPair Geom3DClosestPoints(const GeomModel &g1, const GeomModel &g2);
+
 } // namespace duckdb_3d
