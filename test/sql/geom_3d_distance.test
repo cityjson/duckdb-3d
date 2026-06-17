@@ -1,0 +1,62 @@
+# name: test/sql/geom_3d_distance.test
+# description: GEOM_3D 3D distance and dwithin queries
+# group: [sql]
+
+require three_d
+
+# Point-to-point 3D distance
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(3.0, 4.0, 0.0)));
+----
+5.0
+
+# Point hovering 5 above a polygon interior (polygon is a 4x3 rect at z=5)
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+5.0
+
+# A point lying on the polygon has zero distance
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 5.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+0.0
+
+# ST_3DDistance NULL propagation
+query I
+SELECT ST_3DDistance(NULL::GEOM_3D, ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL
+
+# ST_3DDWithin: true at exactly the threshold, false just below it
+query II
+SELECT
+    ST_3DDWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 5.0),
+    ST_3DDWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 4.9);
+----
+true	false
+
+# ST_3DDWithin: negative distance is always false
+query I
+SELECT ST_3DDWithin(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), -1.0);
+----
+false
+
+# ST_3DDWithin: NULL propagation
+query I
+SELECT ST_3DDWithin(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), 1.0);
+----
+NULL

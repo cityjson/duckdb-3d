@@ -15,6 +15,7 @@
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_wkb_parser.hpp"
 #include "kernel/geom_payload.hpp"
+#include "kernel/geom_distance.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -1115,6 +1116,32 @@ static void ST_3DLengthFun(DataChunk &args, ExpressionState &state, Vector &resu
 		[](string_t geom) { return Geom3DLength(geom); });
 }
 
+// ST_3DDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
+static double Geom3DDistanceSQL(string_t g1, string_t g2) {
+	using namespace duckdb_3d;
+	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
+	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
+	return Geom3DDistance(m1, m2);
+}
+
+static void ST_3DDistanceFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, string_t, double>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2); });
+}
+
+// ST_3DDWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
+static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(
+	    args.data[0], args.data[1], args.data[2], result, args.size(),
+	    [](string_t g1, string_t g2, double dist) {
+		    if (dist < 0.0) {
+			    return false;
+		    }
+		    return Geom3DDistanceSQL(g1, g2) <= dist;
+	    });
+}
+
 // ST_Dimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
@@ -1202,6 +1229,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_dimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
 	loader.RegisterFunction(ScalarFunction("st_numgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
+	loader.RegisterFunction(ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
+	                                       LogicalType::BOOLEAN, ST_3DDWithinFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");

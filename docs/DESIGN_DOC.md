@@ -662,9 +662,9 @@ available on both `SOLID_3D` and `GEOM_3D` are `ST_NDims`, `ST_HasZ`, `ST_ZMin`,
 [§16.9](#169-implemented-functions-postgis-analogues).
 The `GEOM_3D` WKB parser now covers `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`,
 and `PolyhedralSurface Z` in addition to `Point Z`, `LineString Z`, and
-`MultiLineString Z`.
-Remaining work: implement the `ST_3DDistance`/
-`ST_3DDWithin` distance kernel; and add the remaining `should` transforms and
+`MultiLineString Z`. The `must` distance pair `ST_3DDistance` / `ST_3DDWithin` is
+implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
+Remaining work: add the remaining `should` transforms and
 construction functions (`ST_Force3D`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`,
 `ST_ConvexHull`, `ST_IsPlanar`) and serialization functions (`ST_AsText`,
 `ST_AsGeoJSON`, `ST_AsBinary`).
@@ -759,8 +759,8 @@ The proximity primitives for building-to-building queries.
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_3DDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | must | kernel | Minimum 3D cartesian distance. 0 if they intersect. |
-| `ST_3DDWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | must | kernel | True if `ST_3DDistance ≤ dist`. Bbox pre-filter for performance. |
+| `ST_3DDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented. Minimum 3D cartesian distance. 0 if they intersect. |
+| `ST_3DDWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | must | kernel | ✅ implemented. True if `ST_3DDistance ≤ dist`; negative `dist` → false. |
 | `ST_3DMaxDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | should | kernel | Maximum 3D distance between geometries. |
 | `ST_3DDFullyWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | should | kernel | True if `ST_3DMaxDistance ≤ dist`. |
 | `ST_3DIntersects` | `(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN` | should | kernel | 3D intersection test for points/lines/surfaces/solids. |
@@ -845,7 +845,9 @@ baseline this roadmap extends. Listed here with their nearest PostGIS analogue.
 #### 16.9.2 Roadmap functions delivered (branch `develop`)
 
 Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel helpers:
-`ComputeFootprintArea`, `ComputePerimeter` (`src/kernel/measurements.cpp`).
+`ComputeFootprintArea`, `ComputePerimeter` (`src/kernel/measurements.cpp`); the
+primitive-distance kernel `Geom3DDistance` and its point/segment/triangle primitives
+(`src/kernel/geom_distance.cpp`).
 
 | `duckdb-3d` function | Signature | Priority | PostGIS analogue |
 | --- | --- | --- | --- |
@@ -869,6 +871,8 @@ Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel hel
 | `ST_Dimension` | `(geom GEOM_3D) → INTEGER` | should | `ST_Dimension` |
 | `ST_NumGeometries` | `(geom GEOM_3D) → INTEGER` | should | `ST_NumGeometries` |
 | `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | `ST_3DLength` |
+| `ST_3DDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | must | `ST_3DDistance` |
+| `ST_3DDWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | must | `ST_3DDWithin` |
 
 > Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
 > (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered
@@ -925,8 +929,13 @@ coordinates are transformed `DOUBLE` XYZ (§6.3).
 
 **`ST_3DDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE`**
 - Minimum 3D cartesian distance between the two geometries; 0 if they touch/intersect.
-- Implementation: primitive-pair distances (point/segment/triangle) over the triangulated
-  caches; bbox reject for early-out.
+- Implementation (delivered): each geometry is decomposed into primitive elements by
+  topological dimension — points (0D), segments (1D), or triangles (2D) — and the result is
+  the minimum over all element pairs. Surfaces are fan-triangulated over each face's
+  **exterior** ring; interior rings (holes) are ignored for distance, a documented v1
+  simplification. Segment/triangle and triangle/triangle pairs return 0 on intersection via
+  a Möller–Trumbore segment/triangle test. No bbox pre-filter yet (correctness first;
+  performance tuning deferred).
 - Tests: unit — two points; point-to-triangle; two disjoint boxes (gap distance);
   overlapping boxes → 0.
 
