@@ -24,6 +24,40 @@ double SignedAreaXY(const std::vector<Vertex3D> &ring) {
 
 } // namespace
 
+SolidModel BuildSolidFromSurface(const GeomModel &surface) {
+	if (surface.type != GeomType::PolyhedralSurface) {
+		throw std::runtime_error("ST_MakeSolid: input geometry must be a PolyhedralSurface");
+	}
+	if (surface.part_offsets.size() < 2) {
+		throw std::runtime_error("ST_MakeSolid: surface has no faces");
+	}
+
+	// Re-pack the GEOM_3D face/ring topology into a single ParsedPolyhedralSurface.
+	ParsedPolyhedralSurface parsed;
+	for (size_t k = 0; k + 1 < surface.part_offsets.size(); k++) {
+		uint32_t ring_begin = surface.part_offsets[k];
+		uint32_t ring_end = surface.part_offsets[k + 1];
+		parsed.polygon_ring_counts.push_back(ring_end - ring_begin);
+		parsed.polygon_count++;
+		for (uint32_t r = ring_begin; r < ring_end; r++) {
+			uint32_t v_begin = surface.ring_offsets[r];
+			uint32_t v_end = surface.ring_offsets[r + 1];
+			parsed.ring_vertex_counts.push_back(v_end - v_begin);
+			parsed.vertices.insert(parsed.vertices.end(), surface.vertices.begin() + v_begin,
+			                       surface.vertices.begin() + v_end);
+		}
+	}
+
+	std::vector<ParsedPolyhedralSurface> surfaces{parsed};
+	SolidModel model = BuildSolidModel(surfaces);
+	if (!(model.validation.is_closed && model.validation.is_manifold &&
+	      model.validation.is_oriented)) {
+		throw std::runtime_error(
+		    "ST_MakeSolid: surface is not a closed, manifold, oriented solid (no repair performed)");
+	}
+	return model;
+}
+
 SolidModel BuildExtrudedSolid(const GeomModel &polygon, double height) {
 	if (polygon.type != GeomType::Polygon) {
 		throw std::runtime_error("ST_3DExtrude: input geometry must be a Polygon");

@@ -1157,6 +1157,19 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 	    });
 }
 
+// ST_MakeSolid(surface GEOM_3D) → SOLID_3D (BLOB)
+static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()),
+		                                      geom.GetSize());
+		auto solid = BuildSolidFromSurface(surface);
+		auto payload = SerializePayload(solid);
+		return StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
 // ST_3DMaxDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
 static double Geom3DMaxDistanceSQL(string_t g1, string_t g2) {
 	using namespace duckdb_3d;
@@ -1294,6 +1307,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// functions, which bind on BLOB, compose directly on the result.
 	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_3DExtrudeFun));
+	loader.RegisterFunction(ScalarFunction("st_makesolid", {geom_3d_type}, LogicalType::BLOB, ST_MakeSolidFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");

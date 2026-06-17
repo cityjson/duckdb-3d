@@ -37,3 +37,27 @@ query I
 SELECT ST_3DExtrude(NULL::GEOM_3D, 2.0);
 ----
 NULL
+
+# ST_MakeSolid: a closed tetrahedron surface becomes a valid solid with volume 1/6.
+query II
+SELECT
+    ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()))), 5),
+    ST_3DIsClosed(ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())));
+----
+0.16667	true
+
+# ST_MakeSolid: an open surface (tetra missing a face) raises.
+statement error
+SELECT ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBOpenTetra()));
+----
+
+# ST_MakeSolid: a non-surface (point) raises.
+statement error
+SELECT ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+
+# ST_MakeSolid: NULL propagation.
+query I
+SELECT ST_MakeSolid(NULL::GEOM_3D);
+----
+NULL

@@ -14,4 +14,9 @@ namespace duckdb_3d {
 //! distinct exterior-ring vertices, or if `height <= 0`.
 SolidModel BuildExtrudedSolid(const GeomModel &polygon, double height);
 
+//! Convert a closed/manifold/oriented PolyhedralSurface GEOM_3D into a SOLID_3D model.
+//! Performs no repair: throws std::runtime_error if the geometry is not a
+//! PolyhedralSurface, or if the resulting solid is not closed, manifold and oriented.
+SolidModel BuildSolidFromSurface(const GeomModel &surface);
+
 } // namespace duckdb_3d
