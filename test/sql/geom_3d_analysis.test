@@ -1,0 +1,29 @@
+# name: test/sql/geom_3d_analysis.test
+# description: GEOM_3D analysis functions (ST_IsPlanar)
+# group: [sql]
+
+require three_d
+
+# ST_IsPlanar: a flat polygon is planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+true
+
+# ST_IsPlanar: a warped quad is not planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBWarpedPolygonZ()));
+----
+false
+
+# ST_IsPlanar: a point is trivially planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+true
+
+# ST_IsPlanar: NULL propagation
+query I
+SELECT ST_IsPlanar(NULL::GEOM_3D);
+----
+NULL

@@ -17,6 +17,7 @@
 #include "kernel/geom_payload.hpp"
 #include "kernel/geom_distance.hpp"
 #include "kernel/geom_construct.hpp"
+#include "kernel/geom_analysis.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -962,6 +963,29 @@ static void ST_AsWKBPolygonZFun(DataChunk &args, ExpressionState &state, Vector 
 	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
+// Test helper: build a non-planar Polygon Z (one corner lifted in Z).
+static void ST_AsWKBWarpedPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+
+	buf.push_back(1); // little-endian
+	u32(1003);        // Polygon Z
+	u32(1);           // 1 ring
+	u32(5);           // 4 points + closing vertex
+	pt(0, 0, 0); pt(2, 0, 0); pt(2, 2, 5); pt(0, 2, 0); pt(0, 0, 0);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
 // Test helper: build a MultiPoint Z with 3 points (max z = 9).
 static void ST_AsWKBMultiPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
@@ -1206,6 +1230,15 @@ static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &
 	    [&](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2) <= kIntersectEps; });
 }
 
+// ST_IsPlanar(geom GEOM_3D) → BOOLEAN
+static void ST_IsPlanarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return Geom3DIsPlanar(model);
+	});
+}
+
 // ST_Dimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
@@ -1280,6 +1313,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_aswkblinez", {}, LogicalType::BLOB, ST_AsWKBLineZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbmultilinez", {}, LogicalType::BLOB, ST_AsWKBMultiLineZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolygonz", {}, LogicalType::BLOB, ST_AsWKBPolygonZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbwarpedpolygonz", {}, LogicalType::BLOB, ST_AsWKBWarpedPolygonZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbmultipointz", {}, LogicalType::BLOB, ST_AsWKBMultiPointZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbmultipolygonz", {}, LogicalType::BLOB, ST_AsWKBMultiPolygonZFun));
 
@@ -1303,6 +1337,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                       LogicalType::BOOLEAN, ST_3DDFullyWithinFun));
 	loader.RegisterFunction(ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type},
 	                                       LogicalType::BOOLEAN, ST_3DIntersectsFun));
+	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
 	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
 	// functions, which bind on BLOB, compose directly on the result.
 	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},
