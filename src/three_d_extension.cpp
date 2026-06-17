@@ -937,6 +937,79 @@ static void ST_AsWKBMultiLineZFun(DataChunk &args, ExpressionState &state, Vecto
 	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
+// Test helper: build a Polygon Z rectangle (4x3) at z=5, single ring.
+static void ST_AsWKBPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+
+	buf.push_back(1); // little-endian
+	u32(1003);        // Polygon Z
+	u32(1);           // 1 ring
+	u32(5);           // 4 points + closing vertex
+	pt(0, 0, 5); pt(4, 0, 5); pt(4, 3, 5); pt(0, 3, 5); pt(0, 0, 5);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
+// Test helper: build a MultiPoint Z with 3 points (max z = 9).
+static void ST_AsWKBMultiPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	auto child_pt = [&](double x, double y, double z) {
+		buf.push_back(1); u32(1001); f64(x); f64(y); f64(z);
+	};
+
+	buf.push_back(1); // little-endian
+	u32(1004);        // MultiPoint Z
+	u32(3);           // 3 points
+	child_pt(1, 1, 1); child_pt(2, 2, 2); child_pt(3, 3, 9);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
+// Test helper: build a MultiPolygon Z with two single-ring square faces.
+static void ST_AsWKBMultiPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> buf;
+	auto u32 = [&](uint32_t v) {
+		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+	};
+	auto f64 = [&](double v) {
+		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+	};
+	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+	auto square = [&](double dx, double dy, double z) {
+		buf.push_back(1); u32(1003); u32(1); u32(5); // child PolygonZ, 1 ring, 5 pts
+		pt(dx, dy, z); pt(dx + 1, dy, z); pt(dx + 1, dy + 1, z); pt(dx, dy + 1, z); pt(dx, dy, z);
+	};
+
+	buf.push_back(1); // little-endian
+	u32(1006);        // MultiPolygon Z
+	u32(2);           // 2 polygons
+	square(0, 0, 0); square(5, 5, 0);
+
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
+	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+}
+
 // ST_Geom3DFromWKB(wkb BLOB) → GEOM_3D
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -1115,6 +1188,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBPointZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkblinez", {}, LogicalType::BLOB, ST_AsWKBLineZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbmultilinez", {}, LogicalType::BLOB, ST_AsWKBMultiLineZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbpolygonz", {}, LogicalType::BLOB, ST_AsWKBPolygonZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbmultipointz", {}, LogicalType::BLOB, ST_AsWKBMultiPointZFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbmultipolygonz", {}, LogicalType::BLOB, ST_AsWKBMultiPolygonZFun));
 
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));

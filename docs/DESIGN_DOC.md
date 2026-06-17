@@ -660,8 +660,10 @@ available on both `SOLID_3D` and `GEOM_3D` are `ST_NDims`, `ST_HasZ`, `ST_ZMin`,
 `ST_X`, `ST_Y`, `ST_Z`, `ST_CoordDim`, `ST_GeometryType`, `ST_Dimension`,
 `ST_NumGeometries`, and the measurement `ST_3DLength` are also implemented. See
 [§16.9](#169-implemented-functions-postgis-analogues).
-Remaining work: extend the `GEOM_3D` WKB parser to `Polygon Z`, `MultiPoint Z`,
-`MultiPolygon Z`, and `PolyhedralSurface Z`; implement the `ST_3DDistance`/
+The `GEOM_3D` WKB parser now covers `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`,
+and `PolyhedralSurface Z` in addition to `Point Z`, `LineString Z`, and
+`MultiLineString Z`.
+Remaining work: implement the `ST_3DDistance`/
 `ST_3DDWithin` distance kernel; and add the remaining `should` transforms and
 construction functions (`ST_Force3D`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`,
 `ST_ConvexHull`, `ST_IsPlanar`) and serialization functions (`ST_AsText`,
@@ -702,9 +704,11 @@ PostGIS accessors, transforms, and distance functions operate on *arbitrary* geo
 **Status**: implemented.
 
 - A named type **`GEOM_3D`** is registered as a BLOB-backed alias (same registration strategy
-  as `SOLID_3D`, §4.1). It currently carries `Point Z`, `LineString Z`, and
-  `MultiLineString Z`; `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`, and
-  `PolyhedralSurface Z` are planned next.
+  as `SOLID_3D`, §4.1). It carries `Point Z`, `LineString Z`, `MultiLineString Z`,
+  `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`, and `PolyhedralSurface Z`. In the
+  `GeomModel`, `ring_offsets` partitions vertices into rings (Polygon / MultiPolygon /
+  PolyhedralSurface) and `part_offsets` partitions members — into `ring_offsets` for
+  polygonal multis/surfaces, or directly into vertices for `MultiPoint`/`MultiLineString`.
 - `SOLID_3D` stays the dedicated solid type. A solid is convertible to `GEOM_3D` (as its
   boundary surface); a closed/oriented/manifold `GEOM_3D` surface is convertible to
   `SOLID_3D` via `ST_MakeSolid` (not yet implemented).

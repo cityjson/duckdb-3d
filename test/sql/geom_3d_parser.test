@@ -1,0 +1,49 @@
+# name: test/sql/geom_3d_parser.test
+# description: GEOM_3D WKB parser coverage for Polygon/MultiPoint/MultiPolygon/PolyhedralSurface Z
+# group: [sql]
+
+require three_d
+
+# Polygon Z parses as a single 2D surface geometry
+query III
+SELECT
+    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+ST_Polygon	2	1
+
+# Polygon Z bounding box Z is read from the parsed ring
+query II
+SELECT
+    ST_ZMin(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_ZMax(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+5.0	5.0
+
+# MultiPoint Z reports each point as a member geometry
+query III
+SELECT
+    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
+    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
+    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ()));
+----
+ST_MultiPoint	0	3
+
+# MultiPolygon Z reports each polygon as a member geometry
+query III
+SELECT
+    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
+    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
+    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ()));
+----
+ST_MultiPolygon	2	2
+
+# PolyhedralSurface Z (closed tetrahedron) parses as a single surface
+query III
+SELECT
+    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
+    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
+    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()));
+----
+ST_PolyhedralSurface	2	1
