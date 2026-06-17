@@ -23,7 +23,8 @@ set(EXTENSION_SOURCES
     src/kernel/geom_model.cpp
     src/kernel/geom_wkb_parser.cpp
     src/kernel/geom_payload.cpp
-    src/kernel/geom_distance.cpp)
+    src/kernel/geom_distance.cpp
+    src/kernel/geom_construct.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

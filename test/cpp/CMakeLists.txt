@@ -24,6 +24,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/geom_wkb_parser.cpp
     ${REPO_ROOT}/src/kernel/geom_payload.cpp
     ${REPO_ROOT}/src/kernel/geom_distance.cpp
+    ${REPO_ROOT}/src/kernel/geom_construct.cpp
 )
 
 # Test sources
@@ -37,6 +38,7 @@ set(TEST_SOURCES
     test_metadata.cpp
     test_geom_wkb_parser.cpp
     test_geom_distance.cpp
+    test_geom_construct.cpp
 )
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})

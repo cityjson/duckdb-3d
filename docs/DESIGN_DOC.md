@@ -664,9 +664,13 @@ The `GEOM_3D` WKB parser now covers `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z
 and `PolyhedralSurface Z` in addition to `Point Z`, `LineString Z`, and
 `MultiLineString Z`. The `must` distance pair `ST_3DDistance` / `ST_3DDWithin` is
 implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
+The distance-family `should` functions `ST_3DMaxDistance`, `ST_3DDFullyWithin`, and
+`ST_3DIntersects` are implemented on `GEOM_3D`, and `ST_3DExtrude` (footprint → LoD1
+solid) is implemented (kernel: `src/kernel/geom_construct.cpp`).
 Remaining work: add the remaining `should` transforms and
-construction functions (`ST_Force3D`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`,
-`ST_ConvexHull`, `ST_IsPlanar`) and serialization functions (`ST_AsText`,
+construction functions (`ST_Force3D`, `ST_MakeSolid`, `ST_3DCentroid`,
+`ST_ConvexHull`, `ST_IsPlanar`), the distance witness functions (`ST_3DClosestPoint`,
+`ST_3DShortestLine`), and serialization functions (`ST_AsText`,
 `ST_AsGeoJSON`, `ST_AsBinary`).
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
@@ -778,7 +782,7 @@ The proximity primitives for building-to-building queries.
 | `ST_RotateY` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Y axis. |
 | `ST_RotateZ` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Z axis. |
 | `ST_Force3D` / `ST_Force3DZ` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | Coerce 2D input to XYZ (Z=0 default). |
-| `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | **Vertical** prism extrusion (footprint → LoD1 box). No CGAL needed for the vertical case. |
+| `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | ✅ implemented. **Vertical** prism extrusion (footprint → LoD1 box); footprint normalised to CCW, result validated closed+oriented. Returns plain BLOB. |
 | `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | Cast a closed/oriented/manifold surface to a solid. Raises if not solid-eligible. |
 | `ST_3DCentroid` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | 3D centroid point; useful as a representative/index point. |
 | `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | **2D** convex hull (XY). 3D hull is `want`/CGAL (§16.8). |
@@ -873,6 +877,10 @@ primitive-distance kernel `Geom3DDistance` and its point/segment/triangle primit
 | `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | `ST_3DLength` |
 | `ST_3DDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | must | `ST_3DDistance` |
 | `ST_3DDWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | must | `ST_3DDWithin` |
+| `ST_3DMaxDistance` | `(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE` | should | `ST_3DMaxDistance` |
+| `ST_3DDFullyWithin` | `(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN` | should | `ST_3DDFullyWithin` |
+| `ST_3DIntersects` | `(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN` | should | `ST_3DIntersects` |
+| `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D (BLOB)` | should | `ST_3DExtrude` |
 
 > Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
 > (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered

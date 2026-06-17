@@ -16,6 +16,7 @@
 #include "kernel/geom_wkb_parser.hpp"
 #include "kernel/geom_payload.hpp"
 #include "kernel/geom_distance.hpp"
+#include "kernel/geom_construct.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -1142,6 +1143,20 @@ static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &res
 	    });
 }
 
+// ST_3DExtrude(polygon GEOM_3D, height DOUBLE) → SOLID_3D
+static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, double height) {
+		    using namespace duckdb_3d;
+		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()),
+		                                       geom.GetSize());
+		    auto solid = BuildExtrudedSolid(poly, height);
+		    auto payload = SerializePayload(solid);
+		    return StringVector::AddStringOrBlob(
+		        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	    });
+}
+
 // ST_3DMaxDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
 static double Geom3DMaxDistanceSQL(string_t g1, string_t g2) {
 	using namespace duckdb_3d;
@@ -1275,6 +1290,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                       LogicalType::BOOLEAN, ST_3DDFullyWithinFun));
 	loader.RegisterFunction(ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type},
 	                                       LogicalType::BOOLEAN, ST_3DIntersectsFun));
+	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
+	// functions, which bind on BLOB, compose directly on the result.
+	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},
+	                                       LogicalType::BLOB, ST_3DExtrudeFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
