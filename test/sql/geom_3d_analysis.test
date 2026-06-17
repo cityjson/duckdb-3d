@@ -27,3 +27,27 @@ query I
 SELECT ST_IsPlanar(NULL::GEOM_3D);
 ----
 NULL
+
+# ST_3DCentroid: point returns itself
+query III
+SELECT
+    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+----
+1.0	2.0	3.0
+
+# ST_3DCentroid: square footprint centroid
+query III
+SELECT
+    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+2.0	1.5	5.0
+
+# ST_3DCentroid: NULL propagation
+query I
+SELECT ST_3DCentroid(NULL::GEOM_3D);
+----
+NULL

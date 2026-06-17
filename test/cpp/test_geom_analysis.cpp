@@ -51,3 +51,74 @@ TEST_CASE("Geom3DIsPlanar: a point is trivially planar", "[geom_analysis]") {
 	m.ComputeBBox();
 	REQUIRE(Geom3DIsPlanar(m));
 }
+
+TEST_CASE("Geom3DCentroid: point is itself", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Point;
+	m.vertices = {{1, 2, 3}};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	REQUIRE(c.x == Approx(1.0));
+	REQUIRE(c.y == Approx(2.0));
+	REQUIRE(c.z == Approx(3.0));
+}
+
+TEST_CASE("Geom3DCentroid: single segment midpoint", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::LineString;
+	m.vertices = {{0, 0, 0}, {4, 0, 0}};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	REQUIRE(c.x == Approx(2.0));
+	REQUIRE(c.y == Approx(0.0));
+	REQUIRE(c.z == Approx(0.0));
+}
+
+TEST_CASE("Geom3DCentroid: two-segment polyline is length-weighted", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::LineString;
+	m.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 3, 0}};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	// Segment lengths 4 and 3; midpoints (2,0,0) and (4,1.5,0).
+	REQUIRE(c.x == Approx((4 * 2.0 + 3 * 4.0) / 7.0));
+	REQUIRE(c.y == Approx((4 * 0.0 + 3 * 1.5) / 7.0));
+	REQUIRE(c.z == Approx(0.0));
+}
+
+TEST_CASE("Geom3DCentroid: axis-aligned square", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0}};
+	m.ring_offsets = {0, 4};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	REQUIRE(c.x == Approx(2.0));
+	REQUIRE(c.y == Approx(2.0));
+	REQUIRE(c.z == Approx(0.0));
+}
+
+TEST_CASE("Geom3DCentroid: tilted square preserves plane", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	// Square in the plane z = x.
+	m.vertices = {{0, 0, 0}, {2, 0, 2}, {2, 2, 2}, {0, 2, 0}};
+	m.ring_offsets = {0, 4};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	REQUIRE(c.x == Approx(1.0));
+	REQUIRE(c.y == Approx(1.0));
+	REQUIRE(c.z == Approx(1.0));
+}
+
+TEST_CASE("Geom3DCentroid: right triangle", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {6, 0, 0}, {0, 6, 0}};
+	m.ring_offsets = {0, 3};
+	m.ComputeBBox();
+	auto c = Geom3DCentroid(m);
+	REQUIRE(c.x == Approx(2.0));
+	REQUIRE(c.y == Approx(2.0));
+	REQUIRE(c.z == Approx(0.0));
+}

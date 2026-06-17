@@ -1239,6 +1239,22 @@ static void ST_IsPlanarFun(DataChunk &args, ExpressionState &state, Vector &resu
 	});
 }
 
+// ST_3DCentroid(geom GEOM_3D) → GEOM_3D (Point)
+static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		auto centroid = Geom3DCentroid(model);
+		GeomModel point;
+		point.type = GeomType::Point;
+		point.vertices.push_back(centroid);
+		point.ComputeBBox();
+		auto payload = SerializeGeomPayload(point);
+		return StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
 // ST_Dimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
@@ -1338,6 +1354,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type},
 	                                       LogicalType::BOOLEAN, ST_3DIntersectsFun));
 	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
+	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
 	// functions, which bind on BLOB, compose directly on the result.
 	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},
