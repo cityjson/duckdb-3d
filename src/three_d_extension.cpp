@@ -1268,6 +1268,19 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 	});
 }
 
+// ST_ConvexHull(geom GEOM_3D) → GEOM_3D
+// 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
+static void ST_ConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		using namespace duckdb_3d;
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		auto hull = Geom3DConvexHull(model);
+		auto payload = SerializeGeomPayload(hull);
+		return StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
 // ST_Dimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
@@ -1369,6 +1382,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
 	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));
+	loader.RegisterFunction(ScalarFunction("st_convexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
 	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
 	// functions, which bind on BLOB, compose directly on the result.
 	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},

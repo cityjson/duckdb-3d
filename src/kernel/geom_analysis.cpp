@@ -288,4 +288,84 @@ Vertex3D Geom3DCentroid(const GeomModel &geom) {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────
+// Convex hull (2D XY)
+// ──────────────────────────────────────────────────────────────
+
+namespace {
+
+//! 2D cross product (b-a) × (c-a); positive ⇒ c is left of ab.
+double Cross2D(const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
+	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+} // namespace
+
+GeomModel Geom3DConvexHull(const GeomModel &geom) {
+	if (geom.vertices.empty()) {
+		GeomModel empty;
+		empty.type = GeomType::Point;
+		empty.ComputeBBox();
+		return empty;
+	}
+
+	// Collect unique XY points, remembering min Z.
+	double min_z = geom.bbox.min_z;
+	std::vector<Vertex3D> pts = geom.vertices;
+	std::sort(pts.begin(), pts.end(), [](const Vertex3D &a, const Vertex3D &b) {
+		if (a.x != b.x) {
+			return a.x < b.x;
+		}
+		return a.y < b.y;
+	});
+	pts.erase(std::unique(pts.begin(), pts.end(), [](const Vertex3D &a, const Vertex3D &b) {
+		return a.x == b.x && a.y == b.y;
+	}), pts.end());
+
+	if (pts.size() == 1) {
+		GeomModel out;
+		out.type = GeomType::Point;
+		out.vertices.push_back({pts[0].x, pts[0].y, min_z});
+		out.ComputeBBox();
+		return out;
+	}
+
+	// Monotone chain.
+	std::vector<Vertex3D> lower, upper;
+	for (const auto &p : pts) {
+		while (lower.size() >= 2 && Cross2D(lower[lower.size() - 2], lower.back(), p) <= 0) {
+			lower.pop_back();
+		}
+		lower.push_back(p);
+	}
+	for (size_t i = pts.size(); i-- > 0;) {
+		const auto &p = pts[i];
+		while (upper.size() >= 2 && Cross2D(upper[upper.size() - 2], upper.back(), p) <= 0) {
+			upper.pop_back();
+		}
+		upper.push_back(p);
+	}
+	// Concatenate lower and upper, removing duplicate endpoints.
+	lower.pop_back();
+	upper.pop_back();
+	std::vector<Vertex3D> hull = lower;
+	hull.insert(hull.end(), upper.begin(), upper.end());
+
+	for (auto &v : hull) {
+		v.z = min_z;
+	}
+
+	GeomModel out;
+	if (hull.size() == 2) {
+		out.type = GeomType::LineString;
+		out.vertices = hull;
+	} else {
+		out.type = GeomType::Polygon;
+		out.vertices = hull;
+		out.ring_offsets = {0, static_cast<uint32_t>(hull.size())};
+	}
+	out.ComputeBBox();
+	return out;
+}
+
 } // namespace duckdb_3d

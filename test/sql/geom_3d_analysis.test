@@ -66,3 +66,19 @@ query I
 SELECT ST_Force3D(NULL::GEOM_3D);
 ----
 NULL
+
+# ST_ConvexHull: polygon footprint -> same polygon hull at min Z
+query IIII
+SELECT
+    ST_GeometryType(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_NumGeometries(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_ZMin(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_ZMax(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+ST_Polygon	1	5.0	5.0
+
+# ST_ConvexHull: NULL propagation
+query I
+SELECT ST_ConvexHull(NULL::GEOM_3D);
+----
+NULL

@@ -122,3 +122,41 @@ TEST_CASE("Geom3DCentroid: right triangle", "[geom_analysis]") {
 	REQUIRE(c.y == Approx(2.0));
 	REQUIRE(c.z == Approx(0.0));
 }
+
+TEST_CASE("Geom3DConvexHull: square with interior point", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::MultiPoint;
+	m.vertices = {{0, 0, 5}, {2, 0, 5}, {2, 2, 5}, {0, 2, 5}, {1, 1, 5}};
+	m.part_offsets = {0, 1, 2, 3, 4, 5};
+	m.ComputeBBox();
+	auto hull = Geom3DConvexHull(m);
+	REQUIRE(hull.type == GeomType::Polygon);
+	REQUIRE(hull.vertices.size() == 4);
+	REQUIRE(hull.ring_offsets == std::vector<uint32_t>{0, 4});
+}
+
+TEST_CASE("Geom3DConvexHull: collinear points become a linestring", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::MultiPoint;
+	m.vertices = {{0, 0, 1}, {1, 0, 2}, {2, 0, 3}, {3, 0, 4}};
+	m.part_offsets = {0, 1, 2, 3, 4};
+	m.ComputeBBox();
+	auto hull = Geom3DConvexHull(m);
+	REQUIRE(hull.type == GeomType::LineString);
+	REQUIRE(hull.vertices.size() == 2);
+	REQUIRE(hull.vertices.front().x == Approx(0.0));
+	REQUIRE(hull.vertices.back().x == Approx(3.0));
+	REQUIRE(hull.vertices.front().z == Approx(1.0)); // min Z
+}
+
+TEST_CASE("Geom3DConvexHull: single point", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Point;
+	m.vertices = {{5, 5, 7}};
+	m.ComputeBBox();
+	auto hull = Geom3DConvexHull(m);
+	REQUIRE(hull.type == GeomType::Point);
+	REQUIRE(hull.vertices.size() == 1);
+	REQUIRE(hull.vertices[0].x == Approx(5.0));
+	REQUIRE(hull.vertices[0].z == Approx(7.0));
+}

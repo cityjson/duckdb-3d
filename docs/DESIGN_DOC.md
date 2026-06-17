@@ -667,11 +667,11 @@ implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
 The distance-family `should` functions `ST_3DMaxDistance`, `ST_3DDFullyWithin`, and
 `ST_3DIntersects` are implemented on `GEOM_3D`, and `ST_3DExtrude` (footprint → LoD1
 solid) is implemented (kernel: `src/kernel/geom_construct.cpp`).
-`ST_IsPlanar`, `ST_3DCentroid`, and `ST_Force3D` are implemented on `GEOM_3D`
+The `should` analysis/transform functions `ST_IsPlanar`, `ST_3DCentroid`,
+`ST_Force3D`, and `ST_ConvexHull` are implemented on `GEOM_3D`
 (kernel: `src/kernel/geom_analysis.cpp`).
-Remaining work: add the remaining `should` transform
-`ST_ConvexHull`, the distance witness functions (`ST_3DClosestPoint`,
-`ST_3DShortestLine`), and serialization functions (`ST_AsText`,
+Remaining work: distance witness functions (`ST_3DClosestPoint`,
+`ST_3DShortestLine`) and serialization functions (`ST_AsText`,
 `ST_AsGeoJSON`, `ST_AsBinary`).
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
@@ -786,7 +786,7 @@ The proximity primitives for building-to-building queries.
 | `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | ✅ implemented. **Vertical** prism extrusion (footprint → LoD1 box); footprint normalised to CCW, result validated closed+oriented. Returns plain BLOB. |
 | `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | ✅ implemented. Cast a closed/oriented/manifold `PolyhedralSurface` to a solid; raises if not solid-eligible (no repair). Returns plain BLOB. |
 | `ST_3DCentroid` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. Dimension-aware centroid: vertex average (points), length-weighted (lines), area-weighted (surfaces). |
-| `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | **2D** convex hull (XY). 3D hull is `want`/CGAL (§16.8). |
+| `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. **2D** monotone-chain convex hull (XY); returns Polygon Z / LineString Z / Point Z at min Z. |
 | `ST_IsPlanar` | `(geom GEOM_3D) → BOOLEAN` | should | kernel | ✅ implemented. Whether all faces/rings are planar within tolerance (§9.5). City-model QA. |
 | `ST_Affine` | `(geom GEOM_3D, a..l DOUBLE ×12) → GEOM_3D` | want | kernel | General 3D affine; rarely called directly. |
 | `ST_FlipCoordinates` | `(geom GEOM_3D) → GEOM_3D` | want | kernel | Swap X/Y. |
@@ -887,6 +887,7 @@ primitive-distance kernel `Geom3DDistance` and its point/segment/triangle primit
 | `ST_IsPlanar` | `(geom GEOM_3D) → BOOLEAN` | should | `ST_IsPlanar` |
 | `ST_3DCentroid` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_3DCentroid` |
 | `ST_Force3D` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_Force3D` |
+| `ST_ConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | `ST_ConvexHull` |
 
 > Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
 > (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered
