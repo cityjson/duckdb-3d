@@ -51,3 +51,18 @@ query I
 SELECT ST_3DCentroid(NULL::GEOM_3D);
 ----
 NULL
+
+# ST_Force3D: identity on an already-3D point
+query III
+SELECT
+    ST_X(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Y(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Z(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+----
+1.0	2.0	3.0
+
+# ST_Force3D: NULL propagation
+query I
+SELECT ST_Force3D(NULL::GEOM_3D);
+----
+NULL
