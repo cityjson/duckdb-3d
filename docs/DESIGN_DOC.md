@@ -652,12 +652,20 @@ or listed in [§16.9](#169-implemented-functions-postgis-analogues). Everything 
 remains the architectural source of truth; where this roadmap and those sections ever
 disagree, §1–§15 win and this section is corrected.
 
-**Implementation status (branch `develop`):** the `must`/`should` functions that work
-directly on `SOLID_3D` (no `GEOM_3D` dependency) have been delivered — accessors
-`ST_NDims`, `ST_HasZ`, `ST_ZMin`, `ST_ZMax`; measurements `ST_Area`, `ST_3DPerimeter`,
-`ST_3DArea`; transforms `ST_Translate`, `ST_Scale`, `ST_RotateX/Y/Z`. See [§16.9](#169-implemented-functions-postgis-analogues).
-Remaining work: the `GEOM_3D` type milestone (§16.2) and everything gated on it, plus the
-`ST_3DDistance`/`ST_3DDWithin` distance kernel.
+**Implementation status (branch `develop`):** the `GEOM_3D` type and a first set of
+class-generic accessors/transforms have landed. `SOLID_3D`-only functions already
+working are `ST_Area`, `ST_3DPerimeter`, `ST_3DArea`; class-generic functions now
+available on both `SOLID_3D` and `GEOM_3D` are `ST_NDims`, `ST_HasZ`, `ST_ZMin`,
+`ST_ZMax`, `ST_Translate`, `ST_Scale`, `ST_RotateX/Y/Z`. `GEOM_3D`-only accessors
+`ST_X`, `ST_Y`, `ST_Z`, `ST_CoordDim`, `ST_GeometryType`, `ST_Dimension`,
+`ST_NumGeometries`, and the measurement `ST_3DLength` are also implemented. See
+[§16.9](#169-implemented-functions-postgis-analogues).
+Remaining work: extend the `GEOM_3D` WKB parser to `Polygon Z`, `MultiPoint Z`,
+`MultiPolygon Z`, and `PolyhedralSurface Z`; implement the `ST_3DDistance`/
+`ST_3DDWithin` distance kernel; and add the remaining `should` transforms and
+construction functions (`ST_Force3D`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`,
+`ST_ConvexHull`, `ST_IsPlanar`) and serialization functions (`ST_AsText`,
+`ST_AsGeoJSON`, `ST_AsBinary`).
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
 parity is a non-goal** — this is a curated subset chosen for 3D city-model workflows.
@@ -691,19 +699,19 @@ The v1 public type, `SOLID_3D`, models **closed polyhedral solids** only (§4.1)
 PostGIS accessors, transforms, and distance functions operate on *arbitrary* geometries
 (points, lines, polygons, surfaces). Supporting them requires a second public type.
 
-**Proposal** (to be ratified before any accessor/transform/distance work begins):
+**Status**: implemented.
 
-- Add a named type **`GEOM_3D`**, a BLOB-backed alias (same registration strategy as
-  `SOLID_3D`, §4.1), able to carry `Point Z`, `LineString Z`, `Polygon Z`,
-  `MultiPoint/MultiLineString/MultiPolygon Z`, and `PolyhedralSurface Z`.
+- A named type **`GEOM_3D`** is registered as a BLOB-backed alias (same registration strategy
+  as `SOLID_3D`, §4.1). It currently carries `Point Z`, `LineString Z`, and
+  `MultiLineString Z`; `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`, and
+  `PolyhedralSurface Z` are planned next.
 - `SOLID_3D` stays the dedicated solid type. A solid is convertible to `GEOM_3D` (as its
   boundary surface); a closed/oriented/manifold `GEOM_3D` surface is convertible to
-  `SOLID_3D` via `ST_MakeSolid`.
-- The v1 `D3DS` payload (§7) is solid-specific. Either **generalise it** to encode a
-  geometry-class tag with optional solid/shell layers, or add a **sibling payload** for
-  lower-dimensional geometries — a versioned change under the §7.5 compatibility rules.
-  This is the **first implementation milestone** of the roadmap: every `must`/`should`
-  accessor/transform/distance below depends on it.
+  `SOLID_3D` via `ST_MakeSolid` (not yet implemented).
+- The v1 `D3DS` payload (§7) remains solid-specific. A sibling **`D3DG` payload**
+  (`src/kernel/geom_payload.cpp`) carries lower-dimensional geometries — a versioned
+  change under the §7.5 compatibility rules. This milestone unblocks the class-generic
+  accessor and transform work below.
 
 Functions in this section declare their accepted type(s): `GEOM_3D` for class-generic
 operations, `SOLID_3D` for solid-only operations, or both. Null / error semantics are
@@ -715,17 +723,17 @@ Class-generic; operate on `GEOM_3D` (and `SOLID_3D` where a bounding box suffice
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_NDims` | `(geom GEOM_3D) → INTEGER` | must | kernel | ✅ implemented. Coordinate dimension (3 for XYZ). |
-| `ST_HasZ` | `(geom GEOM_3D) → BOOLEAN` | must | kernel | ✅ implemented. True if geometry carries Z (always true in v1; future-proofs XY inputs). |
-| `ST_Z` | `(point GEOM_3D) → DOUBLE` | must | kernel | Z of a Point; `NULL` if empty. Raises if not a Point. Needs `GEOM_3D`. |
-| `ST_ZMax` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented (on `SOLID_3D`). Max Z of bbox. Building roof elevation. |
-| `ST_ZMin` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented (on `SOLID_3D`). Min Z of bbox. `ZMax − ZMin` = building height. |
-| `ST_X` | `(point GEOM_3D) → DOUBLE` | should | kernel | X of a Point. Raises if not a Point. |
-| `ST_Y` | `(point GEOM_3D) → DOUBLE` | should | kernel | Y of a Point. Raises if not a Point. |
-| `ST_CoordDim` | `(geom GEOM_3D) → INTEGER` | should | kernel | Coordinate dimension (alias-like to `ST_NDims` in v1). |
-| `ST_GeometryType` | `(geom GEOM_3D) → VARCHAR` | should | kernel | e.g. `ST_PolyhedralSurface`, `ST_Polygon`. |
-| `ST_Dimension` | `(geom GEOM_3D) → INTEGER` | should | kernel | Topological dim: 0 point, 1 line, 2 surface, 3 solid. |
-| `ST_NumGeometries` | `(geom GEOM_3D) → INTEGER` | should | kernel | Member count of a collection/multi geometry. |
+| `ST_NDims` | `(geom GEOM_3D) → INTEGER` | must | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Coordinate dimension (3 for XYZ). |
+| `ST_HasZ` | `(geom GEOM_3D) → BOOLEAN` | must | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. True if geometry carries Z (always true in v1; future-proofs XY inputs). |
+| `ST_Z` | `(point GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `GEOM_3D`. Z of a Point; `NULL` if empty. Raises if not a Point. |
+| `ST_ZMax` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Max Z of bbox. Building roof elevation. |
+| `ST_ZMin` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Min Z of bbox. `ZMax − ZMin` = building height. |
+| `ST_X` | `(point GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `GEOM_3D`. X of a Point. Raises if not a Point. |
+| `ST_Y` | `(point GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `GEOM_3D`. Y of a Point. Raises if not a Point. |
+| `ST_CoordDim` | `(geom GEOM_3D) → INTEGER` | should | kernel | ✅ implemented on `GEOM_3D`. Coordinate dimension (alias-like to `ST_NDims` in v1). |
+| `ST_GeometryType` | `(geom GEOM_3D) → VARCHAR` | should | kernel | ✅ implemented on `GEOM_3D`. e.g. `ST_PolyhedralSurface`, `ST_Polygon`. |
+| `ST_Dimension` | `(geom GEOM_3D) → INTEGER` | should | kernel | ✅ implemented on `GEOM_3D`. Topological dim: 0 point, 1 line, 2 surface, 3 solid. |
+| `ST_NumGeometries` | `(geom GEOM_3D) → INTEGER` | should | kernel | ✅ implemented on `GEOM_3D`. Member count of a collection/multi geometry. |
 | `ST_HasM` | `(geom GEOM_3D) → BOOLEAN` | want | kernel | M dimension not used by city models. |
 | `ST_M` | `(point GEOM_3D) → DOUBLE` | want | kernel | M of a Point. |
 | `ST_Zmflag` | `(geom GEOM_3D) → SMALLINT` | want | kernel | ZM dimensionality code. |
@@ -734,10 +742,10 @@ Class-generic; operate on `GEOM_3D` (and `SOLID_3D` where a bounding box suffice
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented (on `SOLID_3D`). **2D footprint area** = area of XY projection. Key building metric. |
-| `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | kernel | 3D length of (multi)linestrings; 0 for areal/point. Needs `GEOM_3D`. |
-| `ST_3DPerimeter` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented (on `SOLID_3D`). Total length of boundary edges (used by exactly one face); 0 for closed solids. |
-| `ST_3DArea` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented (on `SOLID_3D`). 3D surface area for surfaces; alias-aligned with existing `ST_3DSurfaceArea` (§5.3). |
+| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `SOLID_3D`. **2D footprint area** = area of XY projection. Key building metric. |
+| `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `GEOM_3D`. 3D length of (multi)linestrings; 0 for areal/point. |
+| `ST_3DPerimeter` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. Total length of boundary edges (used by exactly one face); 0 for closed solids. |
+| `ST_3DArea` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. 3D surface area for surfaces; alias-aligned with existing `ST_3DSurfaceArea` (§5.3). |
 | `ST_3DVolume` | `(solid SOLID_3D) → DOUBLE` | — | kernel | **Implemented** (§5.3, §16.9). |
 | `ST_3DSurfaceArea` | `(solid SOLID_3D) → DOUBLE` | — | kernel | **Implemented** (§5.3, §16.9). |
 
@@ -760,11 +768,11 @@ The proximity primitives for building-to-building queries.
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_Translate` | `(geom GEOM_3D, dx DOUBLE, dy DOUBLE, dz DOUBLE) → GEOM_3D` | must | kernel | ✅ implemented (on `SOLID_3D`). Placement / georeferencing. Topology preserved. |
-| `ST_Scale` | `(geom GEOM_3D, sx DOUBLE, sy DOUBLE, sz DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented (on `SOLID_3D`). Scale about origin. |
-| `ST_RotateX` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented (on `SOLID_3D`). Rotate about X axis. |
-| `ST_RotateY` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented (on `SOLID_3D`). Rotate about Y axis. |
-| `ST_RotateZ` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented (on `SOLID_3D`). Rotate about Z axis. |
+| `ST_Translate` | `(geom GEOM_3D, dx DOUBLE, dy DOUBLE, dz DOUBLE) → GEOM_3D` | must | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Placement / georeferencing. Topology preserved. |
+| `ST_Scale` | `(geom GEOM_3D, sx DOUBLE, sy DOUBLE, sz DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Scale about origin. |
+| `ST_RotateX` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about X axis. |
+| `ST_RotateY` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Y axis. |
+| `ST_RotateZ` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Z axis. |
 | `ST_Force3D` / `ST_Force3DZ` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | Coerce 2D input to XYZ (Z=0 default). |
 | `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | **Vertical** prism extrusion (footprint → LoD1 box). No CGAL needed for the vertical case. |
 | `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | Cast a closed/oriented/manifold surface to a solid. Raises if not solid-eligible. |
@@ -832,26 +840,36 @@ baseline this roadmap extends. Listed here with their nearest PostGIS analogue.
 
 #### 16.9.2 Roadmap functions delivered (branch `develop`)
 
-Implemented on the `SOLID_3D` type (no `GEOM_3D` dependency). New kernel helpers:
+Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel helpers:
 `ComputeFootprintArea`, `ComputePerimeter` (`src/kernel/measurements.cpp`).
 
 | `duckdb-3d` function | Signature | Priority | PostGIS analogue |
 | --- | --- | --- | --- |
-| `ST_NDims` | `(solid SOLID_3D) → INTEGER` | must | `ST_NDims` |
-| `ST_HasZ` | `(solid SOLID_3D) → BOOLEAN` | must | `ST_HasZ` |
-| `ST_ZMin` | `(solid SOLID_3D) → DOUBLE` | must | `ST_ZMin` |
-| `ST_ZMax` | `(solid SOLID_3D) → DOUBLE` | must | `ST_ZMax` |
+| `ST_NDims` | `(solid SOLID_3D \| geom GEOM_3D) → INTEGER` | must | `ST_NDims` |
+| `ST_HasZ` | `(solid SOLID_3D \| geom GEOM_3D) → BOOLEAN` | must | `ST_HasZ` |
+| `ST_ZMin` | `(solid SOLID_3D \| geom GEOM_3D) → DOUBLE` | must | `ST_ZMin` |
+| `ST_ZMax` | `(solid SOLID_3D \| geom GEOM_3D) → DOUBLE` | must | `ST_ZMax` |
 | `ST_Area` | `(solid SOLID_3D) → DOUBLE` | must | `ST_Area` (footprint) |
 | `ST_3DPerimeter` | `(solid SOLID_3D) → DOUBLE` | should | `ST_3DPerimeter` |
 | `ST_3DArea` | `(solid SOLID_3D) → DOUBLE` | should | `ST_3DArea` / `CG_3DArea` |
-| `ST_Translate` | `(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D` | must | `ST_Translate` |
-| `ST_Scale` | `(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D` | should | `ST_Scale` |
-| `ST_RotateX` | `(solid SOLID_3D, radians DOUBLE) → SOLID_3D` | should | `ST_RotateX` |
-| `ST_RotateY` | `(solid SOLID_3D, radians DOUBLE) → SOLID_3D` | should | `ST_RotateY` |
-| `ST_RotateZ` | `(solid SOLID_3D, radians DOUBLE) → SOLID_3D` | should | `ST_RotateZ` |
+| `ST_Translate` | `(solid SOLID_3D \| geom GEOM_3D, dx, dy, dz DOUBLE) → same type` | must | `ST_Translate` |
+| `ST_Scale` | `(solid SOLID_3D \| geom GEOM_3D, sx, sy, sz DOUBLE) → same type` | should | `ST_Scale` |
+| `ST_RotateX` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateX` |
+| `ST_RotateY` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateY` |
+| `ST_RotateZ` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateZ` |
+| `ST_Z` | `(point GEOM_3D) → DOUBLE` | must | `ST_Z` |
+| `ST_X` | `(point GEOM_3D) → DOUBLE` | should | `ST_X` |
+| `ST_Y` | `(point GEOM_3D) → DOUBLE` | should | `ST_Y` |
+| `ST_CoordDim` | `(geom GEOM_3D) → INTEGER` | should | `ST_CoordDim` |
+| `ST_GeometryType` | `(geom GEOM_3D) → VARCHAR` | should | `ST_GeometryType` |
+| `ST_Dimension` | `(geom GEOM_3D) → INTEGER` | should | `ST_Dimension` |
+| `ST_NumGeometries` | `(geom GEOM_3D) → INTEGER` | should | `ST_NumGeometries` |
+| `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | `ST_3DLength` |
 
-> Note: these are currently registered on `SOLID_3D` (`BLOB`). When the `GEOM_3D` type
-> (§16.2) lands, the class-generic ones gain `GEOM_3D` overloads.
+> Note: `GEOM_3D` is implemented as a BLOB-backed alias with a sibling `D3DG` payload
+> (`src/kernel/geom_payload.cpp`). Class-generic accessors and transforms are registered
+> with `BLOB`, `SOLID_3D`, and `GEOM_3D` overloads because DuckDB treats named BLOB
+> aliases as distinct for function resolution.
 
 ### 16.10 Detailed I/O Specifications (`must` And `should`)
 
