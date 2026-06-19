@@ -32,6 +32,19 @@ double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex
 //! Minimum 3D distance between two general geometries. 0 if they intersect.
 double Geom3DDistance(const GeomModel &g1, const GeomModel &g2);
 
+//! Lower bound on the minimum distance between two geometries, computed from
+//! their axis-aligned bounding boxes alone (0 when the boxes overlap). Since
+//! every geometry lies inside its bbox, this never exceeds Geom3DDistance, so
+//! it is a sound early-rejection bound for `within`/distance-threshold queries.
+double Geom3DBBoxDistance(const GeomModel &g1, const GeomModel &g2);
+
+//! True when the minimum distance between `g1` and `g2` is <= `threshold`.
+//! Equivalent to `Geom3DDistance(g1, g2) <= threshold` but cheaper: it rejects
+//! early when the bbox lower bound already exceeds the threshold, and stops at
+//! the first element pair found within the threshold instead of computing the
+//! exact minimum.
+bool Geom3DWithin(const GeomModel &g1, const GeomModel &g2, double threshold);
+
 //! Maximum 3D distance between two general geometries (attained at vertices).
 double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2);
 

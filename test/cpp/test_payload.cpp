@@ -164,6 +164,74 @@ TEST_CASE("Payload rejects out-of-range vertex indices", "[payload]") {
 	                    Catch::Contains("vertex index"));
 }
 
+TEST_CASE("ReadSolidPayloadHeader matches full deserialisation", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	auto bytes = SerializePayload(model);
+	auto hdr = ReadSolidPayloadHeader(bytes.data(), bytes.size());
+
+	// Counts come from the fixed front header; no body parsing.
+	REQUIRE(hdr.vertex_count == 4);
+	REQUIRE(hdr.solid_count == 1);
+	REQUIRE(hdr.shell_count == 1);
+	REQUIRE(hdr.face_count == 4);
+	REQUIRE(hdr.ring_count == 4);
+	REQUIRE(hdr.triangle_count == 4);
+
+	// BBox matches.
+	REQUIRE(hdr.bbox.min_x == Approx(0.0));
+	REQUIRE(hdr.bbox.max_x == Approx(1.0));
+	REQUIRE(hdr.bbox.max_z == Approx(1.0));
+
+	// Validation cache comes from the trailing summary block.
+	REQUIRE(hdr.validation.is_closed == true);
+	REQUIRE(hdr.validation.is_manifold == true);
+	REQUIRE(hdr.validation.is_oriented == true);
+	REQUIRE(hdr.validation.is_valid == true);
+	REQUIRE(hdr.validation.open_edge_count == 0);
+}
+
+TEST_CASE("ReadSolidPayloadHeader preserves a non-default validation cache", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	model.validation.is_closed = false;
+	model.validation.is_valid = false;
+	model.validation.open_edge_count = 3;
+	auto bytes = SerializePayload(model);
+	auto hdr = ReadSolidPayloadHeader(bytes.data(), bytes.size());
+	REQUIRE(hdr.validation.is_closed == false);
+	REQUIRE(hdr.validation.is_valid == false);
+	REQUIRE(hdr.validation.open_edge_count == 3);
+}
+
+TEST_CASE("ReadSolidPayloadHeader rejects invalid magic", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	auto bytes = SerializePayload(model);
+	bytes[0] = 'X';
+	REQUIRE_THROWS_WITH(ReadSolidPayloadHeader(bytes.data(), bytes.size()), Catch::Contains("magic"));
+}
+
+TEST_CASE("Payload rejects vertex_count exceeding payload size", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	auto bytes = SerializePayload(model);
+	// Header layout: magic(4) + major(2) + minor(2) + flags(4) = 12, then
+	// vertex_count at offset 12. Patch it to a value whose vertex array
+	// (count * 24 bytes) cannot fit in the remaining payload. Kept small in
+	// absolute terms so the test never triggers a large allocation: the point
+	// is that the reader rejects it *before* resizing, not after a truncated read.
+	uint32_t bogus_count = 100000;
+	std::memcpy(bytes.data() + 12, &bogus_count, 4);
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()), Catch::Contains("exceed"));
+}
+
+TEST_CASE("Payload rejects oversized offset-array counts", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	auto bytes = SerializePayload(model);
+	// solid_count immediately follows vertex_count (offset 16). A huge solid
+	// count would size solid_shell_offsets (count+1 uint32) beyond the payload.
+	uint32_t bogus_count = 100000;
+	std::memcpy(bytes.data() + 16, &bogus_count, 4);
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()), Catch::Contains("exceed"));
+}
+
 TEST_CASE("SolidModel ComputeBBox", "[solid_model]") {
 	SolidModel model;
 	model.vertices = {{-1.0, -2.0, -3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}};

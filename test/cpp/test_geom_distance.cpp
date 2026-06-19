@@ -184,3 +184,36 @@ TEST_CASE("Geom3DMaxDistance: two squares, farthest corner pair", "[geom_distanc
 	REQUIRE(Geom3DMaxDistance(Square(0, 0, 0, 4), Square(10, 0, 0, 4)) ==
 	        Approx(std::sqrt(212.0)).epsilon(kEps));
 }
+
+TEST_CASE("Geom3DBBoxDistance: overlapping bboxes give zero", "[geom_distance]") {
+	// A point inside a square's bbox footprint: the boxes overlap in XY and Z.
+	REQUIRE(Geom3DBBoxDistance(Point(1, 1, 0), Square(0, 0, 0, 4)) == Approx(0.0));
+}
+
+TEST_CASE("Geom3DBBoxDistance: axis-separated boxes give the gap", "[geom_distance]") {
+	// Square spans x,y in [0,4]; point at x=10 → gap of 6 along x only.
+	REQUIRE(Geom3DBBoxDistance(Point(10, 2, 0), Square(0, 0, 0, 4)) == Approx(6.0).epsilon(kEps));
+}
+
+TEST_CASE("Geom3DBBoxDistance: never exceeds the true distance (valid lower bound)", "[geom_distance]") {
+	auto a = Point(10, 10, 10);
+	auto b = Square(0, 0, 0, 4);
+	REQUIRE(Geom3DBBoxDistance(a, b) <= Geom3DDistance(a, b) + kEps);
+}
+
+TEST_CASE("Geom3DWithin: agrees with Geom3DDistance threshold", "[geom_distance]") {
+	auto a = Point(10, 2, 0);
+	auto b = Square(0, 0, 0, 4);
+	double d = Geom3DDistance(a, b); // exact: 6.0
+	REQUIRE(Geom3DWithin(a, b, d + 0.5) == true);
+	REQUIRE(Geom3DWithin(a, b, d - 0.5) == false);
+}
+
+TEST_CASE("Geom3DWithin: bbox-separated pair is rejected", "[geom_distance]") {
+	// Far apart: the bbox lower bound alone exceeds the threshold.
+	REQUIRE(Geom3DWithin(Point(1000, 1000, 1000), Square(0, 0, 0, 4), 5.0) == false);
+}
+
+TEST_CASE("Geom3DWithin: touching geometries are within any non-negative threshold", "[geom_distance]") {
+	REQUIRE(Geom3DWithin(Point(2, 2, 0), Square(0, 0, 0, 4), 0.0) == true);
+}

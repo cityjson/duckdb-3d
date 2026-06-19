@@ -40,4 +40,24 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model);
 //! Throws std::runtime_error on invalid or unsupported payloads.
 SolidModel DeserializePayload(const uint8_t *data, size_t size);
 
+//! Lightweight view of a SOLID_3D payload: element counts, bounding box, and the
+//! cached validation summary — everything stored outside the variable-length
+//! body. Reading this is O(1) and avoids materialising vertices/topology, which
+//! matters for metadata-only scans over CityParquet-scale data.
+struct SolidPayloadInfo {
+	uint32_t vertex_count;
+	uint32_t solid_count;
+	uint32_t shell_count;
+	uint32_t face_count;
+	uint32_t ring_count;
+	uint32_t triangle_count;
+	BBox3D bbox;
+	ValidationCache validation;
+};
+
+//! Read only the header (counts + bbox) and trailing validation summary of a
+//! SOLID_3D payload, without deserialising the body. Throws on invalid magic or
+//! unsupported major version. Use for count/bounds/validation-cache accessors.
+SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size);
+
 } // namespace duckdb_3d

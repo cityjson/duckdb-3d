@@ -65,6 +65,29 @@ SELECT ST_Scale(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
+# Regression: a degenerate (zero) scale factor collapses the solid. Validation
+# must be recomputed, not carried over from the cache, so the result reports as
+# invalid with degenerate faces rather than falsely claiming validity.
+query II
+SELECT r.is_valid, r.degenerate_face_count > 0
+FROM (SELECT ST_3DValidationReport(ST_Scale(solid, 0.0, 1.0, 1.0)) AS r FROM solids);
+----
+false	true
+
+# Because validation is now recomputed, the collapsed solid is correctly flagged
+# as degenerate, so ST_3DVolume refuses it rather than silently returning 0 on a
+# geometry that falsely claimed to be valid.
+statement error
+SELECT ST_3DVolume(ST_Scale(solid, 0.0, 1.0, 1.0)) FROM solids;
+----
+degenerate
+
+# A non-degenerate scale stays valid after recomputation.
+query I
+SELECT ST_3DValidationReport(ST_Scale(solid, 2.0, 2.0, 2.0)).is_valid FROM solids;
+----
+true
+
 # ST_RotateX / ST_RotateY / ST_RotateZ are rigid rotations: volume is preserved
 query III
 SELECT ROUND(ST_3DVolume(ST_RotateX(solid, radians(90))), 5),

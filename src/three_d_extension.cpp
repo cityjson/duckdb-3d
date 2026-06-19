@@ -11,6 +11,7 @@
 #include "kernel/payload.hpp"
 #include "kernel/measurements.hpp"
 #include "kernel/triangulation.hpp"
+#include "kernel/validation.hpp"
 #include "kernel/metadata_parser.hpp"
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_wkb_parser.hpp"
@@ -256,27 +257,29 @@ static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &resul
 // ──────────────────────────────────────────────────────────────
 // Introspection: ST_3DNumSolids, ST_3DNumShells, ST_3DNumFaces
 // ──────────────────────────────────────────────────────────────
+// These accessors only need element counts, which live in the fixed front
+// header, so they read the header rather than deserialising the whole solid.
 static void ST_3DNumSolidsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return static_cast<int64_t>(model.SolidCount());
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return static_cast<int64_t>(info.solid_count);
 	});
 }
 
 static void ST_3DNumShellsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return static_cast<int64_t>(model.ShellCount());
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return static_cast<int64_t>(info.shell_count);
 	});
 }
 
 static void ST_3DNumFacesFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return static_cast<int64_t>(model.FaceCount());
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return static_cast<int64_t>(info.face_count);
 	});
 }
 
@@ -310,41 +313,44 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 
 		using namespace duckdb_3d;
 		auto &blob = input_strings[idx];
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+		// Bounds live in the front header; no need to materialise the body.
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
-		FlatVector::GetData<double>(min_x_vec)[i] = model.bbox.min_x;
-		FlatVector::GetData<double>(min_y_vec)[i] = model.bbox.min_y;
-		FlatVector::GetData<double>(min_z_vec)[i] = model.bbox.min_z;
-		FlatVector::GetData<double>(max_x_vec)[i] = model.bbox.max_x;
-		FlatVector::GetData<double>(max_y_vec)[i] = model.bbox.max_y;
-		FlatVector::GetData<double>(max_z_vec)[i] = model.bbox.max_z;
+		FlatVector::GetData<double>(min_x_vec)[i] = info.bbox.min_x;
+		FlatVector::GetData<double>(min_y_vec)[i] = info.bbox.min_y;
+		FlatVector::GetData<double>(min_z_vec)[i] = info.bbox.min_z;
+		FlatVector::GetData<double>(max_x_vec)[i] = info.bbox.max_x;
+		FlatVector::GetData<double>(max_y_vec)[i] = info.bbox.max_y;
+		FlatVector::GetData<double>(max_z_vec)[i] = info.bbox.max_z;
 	}
 }
 
 // ──────────────────────────────────────────────────────────────
 // Validation: ST_3DIsClosed, ST_3DIsManifold, ST_3DIsOriented
 // ──────────────────────────────────────────────────────────────
+// The validation summary is cached in the payload (trailing block), so these
+// read the header rather than re-running validation or parsing the body.
 static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return model.validation.is_closed;
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return info.validation.is_closed;
 	});
 }
 
 static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return model.validation.is_manifold;
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return info.validation.is_manifold;
 	});
 }
 
 static void ST_3DIsOrientedFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return model.validation.is_oriented;
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return info.validation.is_oriented;
 	});
 }
 
@@ -384,16 +390,18 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 
 		using namespace duckdb_3d;
 		auto &blob = input_strings[idx];
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-		auto &vc = model.validation;
+		// Both the validation summary and counts are header/trailer data, so the
+		// report is served without materialising vertices or topology.
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+		auto &vc = info.validation;
 
 		FlatVector::GetData<bool>(is_valid_vec)[i] = vc.is_valid;
 		FlatVector::GetData<bool>(is_closed_vec)[i] = vc.is_closed;
 		FlatVector::GetData<bool>(is_manifold_vec)[i] = vc.is_manifold;
 		FlatVector::GetData<bool>(is_oriented_vec)[i] = vc.is_oriented;
-		FlatVector::GetData<int64_t>(solid_count_vec)[i] = model.SolidCount();
-		FlatVector::GetData<int64_t>(shell_count_vec)[i] = model.ShellCount();
-		FlatVector::GetData<int64_t>(face_count_vec)[i] = model.FaceCount();
+		FlatVector::GetData<int64_t>(solid_count_vec)[i] = info.solid_count;
+		FlatVector::GetData<int64_t>(shell_count_vec)[i] = info.shell_count;
+		FlatVector::GetData<int64_t>(face_count_vec)[i] = info.face_count;
 		FlatVector::GetData<int64_t>(open_edge_vec)[i] = vc.open_edge_count;
 		FlatVector::GetData<int64_t>(non_manifold_vec)[i] = vc.non_manifold_edge_count;
 		FlatVector::GetData<int64_t>(degenerate_vec)[i] = vc.degenerate_face_count;
@@ -512,14 +520,11 @@ static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
-		case PayloadKind::Solid: {
-			auto model = DeserializePayload(data, size);
-			return model.bbox.min_z;
-		}
-		case PayloadKind::Geom: {
-			auto model = DeserializeGeomPayload(data, size);
-			return model.bbox.min_z;
-		}
+		case PayloadKind::Solid:
+			// bbox is in the front header — no body parse needed.
+			return ReadSolidPayloadHeader(data, size).bbox.min_z;
+		case PayloadKind::Geom:
+			return ReadGeomPayloadHeader(data, size).bbox.min_z;
 		default:
 			throw InvalidInputException("ST_ZMin: argument is not a SOLID_3D or GEOM_3D value");
 		}
@@ -532,14 +537,10 @@ static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
-		case PayloadKind::Solid: {
-			auto model = DeserializePayload(data, size);
-			return model.bbox.max_z;
-		}
-		case PayloadKind::Geom: {
-			auto model = DeserializeGeomPayload(data, size);
-			return model.bbox.max_z;
-		}
+		case PayloadKind::Solid:
+			return ReadSolidPayloadHeader(data, size).bbox.max_z;
+		case PayloadKind::Geom:
+			return ReadGeomPayloadHeader(data, size).bbox.max_z;
 		default:
 			throw InvalidInputException("ST_ZMax: argument is not a SOLID_3D or GEOM_3D value");
 		}
@@ -747,15 +748,18 @@ static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result)
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
 		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
-		// Scale about the origin. Topology and winding consistency are preserved
-		// for non-degenerate factors, so validation flags carry over; only the
-		// bbox is recomputed (factors may be negative and swap min/max).
+		// Scale about the origin. Unlike a rigid motion, a degenerate (zero) factor
+		// collapses faces and a negative factor changes geometry, so the cached
+		// validation flags cannot simply carry over. Recompute validation from the
+		// scaled coordinates (this catches the collapsed/degenerate case); the bbox
+		// is recomputed too since negative factors can swap min/max.
 		for (auto &v : model.vertices) {
 			v.x *= sx;
 			v.y *= sy;
 			v.z *= sz;
 		}
 		model.ComputeBBox();
+		ValidateSolidModel(model);
 
 		auto payload = SerializePayload(model);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
@@ -1157,6 +1161,13 @@ static void ST_3DDistanceFun(DataChunk &args, ExpressionState &state, Vector &re
 }
 
 // ST_3DDWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
+static bool Geom3DWithinSQL(string_t g1, string_t g2, double dist) {
+	using namespace duckdb_3d;
+	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
+	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
+	return Geom3DWithin(m1, m2, dist);
+}
+
 static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<string_t, string_t, double, bool>(
 	    args.data[0], args.data[1], args.data[2], result, args.size(),
@@ -1164,7 +1175,8 @@ static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &res
 		    if (dist < 0.0) {
 			    return false;
 		    }
-		    return Geom3DDistanceSQL(g1, g2) <= dist;
+		    // Uses bbox pruning + first-hit early exit instead of the exact distance.
+		    return Geom3DWithinSQL(g1, g2, dist);
 	    });
 }
 
@@ -1228,7 +1240,7 @@ static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &
 	constexpr double kIntersectEps = 1e-9;
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    args.data[0], args.data[1], result, args.size(),
-	    [&](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2) <= kIntersectEps; });
+	    [&](string_t g1, string_t g2) { return Geom3DWithinSQL(g1, g2, kIntersectEps); });
 }
 
 // ST_3DClosestPoint(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D (Point)

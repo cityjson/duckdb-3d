@@ -403,6 +403,43 @@ double Geom3DDistance(const GeomModel &g1, const GeomModel &g2) {
 	return best;
 }
 
+double Geom3DBBoxDistance(const GeomModel &g1, const GeomModel &g2) {
+	// Per-axis gap between the two boxes; 0 when they overlap on that axis.
+	auto axis_gap = [](double min1, double max1, double min2, double max2) {
+		if (min1 > max2) {
+			return min1 - max2;
+		}
+		if (min2 > max1) {
+			return min2 - max1;
+		}
+		return 0.0;
+	};
+	double dx = axis_gap(g1.bbox.min_x, g1.bbox.max_x, g2.bbox.min_x, g2.bbox.max_x);
+	double dy = axis_gap(g1.bbox.min_y, g1.bbox.max_y, g2.bbox.min_y, g2.bbox.max_y);
+	double dz = axis_gap(g1.bbox.min_z, g1.bbox.max_z, g2.bbox.min_z, g2.bbox.max_z);
+	return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+bool Geom3DWithin(const GeomModel &g1, const GeomModel &g2, double threshold) {
+	// Cheap rejection: if even the bbox lower bound exceeds the threshold, no
+	// element pair can be within it, so skip decomposition entirely.
+	if (Geom3DBBoxDistance(g1, g2) > threshold) {
+		return false;
+	}
+	auto e1 = Decompose(g1);
+	auto e2 = Decompose(g2);
+	for (const auto &a : e1) {
+		for (const auto &b : e2) {
+			// Stop at the first pair within the threshold — no need to find the
+			// exact minimum distance.
+			if (ElementDistance(a, b) <= threshold) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 ClosestPointPair Geom3DClosestPoints(const GeomModel &g1, const GeomModel &g2) {
 	auto e1 = Decompose(g1);
 	auto e2 = Decompose(g2);

@@ -19,4 +19,18 @@ std::vector<uint8_t> SerializeGeomPayload(const GeomModel &model);
 //! Throws std::runtime_error on invalid magic/version or truncated data.
 GeomModel DeserializeGeomPayload(const uint8_t *data, size_t size);
 
+//! Lightweight view of a GEOM_3D payload: geometry type, vertex count, and
+//! bounding box — all stored in the fixed front header. Reading this is O(1)
+//! and avoids materialising vertices/rings/parts.
+struct GeomPayloadInfo {
+	GeomType type;
+	uint32_t vertex_count;
+	BBox3D bbox;
+};
+
+//! Read only the front header (type + bbox + vertex count) of a GEOM_3D payload,
+//! without deserialising the body. Throws on invalid magic or unsupported major
+//! version. Use for bounds/ZMin/ZMax accessors on GEOM_3D values.
+GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size);
+
 } // namespace duckdb_3d

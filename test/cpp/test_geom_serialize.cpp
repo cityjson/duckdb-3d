@@ -1,6 +1,9 @@
 #include "catch.hpp"
 #include "kernel/geom_serialize.hpp"
+#include "kernel/geom_payload.hpp"
 #include "kernel/geom_wkb_parser.hpp"
+
+#include <cstring>
 
 using namespace duckdb_3d;
 
@@ -76,4 +79,30 @@ TEST_CASE("Geom3DAsBinary: Polygon Z round-trips through parser", "[geom_seriali
 	REQUIRE(model.type == GeomType::Polygon);
 	REQUIRE(model.vertices.size() == 4);
 	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4});
+}
+
+TEST_CASE("DeserializeGeomPayload rejects vertex_count exceeding payload size", "[geom_payload]") {
+	auto payload = SerializeGeomPayload(Point(1.0, 2.0, 3.0));
+	// Header layout: magic(4) + major(2) + minor(2) + type(4) + bbox(48) = 60,
+	// then vertex_count at offset 60. Patch it to a count whose vertex array
+	// cannot fit in the remaining payload. Small in absolute terms so the test
+	// never triggers a large allocation: the reader must reject before reserving.
+	uint32_t bogus_count = 100000;
+	std::memcpy(payload.data() + 60, &bogus_count, 4);
+	REQUIRE_THROWS_WITH(DeserializeGeomPayload(payload.data(), payload.size()), Catch::Contains("exceed"));
+}
+
+TEST_CASE("ReadGeomPayloadHeader matches full deserialisation", "[geom_payload]") {
+	auto payload = SerializeGeomPayload(Point(1.0, 2.0, 9.0));
+	auto hdr = ReadGeomPayloadHeader(payload.data(), payload.size());
+	REQUIRE(hdr.type == GeomType::Point);
+	REQUIRE(hdr.vertex_count == 1);
+	REQUIRE(hdr.bbox.min_x == Approx(1.0));
+	REQUIRE(hdr.bbox.max_z == Approx(9.0));
+}
+
+TEST_CASE("ReadGeomPayloadHeader rejects bad magic", "[geom_payload]") {
+	auto payload = SerializeGeomPayload(Point(0, 0, 0));
+	payload[0] = 'X';
+	REQUIRE_THROWS_WITH(ReadGeomPayloadHeader(payload.data(), payload.size()), Catch::Contains("magic"));
 }

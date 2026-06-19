@@ -36,6 +36,22 @@ public:
 	PayloadReader(const uint8_t *data, size_t size) : data(data), size(size) {
 	}
 
+	size_t Remaining() const {
+		return size - pos;
+	}
+
+	//! Reject a declared element count before allocating for it: the elements
+	//! cannot possibly fit in the bytes that remain. Guards against a malformed
+	//! blob whose header claims a huge count, which would otherwise trigger a
+	//! large allocation before the truncated read is detected. `elem_size` is
+	//! widened to 64-bit so `count * elem_size` cannot overflow.
+	void RequireCount(uint64_t count, uint64_t elem_size, const char *what) const {
+		if (count * elem_size > Remaining()) {
+			throw std::runtime_error(std::string("SOLID_3D payload: declared ") + what +
+			                         " count exceeds remaining payload size");
+		}
+	}
+
 	void ReadBytes(void *dst, size_t len) {
 		if (pos + len > size) {
 			throw std::runtime_error("SOLID_3D payload truncated");
@@ -200,6 +216,58 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model) {
 	return writer.buffer;
 }
 
+SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size) {
+	PayloadReader reader(data, size);
+
+	uint8_t magic[4];
+	reader.ReadBytes(magic, 4);
+	if (std::memcmp(magic, PAYLOAD_MAGIC, 4) != 0) {
+		throw std::runtime_error("SOLID_3D payload: invalid magic bytes");
+	}
+	uint16_t major = reader.Read<uint16_t>();
+	reader.Read<uint16_t>(); // minor
+	if (major != PAYLOAD_VERSION_MAJOR) {
+		throw std::runtime_error("SOLID_3D payload: unsupported major version " + std::to_string(major));
+	}
+	reader.Read<uint32_t>(); // flags
+
+	SolidPayloadInfo info;
+	info.vertex_count = reader.Read<uint32_t>();
+	info.solid_count = reader.Read<uint32_t>();
+	info.shell_count = reader.Read<uint32_t>();
+	info.face_count = reader.Read<uint32_t>();
+	info.ring_count = reader.Read<uint32_t>();
+	info.triangle_count = reader.Read<uint32_t>();
+
+	info.bbox.min_x = reader.Read<double>();
+	info.bbox.min_y = reader.Read<double>();
+	info.bbox.min_z = reader.Read<double>();
+	info.bbox.max_x = reader.Read<double>();
+	info.bbox.max_y = reader.Read<double>();
+	info.bbox.max_z = reader.Read<double>();
+
+	// The validation summary is the fixed trailing block: four uint32 counts
+	// followed by a uint32 flag word (20 bytes total). Read it from the tail so
+	// we never touch the variable-length body in between.
+	constexpr size_t kValidationBlockSize = 5 * sizeof(uint32_t);
+	if (size < reader.pos + kValidationBlockSize) {
+		throw std::runtime_error("SOLID_3D payload truncated");
+	}
+	PayloadReader tail(data, size);
+	tail.pos = size - kValidationBlockSize;
+	info.validation.open_edge_count = tail.Read<uint32_t>();
+	info.validation.non_manifold_edge_count = tail.Read<uint32_t>();
+	info.validation.degenerate_face_count = tail.Read<uint32_t>();
+	info.validation.orientation_error_count = tail.Read<uint32_t>();
+	uint32_t summary_flags = tail.Read<uint32_t>();
+	info.validation.is_closed = (summary_flags & 0x01) != 0;
+	info.validation.is_manifold = (summary_flags & 0x02) != 0;
+	info.validation.is_oriented = (summary_flags & 0x04) != 0;
+	info.validation.is_valid = (summary_flags & 0x08) != 0;
+
+	return info;
+}
+
 SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	PayloadReader reader(data, size);
 
@@ -238,23 +306,31 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	model.bbox.max_y = reader.Read<double>();
 	model.bbox.max_z = reader.Read<double>();
 
-	// Offset arrays
+	// Offset arrays. Bound every declared count against the bytes that remain
+	// before allocating, so a malformed header cannot drive a huge allocation.
+	// Counts are +1 because an N-element collection stores N+1 boundary offsets.
+	reader.RequireCount(static_cast<uint64_t>(solid_count) + 1, sizeof(uint32_t), "solid-shell offset");
 	model.solid_shell_offsets.resize(solid_count + 1);
 	reader.ReadArray(model.solid_shell_offsets.data(), solid_count + 1);
 
+	reader.RequireCount(static_cast<uint64_t>(shell_count) + 1, sizeof(uint32_t), "shell-face offset");
 	model.shell_face_offsets.resize(shell_count + 1);
 	reader.ReadArray(model.shell_face_offsets.data(), shell_count + 1);
 
+	reader.RequireCount(static_cast<uint64_t>(face_count) + 1, sizeof(uint32_t), "face-ring offset");
 	model.face_ring_offsets.resize(face_count + 1);
 	reader.ReadArray(model.face_ring_offsets.data(), face_count + 1);
 
+	reader.RequireCount(static_cast<uint64_t>(ring_count) + 1, sizeof(uint32_t), "ring-vertex offset");
 	model.ring_vertex_offsets.resize(ring_count + 1);
 	reader.ReadArray(model.ring_vertex_offsets.data(), ring_count + 1);
 
+	reader.RequireCount(static_cast<uint64_t>(face_count) + 1, sizeof(uint32_t), "face-triangle offset");
 	model.face_triangle_offsets.resize(face_count + 1);
 	reader.ReadArray(model.face_triangle_offsets.data(), face_count + 1);
 
-	// Data arrays: vertices
+	// Data arrays: vertices (3 doubles each)
+	reader.RequireCount(vertex_count, 3 * sizeof(double), "vertex");
 	model.vertices.resize(vertex_count);
 	for (uint32_t i = 0; i < vertex_count; i++) {
 		model.vertices[i].x = reader.Read<double>();
@@ -264,12 +340,16 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 
 	// Ring vertex indices: compute total count from ring_vertex_offsets
 	uint32_t total_ring_indices = ring_count > 0 ? model.ring_vertex_offsets[ring_count] : 0;
+	reader.RequireCount(total_ring_indices, sizeof(uint32_t), "ring-vertex index");
 	model.ring_vertex_indices.resize(total_ring_indices);
 	reader.ReadArray(model.ring_vertex_indices.data(), total_ring_indices);
 
-	// Triangle vertex indices
-	model.triangle_vertex_indices.resize(triangle_count * 3);
-	reader.ReadArray(model.triangle_vertex_indices.data(), triangle_count * 3);
+	// Triangle vertex indices (3 per triangle). Widen before multiplying so the
+	// index count cannot overflow uint32_t for a hostile triangle_count.
+	uint64_t triangle_index_count = static_cast<uint64_t>(triangle_count) * 3;
+	reader.RequireCount(triangle_index_count, sizeof(uint32_t), "triangle-vertex index");
+	model.triangle_vertex_indices.resize(triangle_index_count);
+	reader.ReadArray(model.triangle_vertex_indices.data(), triangle_index_count);
 
 	// Validation cache
 	model.validation.open_edge_count = reader.Read<uint32_t>();
