@@ -1,0 +1,63 @@
+# name: test/sql/geom_3d_construct.test
+# description: GEOM_3D construction functions (ST_3DExtrude)
+# group: [sql]
+
+require three_d
+
+# Extruding the 4x3 rect footprint (at z=5) by height 2 yields a closed LoD1 box
+# with volume 4*3*2 = 24 and six faces.
+query III
+SELECT
+    ST_3DVolume(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
+    ST_3DIsClosed(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
+    ST_3DNumFaces(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
+----
+24.0	true	6
+
+# The extruded box spans z in [5, 7].
+query II
+SELECT
+    ST_ZMin(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
+    ST_ZMax(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
+----
+5.0	7.0
+
+# Non-positive height raises.
+statement error
+SELECT ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 0.0);
+----
+
+# Extruding a non-polygon (a point) raises.
+statement error
+SELECT ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), 2.0);
+----
+
+# NULL propagation.
+query I
+SELECT ST_3DExtrude(NULL::GEOM_3D, 2.0);
+----
+NULL
+
+# ST_MakeSolid: a closed tetrahedron surface becomes a valid solid with volume 1/6.
+query II
+SELECT
+    ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()))), 5),
+    ST_3DIsClosed(ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())));
+----
+0.16667	true
+
+# ST_MakeSolid: an open surface (tetra missing a face) raises.
+statement error
+SELECT ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBOpenTetra()));
+----
+
+# ST_MakeSolid: a non-surface (point) raises.
+statement error
+SELECT ST_MakeSolid(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+
+# ST_MakeSolid: NULL propagation.
+query I
+SELECT ST_MakeSolid(NULL::GEOM_3D);
+----
+NULL

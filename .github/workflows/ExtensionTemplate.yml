@@ -59,6 +59,10 @@ jobs:
         run: |
           make test
 
+      - name: Test C++ kernel
+        run: |
+          make test_cpp
+
   macos:
     name: MacOS
     if: ${{ vars.RUN_RENAME_TEST == 'true' || github.repository == 'duckdb/extension-template' }}
@@ -111,6 +115,10 @@ jobs:
       - name: Test
         run: |
           make test
+
+      - name: Test C++ kernel
+        run: |
+          make test_cpp
 
   windows:
     name: Windows

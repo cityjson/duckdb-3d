@@ -1,0 +1,54 @@
+# name: test/sql/st_3d_accessors.test
+# description: test ST_3D accessor functions (NDims, HasZ, ZMin, ZMax)
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE TABLE solids AS
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
+
+# ST_NDims: a 3D solid has coordinate dimension 3
+query I
+SELECT ST_NDims(solid) FROM solids;
+----
+3
+
+# ST_NDims: NULL propagates
+query I
+SELECT ST_NDims(NULL::SOLID_3D);
+----
+NULL
+
+# ST_HasZ: a 3D solid carries a Z ordinate
+query I
+SELECT ST_HasZ(solid) FROM solids;
+----
+true
+
+# ST_HasZ: NULL propagates
+query I
+SELECT ST_HasZ(NULL::SOLID_3D);
+----
+NULL
+
+# ST_ZMin / ST_ZMax: tetrahedron spans Z in [0, 1]
+query II
+SELECT ST_ZMin(solid), ST_ZMax(solid) FROM solids;
+----
+0.0	1.0
+
+# ST_ZMax - ST_ZMin is the building height
+query I
+SELECT ST_ZMax(solid) - ST_ZMin(solid) FROM solids;
+----
+1.0
+
+# ST_ZMin / ST_ZMax: NULL propagates
+query II
+SELECT ST_ZMin(NULL::SOLID_3D), ST_ZMax(NULL::SOLID_3D);
+----
+NULL	NULL
+
+statement ok
+DROP TABLE solids;

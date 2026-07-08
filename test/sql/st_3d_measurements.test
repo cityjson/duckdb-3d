@@ -23,11 +23,36 @@ SELECT ROUND(ST_3DVolume(solid), 5) FROM solids;
 ----
 0.16667
 
-# Test: NULL propagation
-query II
-SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL);
+# Test: ST_Area returns the XY footprint area.
+# For the tetrahedron the footprint is the base triangle (0,0),(0,1),(1,0) = 0.5
+query I
+SELECT ROUND(ST_Area(solid), 5) FROM solids;
 ----
-NULL	NULL
+0.5
+
+# Test: ST_3DArea is the 3D surface area (alias-aligned with ST_3DSurfaceArea)
+query I
+SELECT ST_3DArea(solid) = ST_3DSurfaceArea(solid) FROM solids;
+----
+true
+
+# Test: ST_3DPerimeter of a closed solid is 0 (every edge is shared by two faces)
+query I
+SELECT ST_3DPerimeter(solid) FROM solids;
+----
+0.0
+
+# Test: ST_3DPerimeter NULL propagation
+query I
+SELECT ST_3DPerimeter(NULL);
+----
+NULL
+
+# Test: NULL propagation
+query III
+SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL);
+----
+NULL	NULL	NULL
 
 statement ok
 DROP TABLE solids;
@@ -59,6 +84,13 @@ query I
 SELECT ST_3DSurfaceArea(solid) > 0 FROM open_solid;
 ----
 true
+
+# ST_3DPerimeter of the open shell is the missing base triangle's boundary:
+# edges (0,0,0)-(1,0,0), (1,0,0)-(0,1,0), (0,1,0)-(0,0,0) = 1 + sqrt(2) + 1
+query I
+SELECT ROUND(ST_3DPerimeter(solid), 5) FROM open_solid;
+----
+3.41421
 
 statement ok
 DROP TABLE open_solid;

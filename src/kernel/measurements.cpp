@@ -1,6 +1,8 @@
 #include "kernel/measurements.hpp"
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <utility>
 
 namespace duckdb_3d {
 
@@ -114,6 +116,60 @@ double ComputeVolume(const SolidModel &model) {
 	}
 
 	return total_volume / 6.0;
+}
+
+double ComputeFootprintArea(const SolidModel &model) {
+	// For each face, the z-component of its summed ring area vectors equals
+	// twice the signed area of the face's XY projection. Up-facing and
+	// down-facing faces each project onto the footprint exactly once, so the
+	// sum of absolute projected areas is twice the footprint.
+	double total_projected = 0.0;
+	uint32_t face_count = model.FaceCount();
+
+	for (uint32_t face_idx = 0; face_idx < face_count; face_idx++) {
+		uint32_t ring_start = model.face_ring_offsets[face_idx];
+		uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+		double face_area_z = 0.0;
+
+		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+			face_area_z += ComputeRingAreaVector(model, ring_idx).z;
+		}
+
+		total_projected += std::abs(face_area_z) * 0.5;
+	}
+
+	return total_projected * 0.5;
+}
+
+double ComputePerimeter(const SolidModel &model) {
+	// Count how many faces reference each undirected edge. Boundary edges are
+	// those used exactly once; their total length is the perimeter.
+	std::map<std::pair<uint32_t, uint32_t>, uint32_t> edge_use;
+	uint32_t ring_count = model.RingCount();
+
+	for (uint32_t ring_idx = 0; ring_idx < ring_count; ring_idx++) {
+		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+		uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+		uint32_t n = vi_end - vi_start;
+		for (uint32_t i = 0; i < n; i++) {
+			uint32_t a = model.ring_vertex_indices[vi_start + i];
+			uint32_t b = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+			auto key = std::minmax(a, b);
+			edge_use[{key.first, key.second}]++;
+		}
+	}
+
+	double perimeter = 0.0;
+	for (const auto &entry : edge_use) {
+		if (entry.second == 1) {
+			const auto &va = model.vertices[entry.first.first];
+			const auto &vb = model.vertices[entry.first.second];
+			double dx = va.x - vb.x, dy = va.y - vb.y, dz = va.z - vb.z;
+			perimeter += std::sqrt(dx * dx + dy * dy + dz * dz);
+		}
+	}
+
+	return perimeter;
 }
 
 } // namespace duckdb_3d

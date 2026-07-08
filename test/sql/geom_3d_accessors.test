@@ -1,0 +1,118 @@
+# name: test/sql/geom_3d_accessors.test
+# description: GEOM_3D point accessors (ST_X, ST_Y, ST_Z)
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE TABLE pts AS
+SELECT ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)) AS p;
+
+# ST_X / ST_Y / ST_Z return the point's ordinates
+query III
+SELECT ST_X(p), ST_Y(p), ST_Z(p) FROM pts;
+----
+1.0	2.0	3.0
+
+# NULL propagation
+query III
+SELECT ST_X(NULL::GEOM_3D), ST_Y(NULL::GEOM_3D), ST_Z(NULL::GEOM_3D);
+----
+NULL	NULL	NULL
+
+# ST_CoordDim reports XYZ coordinate dimension for GEOM_3D values
+query II
+SELECT
+    ST_CoordDim(p),
+    ST_CoordDim(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()))
+FROM pts;
+----
+3	3
+
+# ST_CoordDim: NULL propagates
+query I
+SELECT ST_CoordDim(NULL::GEOM_3D);
+----
+NULL
+
+# ST_ZMin / ST_ZMax: read the cached bounding box of a GEOM_3D value
+query II
+SELECT ST_ZMin(p), ST_ZMax(p) FROM pts;
+----
+3.0	3.0
+
+# ST_ZMin / ST_ZMax: linestring spans Z in [0, 12]
+query II
+SELECT ST_ZMin(ST_Geom3DFromWKB(ST_AsWKBLineZ())),
+       ST_ZMax(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+0.0	12.0
+
+# ST_ZMin / ST_ZMax: NULL propagates
+query II
+SELECT ST_ZMin(NULL::GEOM_3D), ST_ZMax(NULL::GEOM_3D);
+----
+NULL	NULL
+
+# ST_NDims: a GEOM_3D value has coordinate dimension 3
+query I
+SELECT ST_NDims(p) FROM pts;
+----
+3
+
+# ST_NDims: NULL propagates
+query I
+SELECT ST_NDims(NULL::GEOM_3D);
+----
+NULL
+
+# ST_HasZ: a GEOM_3D value carries a Z ordinate
+query I
+SELECT ST_HasZ(p) FROM pts;
+----
+true
+
+# ST_HasZ: NULL propagates
+query I
+SELECT ST_HasZ(NULL::GEOM_3D);
+----
+NULL
+
+# ST_Dimension: topological dimension of a Point is 0
+query I
+SELECT ST_Dimension(p) FROM pts;
+----
+0
+
+# ST_Dimension: topological dimension of a LineString is 1
+query I
+SELECT ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+----
+1
+
+# ST_Dimension: NULL propagates
+query I
+SELECT ST_Dimension(NULL::GEOM_3D);
+----
+NULL
+
+# ST_NumGeometries: a single Point has one geometry
+query I
+SELECT ST_NumGeometries(p) FROM pts;
+----
+1
+
+# ST_NumGeometries: a MultiLineString has two parts
+query I
+SELECT ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
+----
+2
+
+# ST_NumGeometries: NULL propagates
+query I
+SELECT ST_NumGeometries(NULL::GEOM_3D);
+----
+NULL
+
+statement ok
+DROP TABLE pts;

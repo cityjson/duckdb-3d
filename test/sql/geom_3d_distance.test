@@ -1,0 +1,151 @@
+# name: test/sql/geom_3d_distance.test
+# description: GEOM_3D 3D distance and dwithin queries
+# group: [sql]
+
+require three_d
+
+# Point-to-point 3D distance
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(3.0, 4.0, 0.0)));
+----
+5.0
+
+# Point hovering 5 above a polygon interior (polygon is a 4x3 rect at z=5)
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+5.0
+
+# A point lying on the polygon has zero distance
+query I
+SELECT ST_3DDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 5.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+0.0
+
+# ST_3DDistance NULL propagation
+query I
+SELECT ST_3DDistance(NULL::GEOM_3D, ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL
+
+# ST_3DDWithin: true at exactly the threshold, false just below it
+query II
+SELECT
+    ST_3DDWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 5.0),
+    ST_3DDWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 4.9);
+----
+true	false
+
+# ST_3DDWithin: negative distance is always false
+query I
+SELECT ST_3DDWithin(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), -1.0);
+----
+false
+
+# ST_3DDWithin: NULL propagation
+query I
+SELECT ST_3DDWithin(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), 1.0);
+----
+NULL
+
+# ST_3DMaxDistance: point-to-point maximum equals the separation
+query I
+SELECT ST_3DMaxDistance(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(3.0, 4.0, 0.0)));
+----
+5.0
+
+# ST_3DMaxDistance: NULL propagation
+query I
+SELECT ST_3DMaxDistance(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL
+
+# ST_3DDFullyWithin: every polygon vertex within 8 of the origin, but not within 7
+# (farthest corner of the 4x3 rect at z=5 is sqrt(50) ~= 7.07 away)
+query II
+SELECT
+    ST_3DDFullyWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 8.0),
+    ST_3DDFullyWithin(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 7.0);
+----
+true	false
+
+# ST_3DDFullyWithin: negative distance is always false
+query I
+SELECT ST_3DDFullyWithin(
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), -1.0);
+----
+false
+
+# ST_3DIntersects: a point on the polygon intersects it; a point above it does not
+query II
+SELECT
+    ST_3DIntersects(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 5.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_3DIntersects(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+true	false
+
+# ST_3DIntersects: NULL propagation
+query I
+SELECT ST_3DIntersects(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL
+
+# ST_3DClosestPoint: point above polygon returns the point itself
+query III
+SELECT
+    ST_X(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Y(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Z(ST_3DClosestPoint(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+2.0	1.5	10.0
+
+# ST_3DShortestLine: point above polygon is a LineString of length 5
+query II
+SELECT
+    ST_GeometryType(ST_3DShortestLine(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DLength(ST_3DShortestLine(
+        ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
+        ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+ST_LineString	5.0
+
+# ST_3DClosestPoint: NULL propagation
+query I
+SELECT ST_3DClosestPoint(NULL::GEOM_3D,
+    ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+NULL

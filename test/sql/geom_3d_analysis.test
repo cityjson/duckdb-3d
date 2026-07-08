@@ -1,0 +1,84 @@
+# name: test/sql/geom_3d_analysis.test
+# description: GEOM_3D analysis functions (ST_IsPlanar)
+# group: [sql]
+
+require three_d
+
+# ST_IsPlanar: a flat polygon is planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+true
+
+# ST_IsPlanar: a warped quad is not planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBWarpedPolygonZ()));
+----
+false
+
+# ST_IsPlanar: a point is trivially planar
+query I
+SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
+----
+true
+
+# ST_IsPlanar: NULL propagation
+query I
+SELECT ST_IsPlanar(NULL::GEOM_3D);
+----
+NULL
+
+# ST_3DCentroid: point returns itself
+query III
+SELECT
+    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+----
+1.0	2.0	3.0
+
+# ST_3DCentroid: square footprint centroid
+query III
+SELECT
+    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+2.0	1.5	5.0
+
+# ST_3DCentroid: NULL propagation
+query I
+SELECT ST_3DCentroid(NULL::GEOM_3D);
+----
+NULL
+
+# ST_Force3D: identity on an already-3D point
+query III
+SELECT
+    ST_X(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Y(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_Z(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+----
+1.0	2.0	3.0
+
+# ST_Force3D: NULL propagation
+query I
+SELECT ST_Force3D(NULL::GEOM_3D);
+----
+NULL
+
+# ST_ConvexHull: polygon footprint -> same polygon hull at min Z
+query IIII
+SELECT
+    ST_GeometryType(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_NumGeometries(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_ZMin(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_ZMax(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+ST_Polygon	1	5.0	5.0
+
+# ST_ConvexHull: NULL propagation
+query I
+SELECT ST_ConvexHull(NULL::GEOM_3D);
+----
+NULL
