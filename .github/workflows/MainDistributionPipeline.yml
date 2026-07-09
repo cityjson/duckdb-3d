@@ -19,6 +19,10 @@ jobs:
       duckdb_version: v1.5.4
       ci_tools_version: v1.5.4
       extension_name: three_d
+      # MinGW's ld cannot dedupe DuckDB's static LogicalType constants (e.g.
+      # LogicalType::DOUBLE), producing "multiple definition" link errors. This
+      # is a known DuckDB toolchain quirk, not an extension issue — exclude it.
+      exclude_archs: 'windows_amd64_mingw'
 
   code-quality-check:
     name: Code Quality Check
