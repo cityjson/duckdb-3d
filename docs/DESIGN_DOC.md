@@ -1,10 +1,22 @@
 # DuckDB 3D Extension - Technical Design
 
-**Document purpose**: This document specifies the technical architecture, SQL contract, binary representation, and development workflow for the `duckdb-3d` extension. It is also the single source of truth for the **post-v1 3D function roadmap** ([§16](#16-3d-function-roadmap-postgis-derived)), derived from the useful subset of PostGIS's 3D function set.
+**Document purpose**: This document is the reference specification for the `duckdb-3d`
+extension. It describes the technical architecture, SQL contract, binary representation, and
+validation/measurement semantics **as implemented today** (§1–§15), and the single source of
+truth for the **forward function roadmap** ([§16](#16-3d-function-roadmap-postgis-derived)),
+derived from the useful subset of PostGIS's 3D function set.
 
-**Status**: Design baseline for v1 implementation (§1–§15); planning roadmap for subsequent functions (§16).
+Read it as reference documentation, not as a plan: §1–§15 describe the shipped design, and
+§16 separates what is already implemented from what remains on the roadmap. For a hands-on
+walkthrough against real data, see [EXAMPLE.md](./EXAMPLE.md).
 
-**Primary audience**: Engineers and coding agents implementing or reviewing the extension.
+**Primary audience**: Engineers and coding agents implementing, extending, or reviewing the
+extension.
+
+**At a glance**: the extension loads as `three_d`, exposes two BLOB-backed logical types
+(`SOLID_3D` for closed polyhedral solids, `GEOM_3D` for general 3D geometry), and a family of
+`ST_*` / `ST_3D*` scalar functions for import/export, introspection, validation, measurement,
+distance, transformation, and serialization.
 
 ## 1. Overview
 
@@ -24,16 +36,6 @@ DuckDB can already store binary geometry values and has a built-in `GEOMETRY` lo
 - preserving shell structure for city-model solids
 
 `duckdb-3d` fills that gap by introducing a solid-specific type and a compact set of 3D validation and measurement functions.
-
-### 1.3 Current Repo State
-
-This repository was cloned from the standard DuckDB extension template and still contains the placeholder `quack` scaffold:
-
-- [CMakeLists.txt](/private/tmp/duckdb-3d/CMakeLists.txt)
-- [extension_config.cmake](/private/tmp/duckdb-3d/extension_config.cmake)
-- [src/quack_extension.cpp](/private/tmp/duckdb-3d/src/quack_extension.cpp)
-
-The first implementation task after this documentation phase is to rename the scaffold from `quack` to `three_d` and replace the template functions with the actual 3D extension surface described below.
 
 ## 2. Goals And Non-Goals
 
@@ -73,13 +75,12 @@ Several of these v1 non-goals (general geometry classes, boolean operations, a C
 
 ### 3.1 Naming Note
 
-The repository and product name remain `duckdb-3d`, but the implementation needs a legal extension symbol and load name.
-
-Assumption for v1:
+The repository and product name is `duckdb-3d`, but the implementation needs a legal
+extension symbol and load name, so the names in use are:
 
 - repository name: `duckdb-3d`
-- internal extension target and entrypoint name: `three_d`
-- SQL function family: `ST_3D*`
+- internal extension target and entrypoint name: `three_d` (`LOAD three_d;`)
+- SQL function family: `ST_*` / `ST_3D*`
 
 Reason:
 
@@ -92,7 +93,10 @@ If a later packaging strategy supports a clean alias to `3d`, it can be added wi
 
 ### 4.1 `SOLID_3D`
 
-`SOLID_3D` is the primary public type in v1.
+`SOLID_3D` is the dedicated type for **closed polyhedral solids**. It is complemented by
+`GEOM_3D`, the general 3D geometry type ([§16.2](#162-prerequisite-a-general-3d-geometry-type-geom_3d))
+that carries points, lines, polygons, multis, and polyhedral surfaces for the class-generic
+accessor/transform/distance/serialization functions.
 
 Design decision:
 
@@ -587,56 +591,40 @@ Every feature and bug fix must use the red-green-refactor cycle:
 3. implementation third
 4. refactor last
 
-## 14. Initial Implementation Phases
+## 14. Roadmap Beyond The Current Surface
 
-### Phase 1
+The v1 baseline (§5) and the class-generic `GEOM_3D` accessor/transform/distance/
+serialization surface (§16) are implemented. What remains open is tracked in two places:
 
-- rename scaffold from `quack` to `three_d`
-- register `SOLID_3D`
-- implement payload serializer/deserializer
-- implement `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_3DAsWKB`
-- implement bounds and count functions
+- the prioritised, per-function backlog — `should` items not yet built and every `want`
+  item — lives in [§16](#16-3d-function-roadmap-postgis-derived);
+- the larger deferred workstreams below.
 
-### Phase 2
+### 14.1 Near-Term
 
-- implement validation engine
-- implement `ST_3DIsClosed`
-- implement `ST_3DIsManifold`
-- implement `ST_3DIsOriented`
-- implement `ST_3DValidationReport`
-
-### Phase 3
-
-- implement triangulation cache
-- implement `ST_3DSurfaceArea`
-- implement `ST_3DVolume`
-
-### Phase 4
-
-- performance tuning
+- performance tuning (bbox pre-filters for the distance family, etc.)
 - richer metadata-aware import
 - improved interoperability with CityJSON multi-shell and multi-solid cases
 
-### Deferred Future Phase
+### 14.2 Deferred (backend decision required)
 
-- evaluate optional CGAL or SFCGAL backend
-- boolean operations
-- repair workflows
+- evaluate an optional CGAL or SFCGAL backend
+- 3D boolean operations (union / difference / intersection)
+- topology repair workflows
 - broader geometry-class coverage
 
-The concrete function backlog for this phase — prioritised `must`/`should`/`want` with per-function I/O specifications — is maintained in [§16](#16-3d-function-roadmap-postgis-derived).
+The CGAL/SFCGAL-gated function cluster is specified in
+[§16.8](#168-cgal--sfcgal-backend-cluster-all-want-flagged).
 
-## 15. Implementation Acceptance Criteria
+## 15. Contribution Invariants
 
-The implementation phase may begin when contributors agree that this document is stable enough to act as the source of truth.
+These invariants hold for every change to the extension. A change is complete only when:
 
-Any future implementation is complete only when:
-
-- the SQL contract matches this design or the design is updated intentionally
-- tests exist before implementation changes
+- the SQL contract matches this design, or the design is updated intentionally in the same change
+- tests exist before implementation changes (the TDD workflow of §13)
 - docs and tests are updated together
 - no silent topology repair has been introduced
-- binary format changes are versioned explicitly
+- binary format changes are versioned explicitly (§7.5)
 
 ## 16. 3D Function Roadmap (PostGIS-derived)
 
@@ -647,32 +635,32 @@ function set (reference:
 function carries an I/O specification detailed enough to implement one at a time under the
 TDD workflow of §13.
 
-Items here are **not yet implemented** unless marked **✅ implemented** in the tables below
-or listed in [§16.9](#169-implemented-functions-postgis-analogues). Everything in §1–§15
-remains the architectural source of truth; where this roadmap and those sections ever
-disagree, §1–§15 win and this section is corrected.
+Each function below is tagged with its status. Functions marked **✅ implemented** exist in
+the current build and are catalogued with their kernel location in
+[§16.9](#169-implemented-functions-postgis-analogues); everything else is roadmap. Everything
+in §1–§15 remains the architectural source of truth; where this roadmap and those sections
+ever disagree, §1–§15 win and this section is corrected.
 
-**Implementation status (branch `develop`):** the `GEOM_3D` type and a first set of
-class-generic accessors/transforms have landed. `SOLID_3D`-only functions already
-working are `ST_Area`, `ST_3DPerimeter`, `ST_3DArea`; class-generic functions now
-available on both `SOLID_3D` and `GEOM_3D` are `ST_NDims`, `ST_HasZ`, `ST_ZMin`,
-`ST_ZMax`, `ST_Translate`, `ST_Scale`, `ST_RotateX/Y/Z`. `GEOM_3D`-only accessors
-`ST_X`, `ST_Y`, `ST_Z`, `ST_CoordDim`, `ST_GeometryType`, `ST_Dimension`,
-`ST_NumGeometries`, and the measurement `ST_3DLength` are also implemented. See
+**What is implemented today.** Beyond the v1 baseline (§5), the extension ships the
+general-geometry type `GEOM_3D` (§16.2) and the full `must`/`should` accessor, measurement,
+distance, transform, construction, and serialization surface of §16.3–§16.7. Concretely, the
+implemented set includes: accessors `ST_NDims`, `ST_HasZ`, `ST_ZMin`, `ST_ZMax`, `ST_X`,
+`ST_Y`, `ST_Z`, `ST_CoordDim`, `ST_GeometryType`, `ST_Dimension`, `ST_NumGeometries`;
+measurement `ST_Area`, `ST_3DLength`, `ST_3DPerimeter`, `ST_3DArea`; the distance family
+`ST_3DDistance`, `ST_3DDWithin`, `ST_3DMaxDistance`, `ST_3DDFullyWithin`, `ST_3DIntersects`,
+`ST_3DClosestPoint`, `ST_3DShortestLine`; transforms/construction `ST_Translate`, `ST_Scale`,
+`ST_RotateX/Y/Z`, `ST_Force3D`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`,
+`ST_ConvexHull`, `ST_IsPlanar`; and serialization `ST_AsText`, `ST_AsGeoJSON`, `ST_AsBinary`.
+The `GEOM_3D` WKB parser covers `Point Z`, `LineString Z`, `MultiPoint Z`,
+`MultiLineString Z`, `Polygon Z`, `MultiPolygon Z`, and `PolyhedralSurface Z`. Kernel sources:
+`geom_distance.cpp`, `geom_construct.cpp`, `geom_analysis.cpp`, `geom_serialize.cpp`,
+`measurements.cpp`. The full table with PostGIS analogues is
 [§16.9](#169-implemented-functions-postgis-analogues).
-The `GEOM_3D` WKB parser now covers `Polygon Z`, `MultiPoint Z`, `MultiPolygon Z`,
-and `PolyhedralSurface Z` in addition to `Point Z`, `LineString Z`, and
-`MultiLineString Z`. The `must` distance pair `ST_3DDistance` / `ST_3DDWithin` is
-implemented on `GEOM_3D` (kernel: `src/kernel/geom_distance.cpp`).
-The distance-family `should` functions `ST_3DMaxDistance`, `ST_3DDFullyWithin`, and
-`ST_3DIntersects` are implemented on `GEOM_3D`, and `ST_3DExtrude` (footprint → LoD1
-solid) is implemented (kernel: `src/kernel/geom_construct.cpp`).
-All `should` functions in §16.3–§16.7 are now implemented on `GEOM_3D`:
-analysis/transform (`ST_IsPlanar`, `ST_3DCentroid`, `ST_Force3D`,
-`ST_ConvexHull`) in `src/kernel/geom_analysis.cpp`; distance witness
-(`ST_3DClosestPoint`, `ST_3DShortestLine`) in `src/kernel/geom_distance.cpp`;
-serialization (`ST_AsText`, `ST_AsGeoJSON`, `ST_AsBinary`) in
-`src/kernel/geom_serialize.cpp`.
+
+**What remains on the roadmap** is the `want` tier of §16.3–§16.7 (e.g. `ST_HasM`, `ST_M`,
+`ST_Zmflag`, `ST_3DLongestLine`, `ST_Affine`, `ST_FlipCoordinates`, `ST_SwapOrdinates`,
+`ST_PointOnSurface`, `ST_Boundary`, `ST_AsX3D`, `ST_AsGML`, `ST_AsKML`) and the entire
+CGAL/SFCGAL cluster of §16.8.
 
 On naming: we keep `ST_*` / `ST_3D*` names for familiarity, but per §2.2 **full PostGIS
 parity is a non-goal** — this is a curated subset chosen for 3D city-model workflows.
@@ -716,11 +704,11 @@ PostGIS accessors, transforms, and distance functions operate on *arbitrary* geo
   polygonal multis/surfaces, or directly into vertices for `MultiPoint`/`MultiLineString`.
 - `SOLID_3D` stays the dedicated solid type. A solid is convertible to `GEOM_3D` (as its
   boundary surface); a closed/oriented/manifold `GEOM_3D` surface is convertible to
-  `SOLID_3D` via `ST_MakeSolid` (not yet implemented).
+  `SOLID_3D` via `ST_MakeSolid` (§16.6).
 - The v1 `D3DS` payload (§7) remains solid-specific. A sibling **`D3DG` payload**
   (`src/kernel/geom_payload.cpp`) carries lower-dimensional geometries — a versioned
-  change under the §7.5 compatibility rules. This milestone unblocks the class-generic
-  accessor and transform work below.
+  change under the §7.5 compatibility rules. This is what backs the class-generic
+  accessor and transform functions below.
 
 Functions in this section declare their accepted type(s): `GEOM_3D` for class-generic
 operations, `SOLID_3D` for solid-only operations, or both. Null / error semantics are
@@ -847,9 +835,9 @@ baseline this roadmap extends. Listed here with their nearest PostGIS analogue.
 | `ST_3DSurfaceArea` | `(solid SOLID_3D) → DOUBLE` | `ST_3DArea` / `CG_3DArea` |
 | `ST_3DVolume` | `(solid SOLID_3D) → DOUBLE` | `ST_Volume` / `CG_Volume` |
 
-#### 16.9.2 Roadmap functions delivered (branch `develop`)
+#### 16.9.2 Class-generic and roadmap functions (implemented)
 
-Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. New kernel helpers:
+Implemented on `SOLID_3D` and, where class-generic, on `GEOM_3D`. Kernel helpers:
 `ComputeFootprintArea`, `ComputePerimeter` (`src/kernel/measurements.cpp`); the
 primitive-distance kernel `Geom3DDistance`, its point/segment/triangle primitives,
 and the closest-point-pair kernel `Geom3DClosestPoints`
@@ -1013,17 +1001,14 @@ For `should` functions the I/O contract is the table row in §16.3–§16.7 plus
 - **`ST_AsText` / `ST_AsGeoJSON` / `ST_AsBinary`** — serialise from the canonical model;
   `ST_AsBinary` reuses the existing WKB export path (`src/kernel/wkb_export.cpp`).
 
-### 16.11 Roadmap Sequencing (suggested)
+### 16.11 Remaining Roadmap Sequencing (suggested)
 
-1. **`GEOM_3D` type + payload** (§16.2) — gating milestone; unblocks everything
-   class-generic.
-2. **`must` accessors** (§16.3) and **`must` measurement/distance/transform**
-   (§16.4–§16.6) — the building-model core.
-3. **`should` accessors, measurement, distance** — broaden query coverage.
-4. **`should` transforms + construction** (`ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`).
-5. **`should` serialization**.
-6. **`want`** items as demand appears; the **CGAL/SFCGAL cluster** (§16.8) only after the
-   backend decision in §14 is made.
+Steps 1–5 below — the `GEOM_3D` type plus the full `must`/`should` accessor, measurement,
+distance, transform, construction, and serialization surface — are **implemented** (§16.9).
+What remains:
+
+6. **`want`** items (§16.3–§16.7) as demand appears; the **CGAL/SFCGAL cluster** (§16.8) only
+   after the backend decision in §14 is made.
 
 Every step follows red-green-refactor (§13): failing `test/cpp/` math test and `test/sql/`
 contract test first, then implementation and registration, then update of §5 and this

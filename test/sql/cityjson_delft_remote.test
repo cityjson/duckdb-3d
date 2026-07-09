@@ -1,0 +1,138 @@
+# name: test/sql/cityjson_delft_remote.test
+# description: real-world validation of three_d against the remote 3DBAG Delft CityJSONSeq (design doc §12; walkthrough in docs/EXAMPLE.md)
+# group: [sql]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This test streams real 3D building models — the 3DBAG "Delft" tile, CityJSON
+# 2.0 / EPSG:7415 — from a remote server and checks three_d's measurements
+# against 3DBAG's own published attributes (`b3_volume_lod22`, `b3_opp_grond`).
+#
+# It needs BOTH:
+#   1. the `cityjson` community extension registered with the sqllogic runner,
+#      and
+#   2. network access to
+#      https://storage.googleapis.com/cityjson/delft.city.jsonl
+#
+# `require cityjson` makes the runner skip this test when cityjson is not
+# pre-registered (the default under `make test`), so it never breaks offline
+# CI. To run it manually, see docs/CITYJSON_INTEROP.md and docs/EXAMPLE.md.
+#
+# The numeric pins below track the 3DBAG dataset published at the URL above
+# (metadata version v2024.04.20). If 3DBAG republishes a new reconstruction,
+# the exact per-building pins may need refreshing; the fraction-threshold
+# assertions are written with margin and should survive minor data drift.
+# ─────────────────────────────────────────────────────────────────────────────
+
+require cityjson
+
+require three_d
+
+# In 3DBAG, geometry lives on `BuildingPart` features and the ground-truth
+# attributes live on the parent `Building`. Read a bounded slice of both, then
+# join each geometry-bearing part to its parent's attributes.
+statement ok
+CREATE TABLE feats AS
+SELECT id, parents, children, geometry, geometry_properties,
+       b3_volume_lod22, b3_opp_grond
+FROM read_cityjsonseq(
+    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    lod => '2.2')
+LIMIT 400;
+
+statement ok
+CREATE TABLE parts AS
+SELECT p.id,
+       ST_3DTryFromWKB(p.geometry, p.geometry_properties) AS solid,
+       b.b3_volume_lod22,
+       b.b3_opp_grond,
+       len(b.children) AS n_parts
+FROM feats p
+JOIN feats b ON b.id = p.parents[1]
+WHERE p.geometry IS NOT NULL;
+
+# Sanity: we actually pulled a non-trivial number of buildings.
+query I
+SELECT count(*) > 100 FROM parts;
+----
+true
+
+# Every geometry-bearing feature imports — ST_3DTryFromWKB returns no NULLs.
+query I
+SELECT count(*) = count(solid) FROM parts;
+----
+true
+
+# The vast majority reconstruct as valid (closed + manifold + oriented) solids.
+query I
+SELECT (count(*) FILTER (WHERE ST_3DValidationReport(solid).is_valid))
+       >= 0.90 * count(*)
+FROM parts;
+----
+true
+
+# GROUND TRUTH — enclosed volume. For single-part, valid buildings, three_d's
+# ST_3DVolume matches 3DBAG's published b3_volume_lod22 within 2% for ≥95% of
+# buildings (measured agreement is essentially exact; the tolerance absorbs the
+# handful of self-intersecting solids 3DBAG measures differently).
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_3DVolume(solid) - b3_volume_lod22)
+                <= 0.02 * b3_volume_lod22 + 0.1))
+       >= 0.95 * count(*)
+FROM parts
+WHERE n_parts = 1
+  AND ST_3DValidationReport(solid).is_valid
+  AND b3_volume_lod22 > 0;
+----
+true
+
+# GROUND TRUTH — footprint area. ST_Area (XY projection) matches 3DBAG's ground
+# surface area b3_opp_grond within 2% for ≥90% of single-part buildings.
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_Area(solid) - b3_opp_grond)
+                <= 0.02 * b3_opp_grond + 0.1))
+       >= 0.90 * count(*)
+FROM parts
+WHERE n_parts = 1
+  AND b3_opp_grond > 0;
+----
+true
+
+# Building height (ST_ZMax − ST_ZMin) is strictly positive for every solid.
+query I
+SELECT bool_and((ST_ZMax(solid) - ST_ZMin(solid)) > 0) FROM parts;
+----
+true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deterministic per-building pins (selected by id, independent of row order).
+# NL.IMBAG.Pand.0503100000012869-0 is a small flat-roof house whose 3DBAG
+# LoD2.2 solid has 6 faces; published b3_volume_lod22 ≈ 19.52, b3_opp_grond ≈ 7.21.
+# ─────────────────────────────────────────────────────────────────────────────
+query IIIII
+SELECT ST_3DNumFaces(solid),
+       ST_3DIsClosed(solid),
+       ROUND(ST_3DVolume(solid), 1),
+       ROUND(ST_Area(solid), 1),
+       ROUND(ST_ZMax(solid) - ST_ZMin(solid), 2)
+FROM parts
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+----
+6	true	19.5	7.2	2.75
+
+# Proximity between two named buildings using the GEOM_3D distance kernel
+# (~1034 m apart in the tile).
+query I
+SELECT ROUND(ST_3DDistance(
+    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0')),
+    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000016459-0'))
+), 0) > 1000;
+----
+true
+
+statement ok
+DROP TABLE parts;
+
+statement ok
+DROP TABLE feats;

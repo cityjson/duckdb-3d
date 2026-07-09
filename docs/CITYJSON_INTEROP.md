@@ -1,5 +1,10 @@
 # CityJSON Interop
 
+> For a task-oriented walkthrough (measuring buildings, validating solids, and
+> cross-checking against 3DBAG ground truth on the remote Delft dataset), see
+> [EXAMPLE.md](./EXAMPLE.md). This file covers the composition mechanics and how
+> to run the interop tests.
+
 The design doc §12 specifies that `duckdb-3d` integrates with the
 [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) community
 extension via plain SQL composition: `cityjson` produces WKB plus
