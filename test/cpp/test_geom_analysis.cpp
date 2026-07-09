@@ -132,7 +132,7 @@ TEST_CASE("Geom3DConvexHull: square with interior point", "[geom_analysis]") {
 	auto hull = Geom3DConvexHull(m);
 	REQUIRE(hull.type == GeomType::Polygon);
 	REQUIRE(hull.vertices.size() == 4);
-	REQUIRE(hull.ring_offsets == std::vector<uint32_t>{0, 4});
+	REQUIRE(hull.ring_offsets == std::vector<uint32_t> {0, 4});
 }
 
 TEST_CASE("Geom3DConvexHull: collinear points become a linestring", "[geom_analysis]") {

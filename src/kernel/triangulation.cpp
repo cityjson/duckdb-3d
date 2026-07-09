@@ -75,8 +75,7 @@ double SignedArea2D(double ax, double ay, double bx, double by, double cx, doubl
 
 //! Simple ear-clipping triangulation for a convex or simple polygon.
 //! Takes ring vertex indices, projects to 2D, and outputs triangle indices.
-void EarClipTriangulate(const SolidModel &model, const Vertex3D &normal,
-                        uint32_t vi_start, uint32_t vi_end,
+void EarClipTriangulate(const SolidModel &model, const Vertex3D &normal, uint32_t vi_start, uint32_t vi_end,
                         std::vector<uint32_t> &out_triangles) {
 	uint32_t n = vi_end - vi_start;
 	if (n < 3) {

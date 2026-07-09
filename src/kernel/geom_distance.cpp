@@ -25,8 +25,8 @@ Vec3 Cross(const Vec3 &a, const Vec3 &b) {
 }
 
 //! Möller–Trumbore segment/triangle intersection (segment [p,q]).
-bool SegmentIntersectsTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a,
-                               const Vertex3D &b, const Vertex3D &c) {
+bool SegmentIntersectsTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a, const Vertex3D &b,
+                               const Vertex3D &c) {
 	const double eps = 1e-12;
 	Vec3 dir = Sub(q, p);
 	Vec3 e1 = Sub(b, a);
@@ -66,8 +66,7 @@ double DistPointSegment(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b)
 }
 
 //! Closest point on triangle (a,b,c) to point p.
-Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b,
-                                const Vertex3D &c) {
+Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
 	// Ericson, Real-Time Collision Detection §5.1.5 (ClosestPtPointTriangle).
 	Vec3 ab = Sub(b, a);
 	Vec3 ac = Sub(c, a);
@@ -76,8 +75,7 @@ Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vert
 	double d2 = Dot(ac, ap);
 	auto at = [&](double u, double v, double w) {
 		// Barycentric (u,v,w) → cartesian closest point on triangle.
-		return Vertex3D{a.x * u + b.x * v + c.x * w, a.y * u + b.y * v + c.y * w,
-		                a.z * u + b.z * v + c.z * w};
+		return Vertex3D {a.x * u + b.x * v + c.x * w, a.y * u + b.y * v + c.y * w, a.z * u + b.z * v + c.z * w};
 	};
 	if (d1 <= 0.0 && d2 <= 0.0) {
 		return a; // vertex region a
@@ -116,8 +114,7 @@ Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vert
 	return at(1.0 - v - w, v, w);
 }
 
-double DistPointTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b,
-                         const Vertex3D &c) {
+double DistPointTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
 	return DistPointPoint(p, ClosestPointOnTriangle(p, a, b, c));
 }
 
@@ -127,13 +124,13 @@ Vertex3D ClosestPointOnSegment(const Vertex3D &p, const Vertex3D &a, const Verte
 	Vec3 ap = Sub(p, a);
 	double len2 = Dot(ab, ab);
 	double t = (len2 > 0.0) ? Clamp01(Dot(ap, ab) / len2) : 0.0;
-	return Vertex3D{a.x + ab.x * t, a.y + ab.y * t, a.z + ab.z * t};
+	return Vertex3D {a.x + ab.x * t, a.y + ab.y * t, a.z + ab.z * t};
 }
 
 //! Closest points between two segments [p1,q1] and [p2,q2].
 //! Returns (c1 on segment 1, c2 on segment 2).
-ClosestPointPair ClosestPointPairSegmentSegment(const Vertex3D &p1, const Vertex3D &q1,
-                                                const Vertex3D &p2, const Vertex3D &q2) {
+ClosestPointPair ClosestPointPairSegmentSegment(const Vertex3D &p1, const Vertex3D &q1, const Vertex3D &p2,
+                                                const Vertex3D &q2) {
 	// Ericson, Real-Time Collision Detection §5.1.9 (ClosestPtSegmentSegment).
 	Vec3 d1 = Sub(q1, p1); // direction of segment 1
 	Vec3 d2 = Sub(q2, p2); // direction of segment 2
@@ -168,21 +165,19 @@ ClosestPointPair ClosestPointPairSegmentSegment(const Vertex3D &p1, const Vertex
 			}
 		}
 	}
-	Vertex3D c1{p1.x + d1.x * s, p1.y + d1.y * s, p1.z + d1.z * s};
-	Vertex3D c2{p2.x + d2.x * t, p2.y + d2.y * t, p2.z + d2.z * t};
+	Vertex3D c1 {p1.x + d1.x * s, p1.y + d1.y * s, p1.z + d1.z * s};
+	Vertex3D c2 {p2.x + d2.x * t, p2.y + d2.y * t, p2.z + d2.z * t};
 	return {c1, c2};
 }
 
-double DistSegmentSegment(const Vertex3D &p1, const Vertex3D &q1, const Vertex3D &p2,
-                          const Vertex3D &q2) {
+double DistSegmentSegment(const Vertex3D &p1, const Vertex3D &q1, const Vertex3D &p2, const Vertex3D &q2) {
 	auto pair = ClosestPointPairSegmentSegment(p1, q1, p2, q2);
 	return DistPointPoint(pair.p, pair.q);
 }
 
 //! Intersection point of segment [p,q] with triangle plane, assuming it hits
 //! the triangle interior. Computed via Möller–Trumbore.
-Vertex3D SegmentTriangleIntersectionPoint(const Vertex3D &p, const Vertex3D &q,
-                                          const Vertex3D &a, const Vertex3D &b,
+Vertex3D SegmentTriangleIntersectionPoint(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a, const Vertex3D &b,
                                           const Vertex3D &c) {
 	Vec3 dir = Sub(q, p);
 	Vec3 e1 = Sub(b, a);
@@ -197,8 +192,7 @@ Vertex3D SegmentTriangleIntersectionPoint(const Vertex3D &p, const Vertex3D &q,
 	double u = inv * Dot(s, h);
 	double v = inv * Dot(Cross(s, e1), dir);
 	double w = 1.0 - u - v;
-	return Vertex3D{a.x * w + b.x * u + c.x * v, a.y * w + b.y * u + c.y * v,
-	                a.z * w + b.z * u + c.z * v};
+	return Vertex3D {a.x * w + b.x * u + c.x * v, a.y * w + b.y * u + c.y * v, a.z * w + b.z * u + c.z * v};
 }
 
 //! Keep the closest of two candidate pairs.
@@ -208,9 +202,8 @@ void KeepCloser(ClosestPointPair &best, const ClosestPointPair &candidate) {
 	}
 }
 
-ClosestPointPair ClosestPointPairSegmentTriangle(const Vertex3D &p, const Vertex3D &q,
-                                                 const Vertex3D &a, const Vertex3D &b,
-                                                 const Vertex3D &c) {
+ClosestPointPair ClosestPointPairSegmentTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a,
+                                                 const Vertex3D &b, const Vertex3D &c) {
 	if (SegmentIntersectsTriangle(p, q, a, b, c)) {
 		Vertex3D ipt = SegmentTriangleIntersectionPoint(p, q, a, b, c);
 		return {ipt, ipt};
@@ -228,15 +221,14 @@ ClosestPointPair ClosestPointPairSegmentTriangle(const Vertex3D &p, const Vertex
 	return best;
 }
 
-double DistSegmentTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a,
-                           const Vertex3D &b, const Vertex3D &c) {
+double DistSegmentTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a, const Vertex3D &b,
+                           const Vertex3D &c) {
 	auto pair = ClosestPointPairSegmentTriangle(p, q, a, b, c);
 	return DistPointPoint(pair.p, pair.q);
 }
 
-ClosestPointPair ClosestPointPairTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1,
-                                                  const Vertex3D &c1, const Vertex3D &a2,
-                                                  const Vertex3D &b2, const Vertex3D &c2) {
+ClosestPointPair ClosestPointPairTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex3D &c1,
+                                                  const Vertex3D &a2, const Vertex3D &b2, const Vertex3D &c2) {
 	ClosestPointPair best = ClosestPointPairSegmentTriangle(a1, b1, a2, b2, c2);
 	KeepCloser(best, ClosestPointPairSegmentTriangle(b1, c1, a2, b2, c2));
 	KeepCloser(best, ClosestPointPairSegmentTriangle(c1, a1, a2, b2, c2));
@@ -249,8 +241,8 @@ ClosestPointPair ClosestPointPairTriangleTriangle(const Vertex3D &a1, const Vert
 	return best;
 }
 
-double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex3D &c1,
-                            const Vertex3D &a2, const Vertex3D &b2, const Vertex3D &c2) {
+double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex3D &c1, const Vertex3D &a2,
+                            const Vertex3D &b2, const Vertex3D &c2) {
 	auto pair = ClosestPointPairTriangleTriangle(a1, b1, c1, a2, b2, c2);
 	return DistPointPoint(pair.p, pair.q);
 }
@@ -264,8 +256,7 @@ struct Element {
 };
 
 //! Fan-triangulate the ring spanning vertex indices [begin,end) into triangles.
-void FanTriangulate(const GeomModel &m, uint32_t begin, uint32_t end,
-                    std::vector<Element> &out) {
+void FanTriangulate(const GeomModel &m, uint32_t begin, uint32_t end, std::vector<Element> &out) {
 	if (end - begin < 3) {
 		return;
 	}

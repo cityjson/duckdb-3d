@@ -13,17 +13,26 @@ namespace {
 class WKBBuilder {
 public:
 	std::vector<uint8_t> buffer;
-	void u8(uint8_t v) { buffer.push_back(v); }
+	void u8(uint8_t v) {
+		buffer.push_back(v);
+	}
 	void u32(uint32_t v) {
-		buffer.push_back(v & 0xFF); buffer.push_back((v >> 8) & 0xFF);
-		buffer.push_back((v >> 16) & 0xFF); buffer.push_back((v >> 24) & 0xFF);
+		buffer.push_back(v & 0xFF);
+		buffer.push_back((v >> 8) & 0xFF);
+		buffer.push_back((v >> 16) & 0xFF);
+		buffer.push_back((v >> 24) & 0xFF);
 	}
 	void f64(double v) {
-		uint8_t b[8]; std::memcpy(b, &v, 8);
+		uint8_t b[8];
+		std::memcpy(b, &v, 8);
 		buffer.insert(buffer.end(), b, b + 8);
 	}
-	void byteOrder() { u8(1); }
-	void geomType(WKBGeometryType t) { u32(static_cast<uint32_t>(t)); }
+	void byteOrder() {
+		u8(1);
+	}
+	void geomType(WKBGeometryType t) {
+		u32(static_cast<uint32_t>(t));
+	}
 	//! Per ISO WKB, each Polygon nested under a PolyhedralSurface is its own
 	//! WKB value with byte-order + type code + num_rings header.
 	void polyHeader(uint32_t num_rings) {
@@ -33,14 +42,20 @@ public:
 	}
 	void ring(const std::vector<Vertex3D> &pts) {
 		u32(static_cast<uint32_t>(pts.size()) + 1);
-		for (auto &p : pts) { f64(p.x); f64(p.y); f64(p.z); }
-		f64(pts[0].x); f64(pts[0].y); f64(pts[0].z);
+		for (auto &p : pts) {
+			f64(p.x);
+			f64(p.y);
+			f64(p.z);
+		}
+		f64(pts[0].x);
+		f64(pts[0].y);
+		f64(pts[0].z);
 	}
 };
 
 std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false) {
-	Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
-	Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
+	Vertex3D v000 = {0, 0, 0}, v100 = {1, 0, 0}, v110 = {1, 1, 0}, v010 = {0, 1, 0};
+	Vertex3D v001 = {0, 0, 1}, v101 = {1, 0, 1}, v111 = {1, 1, 1}, v011 = {0, 1, 1};
 
 	WKBBuilder b;
 	b.byteOrder();
@@ -54,12 +69,18 @@ std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false) {
 		return ring;
 	};
 
-	b.polyHeader(1); b.ring(maybe_reverse({v000, v010, v110, v100}));
-	b.polyHeader(1); b.ring(maybe_reverse({v001, v101, v111, v011}));
-	b.polyHeader(1); b.ring(maybe_reverse({v000, v100, v101, v001}));
-	b.polyHeader(1); b.ring(maybe_reverse({v010, v011, v111, v110}));
-	b.polyHeader(1); b.ring(maybe_reverse({v000, v001, v011, v010}));
-	b.polyHeader(1); b.ring(maybe_reverse({v100, v110, v111, v101}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v000, v010, v110, v100}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v001, v101, v111, v011}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v000, v100, v101, v001}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v010, v011, v111, v110}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v000, v001, v011, v010}));
+	b.polyHeader(1);
+	b.ring(maybe_reverse({v100, v110, v111, v101}));
 	return b.buffer;
 }
 
@@ -74,16 +95,20 @@ SolidModel MakeValidCube() {
 
 //! Build a valid tetrahedron
 SolidModel MakeValidTetrahedron() {
-	Vertex3D v0 = {0,0,0}, v1 = {1,0,0}, v2 = {0,1,0}, v3 = {0,0,1};
+	Vertex3D v0 = {0, 0, 0}, v1 = {1, 0, 0}, v2 = {0, 1, 0}, v3 = {0, 0, 1};
 
 	WKBBuilder b;
 	b.byteOrder();
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(4);
-	b.polyHeader(1); b.ring({v0, v2, v1});
-	b.polyHeader(1); b.ring({v0, v1, v3});
-	b.polyHeader(1); b.ring({v1, v2, v3});
-	b.polyHeader(1); b.ring({v2, v0, v3});
+	b.polyHeader(1);
+	b.ring({v0, v2, v1});
+	b.polyHeader(1);
+	b.ring({v0, v1, v3});
+	b.polyHeader(1);
+	b.ring({v1, v2, v3});
+	b.polyHeader(1);
+	b.ring({v2, v0, v3});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -92,23 +117,28 @@ SolidModel MakeValidTetrahedron() {
 }
 
 SolidModel MakeCubeWithTopHole() {
-	Vertex3D v000={0,0,0}, v100={1,0,0}, v110={1,1,0}, v010={0,1,0};
-	Vertex3D v001={0,0,1}, v101={1,0,1}, v111={1,1,1}, v011={0,1,1};
-	Vertex3D h00={0.25,0.25,1}, h10={0.75,0.25,1}, h11={0.75,0.75,1}, h01={0.25,0.75,1};
+	Vertex3D v000 = {0, 0, 0}, v100 = {1, 0, 0}, v110 = {1, 1, 0}, v010 = {0, 1, 0};
+	Vertex3D v001 = {0, 0, 1}, v101 = {1, 0, 1}, v111 = {1, 1, 1}, v011 = {0, 1, 1};
+	Vertex3D h00 = {0.25, 0.25, 1}, h10 = {0.75, 0.25, 1}, h11 = {0.75, 0.75, 1}, h01 = {0.25, 0.75, 1};
 
 	WKBBuilder b;
 	b.byteOrder();
 	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.u32(6);
 
-	b.polyHeader(1); b.ring({v000, v010, v110, v100});
+	b.polyHeader(1);
+	b.ring({v000, v010, v110, v100});
 	b.polyHeader(2);
 	b.ring({v001, v101, v111, v011});
 	b.ring({h00, h01, h11, h10});
-	b.polyHeader(1); b.ring({v000, v100, v101, v001});
-	b.polyHeader(1); b.ring({v010, v011, v111, v110});
-	b.polyHeader(1); b.ring({v000, v001, v011, v010});
-	b.polyHeader(1); b.ring({v100, v110, v111, v101});
+	b.polyHeader(1);
+	b.ring({v000, v100, v101, v001});
+	b.polyHeader(1);
+	b.ring({v010, v011, v111, v110});
+	b.polyHeader(1);
+	b.ring({v000, v001, v011, v010});
+	b.polyHeader(1);
+	b.ring({v100, v110, v111, v101});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);

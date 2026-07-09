@@ -7,6 +7,12 @@ set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
+
+# The kernel uses C++17 features (e.g. if-init statements). Declare the standard
+# explicitly so both the normal build and the clang-tidy pass parse as C++17.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 include_directories(src/include)
 
 set(EXTENSION_SOURCES

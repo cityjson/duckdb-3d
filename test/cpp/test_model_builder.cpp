@@ -13,7 +13,9 @@ namespace {
 class WKBBuilder {
 public:
 	std::vector<uint8_t> buffer;
-	void WriteByte(uint8_t v) { buffer.push_back(v); }
+	void WriteByte(uint8_t v) {
+		buffer.push_back(v);
+	}
 	void WriteU32LE(uint32_t v) {
 		buffer.push_back(v & 0xFF);
 		buffer.push_back((v >> 8) & 0xFF);
@@ -25,13 +27,23 @@ public:
 		std::memcpy(bytes, &v, 8);
 		buffer.insert(buffer.end(), bytes, bytes + 8);
 	}
-	void WriteByteOrder() { WriteByte(1); }
-	void WriteGeometryType(WKBGeometryType type) { WriteU32LE(static_cast<uint32_t>(type)); }
+	void WriteByteOrder() {
+		WriteByte(1);
+	}
+	void WriteGeometryType(WKBGeometryType type) {
+		WriteU32LE(static_cast<uint32_t>(type));
+	}
 	void WriteRing(const std::vector<Vertex3D> &pts) {
 		uint32_t count = static_cast<uint32_t>(pts.size()) + 1; // +1 for closing vertex
 		WriteU32LE(count);
-		for (auto &p : pts) { WriteF64LE(p.x); WriteF64LE(p.y); WriteF64LE(p.z); }
-		WriteF64LE(pts[0].x); WriteF64LE(pts[0].y); WriteF64LE(pts[0].z);
+		for (auto &p : pts) {
+			WriteF64LE(p.x);
+			WriteF64LE(p.y);
+			WriteF64LE(p.z);
+		}
+		WriteF64LE(pts[0].x);
+		WriteF64LE(pts[0].y);
+		WriteF64LE(pts[0].z);
 	}
 };
 
@@ -65,8 +77,8 @@ std::vector<uint8_t> MakeUnitCubeWKB() {
 	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
 	b.WriteU32LE(6);
 
-	Vertex3D v000 = {0,0,0}, v100 = {1,0,0}, v110 = {1,1,0}, v010 = {0,1,0};
-	Vertex3D v001 = {0,0,1}, v101 = {1,0,1}, v111 = {1,1,1}, v011 = {0,1,1};
+	Vertex3D v000 = {0, 0, 0}, v100 = {1, 0, 0}, v110 = {1, 1, 0}, v010 = {0, 1, 0};
+	Vertex3D v001 = {0, 0, 1}, v101 = {1, 0, 1}, v111 = {1, 1, 1}, v011 = {0, 1, 1};
 
 	auto writeFace = [&](const std::vector<Vertex3D> &pts) {
 		b.WriteByteOrder();
@@ -156,11 +168,21 @@ TEST_CASE("BuildSolidModel removes duplicate consecutive ring vertices", "[model
 	b.WriteU32LE(1); // 1 ring
 	// Ring with 6 points: 0,0,0 -> 1,0,0 -> 1,0,0 (dup) -> 0,1,0 -> 0,0,0 (closing)
 	b.WriteU32LE(5);
-	b.WriteF64LE(0); b.WriteF64LE(0); b.WriteF64LE(0);
-	b.WriteF64LE(1); b.WriteF64LE(0); b.WriteF64LE(0);
-	b.WriteF64LE(1); b.WriteF64LE(0); b.WriteF64LE(0); // consecutive dup
-	b.WriteF64LE(0); b.WriteF64LE(1); b.WriteF64LE(0);
-	b.WriteF64LE(0); b.WriteF64LE(0); b.WriteF64LE(0); // closing
+	b.WriteF64LE(0);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0);
+	b.WriteF64LE(1);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0);
+	b.WriteF64LE(1);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0); // consecutive dup
+	b.WriteF64LE(0);
+	b.WriteF64LE(1);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0);
+	b.WriteF64LE(0); // closing
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);

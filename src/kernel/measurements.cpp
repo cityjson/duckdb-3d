@@ -1,4 +1,5 @@
 #include "kernel/measurements.hpp"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -67,8 +68,8 @@ double ComputeSurfaceArea(const SolidModel &model) {
 			face_area.z += ring_area.z;
 		}
 
-		total_area += 0.5 * std::sqrt(face_area.x * face_area.x + face_area.y * face_area.y +
-		                              face_area.z * face_area.z);
+		total_area +=
+		    0.5 * std::sqrt(face_area.x * face_area.x + face_area.y * face_area.y + face_area.z * face_area.z);
 	}
 
 	return total_area;
