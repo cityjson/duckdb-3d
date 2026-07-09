@@ -125,7 +125,8 @@ void PlaneBasis(const Vec3 &n, Vec3 &u, Vec3 &v) {
 		candidate = {0, 1, 0};
 	}
 	u = Cross(n, candidate);
-	if (double len = Length(u); len > 1e-12) {
+	double len = Length(u);
+	if (len > 1e-12) {
 		u = Mul(u, 1.0 / len);
 	} else {
 		u = {0, 1, 0};
@@ -138,7 +139,7 @@ void PlaneBasis(const Vec3 &n, Vec3 &u, Vec3 &v) {
 std::pair<double, Vertex3D> RingCentroid(const GeomModel &m, uint32_t begin, uint32_t end) {
 	uint32_t n = end - begin;
 	if (n == 0) {
-		return std::make_pair(0.0, Vertex3D{0, 0, 0});
+		return std::make_pair(0.0, Vertex3D {0, 0, 0});
 	}
 	if (n == 1) {
 		return std::make_pair(0.0, m.vertices[begin]);
@@ -235,7 +236,7 @@ Vertex3D Geom3DCentroid(const GeomModel &geom) {
 		for (const auto &v : geom.vertices) {
 			sum = Add(sum, MakeVec3(v));
 		}
-		return MakeVertex(Mul(sum, 1.0 / geom.vertices.size()));
+		return MakeVertex(Mul(sum, 1.0 / static_cast<double>(geom.vertices.size())));
 	}
 	case GeomType::LineString:
 		return PolylineCentroid(geom, 0, static_cast<uint32_t>(geom.vertices.size()));
@@ -252,7 +253,7 @@ Vertex3D Geom3DCentroid(const GeomModel &geom) {
 			total_len += part_len;
 		}
 		if (total_len == 0.0) {
-			return geom.vertices.empty() ? Vertex3D{0, 0, 0} : geom.vertices[0];
+			return geom.vertices.empty() ? Vertex3D {0, 0, 0} : geom.vertices[0];
 		}
 		return MakeVertex(Mul(weighted, 1.0 / total_len));
 	}
@@ -279,7 +280,7 @@ Vertex3D Geom3DCentroid(const GeomModel &geom) {
 			total_area += area;
 		}
 		if (total_area == 0.0) {
-			return geom.vertices.empty() ? Vertex3D{0, 0, 0} : geom.vertices[0];
+			return geom.vertices.empty() ? Vertex3D {0, 0, 0} : geom.vertices[0];
 		}
 		return MakeVertex(Mul(weighted, 1.0 / total_area));
 	}
@@ -318,9 +319,9 @@ GeomModel Geom3DConvexHull(const GeomModel &geom) {
 		}
 		return a.y < b.y;
 	});
-	pts.erase(std::unique(pts.begin(), pts.end(), [](const Vertex3D &a, const Vertex3D &b) {
-		return a.x == b.x && a.y == b.y;
-	}), pts.end());
+	pts.erase(std::unique(pts.begin(), pts.end(),
+	                      [](const Vertex3D &a, const Vertex3D &b) { return a.x == b.x && a.y == b.y; }),
+	          pts.end());
 
 	if (pts.size() == 1) {
 		GeomModel out;

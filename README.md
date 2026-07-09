@@ -1,5 +1,7 @@
 # duckdb-3d
 
+> ⚠️ **Experimental.** This library is under active development and should be considered experimental. Its API, output schema, and on-disk formats may change without notice, and bugs are expected — including ones that can affect data correctness. Do not rely on it for production workloads yet, and verify results against a trusted source before use. Please report issues you encounter.
+
 A [DuckDB](https://duckdb.org) extension for **3D solid processing**. It makes the polyhedral
 solids in 3D city models — buildings from CityJSON / [3DBAG](https://3dbag.nl), CityParquet,
 and similar sources — first-class, queryable values in SQL: measure enclosed volume, check

@@ -105,8 +105,8 @@ void ValidatePayloadModel(const SolidModel &model, uint32_t vertex_count, uint32
 		}
 	}
 
-	if (model.vertices.size() != vertex_count || model.SolidCount() != solid_count || model.ShellCount() != shell_count ||
-	    model.FaceCount() != face_count || model.RingCount() != ring_count ||
+	if (model.vertices.size() != vertex_count || model.SolidCount() != solid_count ||
+	    model.ShellCount() != shell_count || model.FaceCount() != face_count || model.RingCount() != ring_count ||
 	    model.TriangleCount() != triangle_count) {
 		throw std::runtime_error("SOLID_3D payload: header counts do not match payload body");
 	}
@@ -190,7 +190,7 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model) {
 	writer.WriteArray(model.ring_vertex_indices.data(), model.ring_vertex_indices.size());
 
 	// Data arrays: triangle vertex indices
-	writer.WriteArray(model.triangle_vertex_indices.data(), triangle_count * 3);
+	writer.WriteArray(model.triangle_vertex_indices.data(), static_cast<size_t>(triangle_count) * 3);
 
 	// Validation cache
 	writer.Write<uint32_t>(model.validation.open_edge_count);

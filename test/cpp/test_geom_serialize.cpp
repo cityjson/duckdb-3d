@@ -45,8 +45,7 @@ TEST_CASE("Geom3DAsText: Point Z", "[geom_serialize]") {
 }
 
 TEST_CASE("Geom3DAsText: LineString Z", "[geom_serialize]") {
-	REQUIRE(Geom3DAsText(LineString({{0, 0, 0}, {1, 0, 0}, {1, 1, 1}})) ==
-	        "LINESTRING Z (0 0 0, 1 0 0, 1 1 1)");
+	REQUIRE(Geom3DAsText(LineString({{0, 0, 0}, {1, 0, 0}, {1, 1, 1}})) == "LINESTRING Z (0 0 0, 1 0 0, 1 1 1)");
 }
 
 TEST_CASE("Geom3DAsText: Polygon Z repeats closing vertex", "[geom_serialize]") {
@@ -78,7 +77,7 @@ TEST_CASE("Geom3DAsBinary: Polygon Z round-trips through parser", "[geom_seriali
 	auto model = ParseGeomWKB(wkb.data(), wkb.size());
 	REQUIRE(model.type == GeomType::Polygon);
 	REQUIRE(model.vertices.size() == 4);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4});
 }
 
 TEST_CASE("DeserializeGeomPayload rejects vertex_count exceeding payload size", "[geom_payload]") {

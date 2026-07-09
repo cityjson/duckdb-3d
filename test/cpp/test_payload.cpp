@@ -160,8 +160,7 @@ TEST_CASE("Payload rejects out-of-range vertex indices", "[payload]") {
 	model.ring_vertex_indices[0] = 99;
 
 	auto bytes = SerializePayload(model);
-	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()),
-	                    Catch::Contains("vertex index"));
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()), Catch::Contains("vertex index"));
 }
 
 TEST_CASE("ReadSolidPayloadHeader matches full deserialisation", "[payload]") {

@@ -46,8 +46,7 @@ std::vector<std::array<Vertex3D, 3>> ClosedTetraFaces() {
 
 } // namespace
 
-TEST_CASE("BuildSolidFromSurface: closed tetrahedron becomes a valid solid",
-          "[geom_construct]") {
+TEST_CASE("BuildSolidFromSurface: closed tetrahedron becomes a valid solid", "[geom_construct]") {
 	auto solid = BuildSolidFromSurface(SurfaceFromTriangles(ClosedTetraFaces()));
 
 	REQUIRE(solid.SolidCount() == 1);
@@ -90,8 +89,7 @@ TEST_CASE("BuildExtrudedSolid: unit square extruded into a closed box", "[geom_c
 	REQUIRE(solid.bbox.max_z == 2.0);
 }
 
-TEST_CASE("BuildExtrudedSolid: clockwise footprint still yields an oriented box",
-          "[geom_construct]") {
+TEST_CASE("BuildExtrudedSolid: clockwise footprint still yields an oriented box", "[geom_construct]") {
 	GeomModel cw;
 	cw.type = GeomType::Polygon;
 	// Clockwise winding (negative shoelace area).

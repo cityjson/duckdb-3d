@@ -11,17 +11,26 @@ namespace {
 class WKBBuilder {
 public:
 	std::vector<uint8_t> buffer;
-	void u8(uint8_t v) { buffer.push_back(v); }
+	void u8(uint8_t v) {
+		buffer.push_back(v);
+	}
 	void u32(uint32_t v) {
-		buffer.push_back(v & 0xFF); buffer.push_back((v >> 8) & 0xFF);
-		buffer.push_back((v >> 16) & 0xFF); buffer.push_back((v >> 24) & 0xFF);
+		buffer.push_back(v & 0xFF);
+		buffer.push_back((v >> 8) & 0xFF);
+		buffer.push_back((v >> 16) & 0xFF);
+		buffer.push_back((v >> 24) & 0xFF);
 	}
 	void f64(double v) {
-		uint8_t b[8]; std::memcpy(b, &v, 8);
+		uint8_t b[8];
+		std::memcpy(b, &v, 8);
 		buffer.insert(buffer.end(), b, b + 8);
 	}
-	void byteOrder() { u8(1); }
-	void geomType(WKBGeometryType t) { u32(static_cast<uint32_t>(t)); }
+	void byteOrder() {
+		u8(1);
+	}
+	void geomType(WKBGeometryType t) {
+		u32(static_cast<uint32_t>(t));
+	}
 	//! Per ISO WKB, each Polygon nested under a PolyhedralSurface is its own
 	//! WKB value with byte-order + type code + num_rings header.
 	void polyHeader(uint32_t num_rings) {
@@ -31,16 +40,22 @@ public:
 	}
 	void ring(const std::vector<Vertex3D> &pts) {
 		u32(static_cast<uint32_t>(pts.size()) + 1);
-		for (auto &p : pts) { f64(p.x); f64(p.y); f64(p.z); }
-		f64(pts[0].x); f64(pts[0].y); f64(pts[0].z);
+		for (auto &p : pts) {
+			f64(p.x);
+			f64(p.y);
+			f64(p.z);
+		}
+		f64(pts[0].x);
+		f64(pts[0].y);
+		f64(pts[0].z);
 	}
 };
 
 //! Build a PolyhedralSurface Z with 8 triangular faces (simulating a
 //! Solid with 2 shells: outer tetra (4 faces) + inner tetra (4 faces))
 std::vector<uint8_t> MakeTwoShellWKB() {
-	Vertex3D v0={0,0,0}, v1={2,0,0}, v2={1,2,0}, v3={1,1,2};
-	Vertex3D i0={0.5,0.5,0.3}, i1={1.5,0.5,0.3}, i2={1,1.5,0.3}, i3={1,1,1.2};
+	Vertex3D v0 = {0, 0, 0}, v1 = {2, 0, 0}, v2 = {1, 2, 0}, v3 = {1, 1, 2};
+	Vertex3D i0 = {0.5, 0.5, 0.3}, i1 = {1.5, 0.5, 0.3}, i2 = {1, 1.5, 0.3}, i3 = {1, 1, 1.2};
 
 	WKBBuilder b;
 	b.byteOrder();
@@ -48,16 +63,24 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 	b.u32(8); // 8 faces total
 
 	// Outer shell: 4 faces
-	b.polyHeader(1); b.ring({v0, v2, v1});
-	b.polyHeader(1); b.ring({v0, v1, v3});
-	b.polyHeader(1); b.ring({v1, v2, v3});
-	b.polyHeader(1); b.ring({v2, v0, v3});
+	b.polyHeader(1);
+	b.ring({v0, v2, v1});
+	b.polyHeader(1);
+	b.ring({v0, v1, v3});
+	b.polyHeader(1);
+	b.ring({v1, v2, v3});
+	b.polyHeader(1);
+	b.ring({v2, v0, v3});
 
 	// Inner shell: 4 faces (reversed winding for interior)
-	b.polyHeader(1); b.ring({i0, i1, i2});
-	b.polyHeader(1); b.ring({i0, i3, i1});
-	b.polyHeader(1); b.ring({i1, i3, i2});
-	b.polyHeader(1); b.ring({i2, i3, i0});
+	b.polyHeader(1);
+	b.ring({i0, i1, i2});
+	b.polyHeader(1);
+	b.ring({i0, i3, i1});
+	b.polyHeader(1);
+	b.ring({i1, i3, i2});
+	b.polyHeader(1);
+	b.ring({i2, i3, i0});
 
 	return b.buffer;
 }
@@ -132,8 +155,7 @@ TEST_CASE("BuildSolidModel with metadata: conflict raises", "[metadata]") {
 	meta.shell_count = 2;
 	meta.shell_face_counts = {3, 3}; // sum=6 but WKB has 8 faces → conflict
 
-	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta),
-	                     Catch::Contains("face count mismatch"));
+	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("face count mismatch"));
 }
 
 TEST_CASE("BuildSolidModel with metadata: unsupported multi-surface metadata raises", "[metadata]") {
