@@ -26,8 +26,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/geom_distance.cpp
     ${REPO_ROOT}/src/kernel/geom_construct.cpp
     ${REPO_ROOT}/src/kernel/geom_analysis.cpp
-    ${REPO_ROOT}/src/kernel/geom_serialize.cpp
-)
+    ${REPO_ROOT}/src/kernel/geom_serialize.cpp)
 
 # Test sources
 set(TEST_SOURCES
@@ -42,12 +41,9 @@ set(TEST_SOURCES
     test_geom_distance.cpp
     test_geom_construct.cpp
     test_geom_analysis.cpp
-    test_geom_serialize.cpp
-)
+    test_geom_serialize.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 
-target_include_directories(three_d_unit_tests PRIVATE
-    ${CATCH_INCLUDE_DIR}
-    ${REPO_ROOT}/src/include
-)
+target_include_directories(three_d_unit_tests PRIVATE ${CATCH_INCLUDE_DIR}
+                                                      ${REPO_ROOT}/src/include)

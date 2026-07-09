@@ -48,10 +48,9 @@ SolidModel BuildSolidFromSurface(const GeomModel &surface) {
 		}
 	}
 
-	std::vector<ParsedPolyhedralSurface> surfaces{parsed};
+	std::vector<ParsedPolyhedralSurface> surfaces {parsed};
 	SolidModel model = BuildSolidModel(surfaces);
-	if (!(model.validation.is_closed && model.validation.is_manifold &&
-	      model.validation.is_oriented)) {
+	if (!(model.validation.is_closed && model.validation.is_manifold && model.validation.is_oriented)) {
 		throw std::runtime_error(
 		    "ST_MakeSolid: surface is not a closed, manifold, oriented solid (no repair performed)");
 	}
@@ -109,7 +108,7 @@ SolidModel BuildExtrudedSolid(const GeomModel &polygon, double height) {
 		add_face({ext[i], ext[j], top[j], top[i]});
 	}
 
-	std::vector<ParsedPolyhedralSurface> surfaces{surface};
+	std::vector<ParsedPolyhedralSurface> surfaces {surface};
 	SolidModel model = BuildSolidModel(surfaces);
 	if (!(model.validation.is_closed && model.validation.is_oriented)) {
 		throw std::runtime_error("ST_3DExtrude: constructed solid is not closed and oriented");

@@ -29,8 +29,8 @@ struct UndirectedEdge {
 
 struct UndirectedEdgeHash {
 	size_t operator()(const UndirectedEdge &e) const {
-		size_t h = std::hash<uint32_t>{}(e.a);
-		h ^= std::hash<uint32_t>{}(e.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
+		size_t h = std::hash<uint32_t> {}(e.a);
+		h ^= std::hash<uint32_t> {}(e.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
 		return h;
 	}
 };
@@ -93,8 +93,7 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 }
 
 //! Collect directed edges from a shell's faces
-void CollectShellEdges(const SolidModel &model, uint32_t shell_idx,
-                       std::vector<DirectedEdge> &directed_edges) {
+void CollectShellEdges(const SolidModel &model, uint32_t shell_idx, std::vector<DirectedEdge> &directed_edges) {
 	uint32_t face_start = model.shell_face_offsets[shell_idx];
 	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
 
@@ -138,8 +137,8 @@ ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t sh
 	// Count directed edge occurrences using a pair hash
 	struct PairHash {
 		size_t operator()(const std::pair<uint32_t, uint32_t> &p) const {
-			size_t h = std::hash<uint32_t>{}(p.first);
-			h ^= std::hash<uint32_t>{}(p.second) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			size_t h = std::hash<uint32_t> {}(p.first);
+			h ^= std::hash<uint32_t> {}(p.second) + 0x9e3779b9 + (h << 6) + (h >> 2);
 			return h;
 		}
 	};

@@ -32,32 +32,52 @@ namespace duckdb {
 // ──────────────────────────────────────────────────────────────
 static std::vector<uint8_t> BuildTetrahedronWKB() {
 	std::vector<uint8_t> buf;
-	auto u8 = [&](uint8_t v) { buf.push_back(v); };
+	auto u8 = [&](uint8_t v) {
+		buf.push_back(v);
+	};
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
 		buf.insert(buf.end(), b, b + 8);
 	};
-	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1,
-	                double x2, double y2, double z2) {
+	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1, double x2, double y2, double z2) {
 		u32(4);
-		f64(x0); f64(y0); f64(z0);
-		f64(x1); f64(y1); f64(z1);
-		f64(x2); f64(y2); f64(z2);
-		f64(x0); f64(y0); f64(z0);
+		f64(x0);
+		f64(y0);
+		f64(z0);
+		f64(x1);
+		f64(y1);
+		f64(z1);
+		f64(x2);
+		f64(y2);
+		f64(z2);
+		f64(x0);
+		f64(y0);
+		f64(z0);
 	};
 	auto poly_header = [&](uint32_t num_rings) {
-		u8(1); u32(1003); u32(num_rings); // byte-order, PolygonZ, num_rings
+		u8(1);
+		u32(1003);
+		u32(num_rings); // byte-order, PolygonZ, num_rings
 	};
 
-	u8(1); u32(1015); u32(4);
-	poly_header(1); ring(0,0,0, 0,1,0, 1,0,0);
-	poly_header(1); ring(0,0,0, 1,0,0, 0,0,1);
-	poly_header(1); ring(1,0,0, 0,1,0, 0,0,1);
-	poly_header(1); ring(0,0,0, 0,0,1, 0,1,0);
+	u8(1);
+	u32(1015);
+	u32(4);
+	poly_header(1);
+	ring(0, 0, 0, 0, 1, 0, 1, 0, 0);
+	poly_header(1);
+	ring(0, 0, 0, 1, 0, 0, 0, 0, 1);
+	poly_header(1);
+	ring(1, 0, 0, 0, 1, 0, 0, 0, 1);
+	poly_header(1);
+	ring(0, 0, 0, 0, 0, 1, 0, 1, 0);
 	return buf;
 }
 
@@ -71,31 +91,50 @@ static void ST_AsWKBPolyhedralTetraFun(DataChunk &args, ExpressionState &state, 
 // Test helper: a tetrahedron with the bottom face removed → open shell (3 faces).
 static std::vector<uint8_t> BuildOpenTetrahedronWKB() {
 	std::vector<uint8_t> buf;
-	auto u8 = [&](uint8_t v) { buf.push_back(v); };
+	auto u8 = [&](uint8_t v) {
+		buf.push_back(v);
+	};
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
 		buf.insert(buf.end(), b, b + 8);
 	};
-	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1,
-	                double x2, double y2, double z2) {
+	auto ring = [&](double x0, double y0, double z0, double x1, double y1, double z1, double x2, double y2, double z2) {
 		u32(4);
-		f64(x0); f64(y0); f64(z0);
-		f64(x1); f64(y1); f64(z1);
-		f64(x2); f64(y2); f64(z2);
-		f64(x0); f64(y0); f64(z0);
+		f64(x0);
+		f64(y0);
+		f64(z0);
+		f64(x1);
+		f64(y1);
+		f64(z1);
+		f64(x2);
+		f64(y2);
+		f64(z2);
+		f64(x0);
+		f64(y0);
+		f64(z0);
 	};
 	auto poly_header = [&](uint32_t num_rings) {
-		u8(1); u32(1003); u32(num_rings); // byte-order, PolygonZ, num_rings
+		u8(1);
+		u32(1003);
+		u32(num_rings); // byte-order, PolygonZ, num_rings
 	};
 
-	u8(1); u32(1015); u32(3);
-	poly_header(1); ring(0,0,0, 1,0,0, 0,0,1);
-	poly_header(1); ring(1,0,0, 0,1,0, 0,0,1);
-	poly_header(1); ring(0,0,0, 0,0,1, 0,1,0);
+	u8(1);
+	u32(1015);
+	u32(3);
+	poly_header(1);
+	ring(0, 0, 0, 1, 0, 0, 0, 0, 1);
+	poly_header(1);
+	ring(1, 0, 0, 0, 1, 0, 0, 0, 1);
+	poly_header(1);
+	ring(0, 0, 0, 0, 0, 1, 0, 1, 0);
 	return buf;
 }
 
@@ -116,7 +155,8 @@ static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &res
 		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto model = BuildSolidModel(surfaces);
 		auto payload = SerializePayload(model);
-		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
@@ -125,19 +165,20 @@ static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &res
 // ──────────────────────────────────────────────────────────────
 static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &wkb_vec = args.data[0];
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(wkb_vec, result, args.size(),
-		[&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
-			using namespace duckdb_3d;
-			try {
-				auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
-				auto model = BuildSolidModel(surfaces);
-				auto payload = SerializePayload(model);
-				return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-			} catch (...) {
-				mask.SetInvalid(idx);
-				return string_t();
-			}
-		});
+	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
+	    wkb_vec, result, args.size(), [&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
+		    using namespace duckdb_3d;
+		    try {
+			    auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+			    auto model = BuildSolidModel(surfaces);
+			    auto payload = SerializePayload(model);
+			    return StringVector::AddStringOrBlob(
+			        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		    } catch (...) {
+			    mask.SetInvalid(idx);
+			    return string_t();
+		    }
+	    });
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -414,14 +455,19 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 			msg_str = "Valid solid";
 		} else {
 			std::vector<string> issues;
-			if (!vc.is_closed) issues.push_back("not closed");
-			if (!vc.is_manifold) issues.push_back("non-manifold edges");
-			if (!vc.is_oriented) issues.push_back("orientation inconsistent");
-			if (vc.degenerate_face_count > 0) issues.push_back("degenerate faces");
+			if (!vc.is_closed)
+				issues.push_back("not closed");
+			if (!vc.is_manifold)
+				issues.push_back("non-manifold edges");
+			if (!vc.is_oriented)
+				issues.push_back("orientation inconsistent");
+			if (vc.degenerate_face_count > 0)
+				issues.push_back("degenerate faces");
 			code_str = "INVALID";
 			msg_str = "Invalid solid: ";
 			for (size_t j = 0; j < issues.size(); j++) {
-				if (j > 0) msg_str += ", ";
+				if (j > 0)
+					msg_str += ", ";
 				msg_str += issues[j];
 			}
 		}
@@ -480,15 +526,13 @@ static int32_t CoordinateDimension3D() {
 }
 
 static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t solid) {
-		return CoordinateDimension3D();
-	});
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(),
+	                                          [](string_t solid) { return CoordinateDimension3D(); });
 }
 
 static void ST_CoordDimFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
-		return CoordinateDimension3D();
-	});
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(),
+	                                          [](string_t geom) { return CoordinateDimension3D(); });
 }
 
 static void ST_HasZFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -590,9 +634,12 @@ static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &res
 			v.y += dy;
 			v.z += dz;
 		}
-		model.bbox.min_x += dx; model.bbox.max_x += dx;
-		model.bbox.min_y += dy; model.bbox.max_y += dy;
-		model.bbox.min_z += dz; model.bbox.max_z += dz;
+		model.bbox.min_x += dx;
+		model.bbox.max_x += dx;
+		model.bbox.min_y += dy;
+		model.bbox.max_y += dy;
+		model.bbox.min_z += dz;
+		model.bbox.max_z += dz;
 
 		auto payload = SerializePayload(model);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
@@ -645,9 +692,12 @@ static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector 
 			v.y += dy;
 			v.z += dz;
 		}
-		model.bbox.min_x += dx; model.bbox.max_x += dx;
-		model.bbox.min_y += dy; model.bbox.max_y += dy;
-		model.bbox.min_z += dz; model.bbox.max_z += dz;
+		model.bbox.min_x += dx;
+		model.bbox.max_x += dx;
+		model.bbox.min_y += dy;
+		model.bbox.max_y += dy;
+		model.bbox.min_z += dz;
+		model.bbox.max_z += dz;
 
 		auto payload = SerializeGeomPayload(model);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
@@ -805,23 +855,26 @@ static string_t RotateSolidBlob(Vector &result, string_t solid, double radians, 
 	model.ComputeBBox();
 
 	auto payload = SerializePayload(model);
-	return StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	return StringVector::AddStringOrBlob(result,
+	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 }
 
 static void ST_RotateXFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::X); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::X); });
 }
 
 static void ST_RotateYFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Y); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Y); });
 }
 
 static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Z); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Z); });
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -853,23 +906,26 @@ static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, Ro
 	model.ComputeBBox();
 
 	auto payload = SerializeGeomPayload(model);
-	return StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	return StringVector::AddStringOrBlob(result,
+	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 }
 
 static void ST_RotateXGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::X); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::X); });
 }
 
 static void ST_RotateYGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Y); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Y); });
 }
 
 static void ST_RotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, double, string_t>(args.data[0], args.data[1], result, args.size(),
-		[&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Z); });
+	BinaryExecutor::Execute<string_t, double, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Z); });
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -879,19 +935,24 @@ static void ST_RotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &r
 // Test helper: build a Point Z WKB from x, y, z.
 static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<double, double, double, string_t>(
-	    args.data[0], args.data[1], args.data[2], result, args.size(),
-	    [&](double x, double y, double z) {
+	    args.data[0], args.data[1], args.data[2], result, args.size(), [&](double x, double y, double z) {
 		    std::vector<uint8_t> buf;
-		    buf.push_back(1); // little-endian
+		    buf.push_back(1);     // little-endian
 		    uint32_t type = 1001; // Point Z
-		    buf.push_back(type & 0xFF); buf.push_back((type >> 8) & 0xFF);
-		    buf.push_back((type >> 16) & 0xFF); buf.push_back((type >> 24) & 0xFF);
+		    buf.push_back(type & 0xFF);
+		    buf.push_back((type >> 8) & 0xFF);
+		    buf.push_back((type >> 16) & 0xFF);
+		    buf.push_back((type >> 24) & 0xFF);
 		    auto push_f64 = [&](double v) {
-			    uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+			    uint8_t b[8];
+			    memcpy(b, &v, 8);
+			    buf.insert(buf.end(), b, b + 8);
 		    };
-		    push_f64(x); push_f64(y); push_f64(z);
-		    return StringVector::AddStringOrBlob(
-		        result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+		    push_f64(x);
+		    push_f64(y);
+		    push_f64(z);
+		    return StringVector::AddStringOrBlob(result,
+		                                         string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 	    });
 }
 
@@ -899,146 +960,212 @@ static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &r
 static void ST_AsWKBLineZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto push_u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto push_f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
 	buf.push_back(1); // little-endian
-	push_u32(1002); // LineString Z
+	push_u32(1002);   // LineString Z
 	push_u32(2);
-	push_f64(0.0); push_f64(0.0); push_f64(0.0);
-	push_f64(3.0); push_f64(4.0); push_f64(12.0);
+	push_f64(0.0);
+	push_f64(0.0);
+	push_f64(0.0);
+	push_f64(3.0);
+	push_f64(4.0);
+	push_f64(12.0);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // Test helper: build a MultiLineString Z with lengths 13 and 5.
 static void ST_AsWKBMultiLineZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto push_u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto push_f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
 	auto push_line = [&](double x0, double y0, double z0, double x1, double y1, double z1) {
 		buf.push_back(1); // little-endian child
-		push_u32(1002); // LineString Z
+		push_u32(1002);   // LineString Z
 		push_u32(2);
-		push_f64(x0); push_f64(y0); push_f64(z0);
-		push_f64(x1); push_f64(y1); push_f64(z1);
+		push_f64(x0);
+		push_f64(y0);
+		push_f64(z0);
+		push_f64(x1);
+		push_f64(y1);
+		push_f64(z1);
 	};
 
 	buf.push_back(1); // little-endian
-	push_u32(1005); // MultiLineString Z
+	push_u32(1005);   // MultiLineString Z
 	push_u32(2);
 	push_line(0.0, 0.0, 0.0, 3.0, 4.0, 12.0);
 	push_line(10.0, 10.0, 10.0, 13.0, 14.0, 10.0);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // Test helper: build a Polygon Z rectangle (4x3) at z=5, single ring.
 static void ST_AsWKBPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
-	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+	auto pt = [&](double x, double y, double z) {
+		f64(x);
+		f64(y);
+		f64(z);
+	};
 
 	buf.push_back(1); // little-endian
 	u32(1003);        // Polygon Z
 	u32(1);           // 1 ring
 	u32(5);           // 4 points + closing vertex
-	pt(0, 0, 5); pt(4, 0, 5); pt(4, 3, 5); pt(0, 3, 5); pt(0, 0, 5);
+	pt(0, 0, 5);
+	pt(4, 0, 5);
+	pt(4, 3, 5);
+	pt(0, 3, 5);
+	pt(0, 0, 5);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // Test helper: build a non-planar Polygon Z (one corner lifted in Z).
 static void ST_AsWKBWarpedPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
-	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+	auto pt = [&](double x, double y, double z) {
+		f64(x);
+		f64(y);
+		f64(z);
+	};
 
 	buf.push_back(1); // little-endian
 	u32(1003);        // Polygon Z
 	u32(1);           // 1 ring
 	u32(5);           // 4 points + closing vertex
-	pt(0, 0, 0); pt(2, 0, 0); pt(2, 2, 5); pt(0, 2, 0); pt(0, 0, 0);
+	pt(0, 0, 0);
+	pt(2, 0, 0);
+	pt(2, 2, 5);
+	pt(0, 2, 0);
+	pt(0, 0, 0);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // Test helper: build a MultiPoint Z with 3 points (max z = 9).
 static void ST_AsWKBMultiPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
 	auto child_pt = [&](double x, double y, double z) {
-		buf.push_back(1); u32(1001); f64(x); f64(y); f64(z);
+		buf.push_back(1);
+		u32(1001);
+		f64(x);
+		f64(y);
+		f64(z);
 	};
 
 	buf.push_back(1); // little-endian
 	u32(1004);        // MultiPoint Z
 	u32(3);           // 3 points
-	child_pt(1, 1, 1); child_pt(2, 2, 2); child_pt(3, 3, 9);
+	child_pt(1, 1, 1);
+	child_pt(2, 2, 2);
+	child_pt(3, 3, 9);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // Test helper: build a MultiPolygon Z with two single-ring square faces.
 static void ST_AsWKBMultiPolygonZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> buf;
 	auto u32 = [&](uint32_t v) {
-		buf.push_back(v & 0xFF); buf.push_back((v >> 8) & 0xFF);
-		buf.push_back((v >> 16) & 0xFF); buf.push_back((v >> 24) & 0xFF);
+		buf.push_back(v & 0xFF);
+		buf.push_back((v >> 8) & 0xFF);
+		buf.push_back((v >> 16) & 0xFF);
+		buf.push_back((v >> 24) & 0xFF);
 	};
 	auto f64 = [&](double v) {
-		uint8_t b[8]; memcpy(b, &v, 8); buf.insert(buf.end(), b, b + 8);
+		uint8_t b[8];
+		memcpy(b, &v, 8);
+		buf.insert(buf.end(), b, b + 8);
 	};
-	auto pt = [&](double x, double y, double z) { f64(x); f64(y); f64(z); };
+	auto pt = [&](double x, double y, double z) {
+		f64(x);
+		f64(y);
+		f64(z);
+	};
 	auto square = [&](double dx, double dy, double z) {
-		buf.push_back(1); u32(1003); u32(1); u32(5); // child PolygonZ, 1 ring, 5 pts
-		pt(dx, dy, z); pt(dx + 1, dy, z); pt(dx + 1, dy + 1, z); pt(dx, dy + 1, z); pt(dx, dy, z);
+		buf.push_back(1);
+		u32(1003);
+		u32(1);
+		u32(5); // child PolygonZ, 1 ring, 5 pts
+		pt(dx, dy, z);
+		pt(dx + 1, dy, z);
+		pt(dx + 1, dy + 1, z);
+		pt(dx, dy + 1, z);
+		pt(dx, dy, z);
 	};
 
 	buf.push_back(1); // little-endian
 	u32(1006);        // MultiPolygon Z
 	u32(2);           // 2 polygons
-	square(0, 0, 0); square(5, 5, 0);
+	square(0, 0, 0);
+	square(5, 5, 0);
 
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(
-	    result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	ConstantVector::GetData<string_t>(result)[0] =
+	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 }
 
 // ST_Geom3DFromWKB(wkb BLOB) → GEOM_3D
@@ -1048,23 +1175,32 @@ static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector 
 		using namespace duckdb_3d;
 		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto payload = SerializeGeomPayload(model);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
 static const char *GeomTypeName(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
 	switch (type) {
-	case GeomType::Point: return "ST_Point";
-	case GeomType::LineString: return "ST_LineString";
-	case GeomType::Polygon: return "ST_Polygon";
-	case GeomType::MultiPoint: return "ST_MultiPoint";
-	case GeomType::MultiLineString: return "ST_MultiLineString";
-	case GeomType::MultiPolygon: return "ST_MultiPolygon";
-	case GeomType::GeometryCollection: return "ST_GeometryCollection";
-	case GeomType::PolyhedralSurface: return "ST_PolyhedralSurface";
-	default: return "ST_Geometry";
+	case GeomType::Point:
+		return "ST_Point";
+	case GeomType::LineString:
+		return "ST_LineString";
+	case GeomType::Polygon:
+		return "ST_Polygon";
+	case GeomType::MultiPoint:
+		return "ST_MultiPoint";
+	case GeomType::MultiLineString:
+		return "ST_MultiLineString";
+	case GeomType::MultiPolygon:
+		return "ST_MultiPolygon";
+	case GeomType::GeometryCollection:
+		return "ST_GeometryCollection";
+	case GeomType::PolyhedralSurface:
+		return "ST_PolyhedralSurface";
+	default:
+		return "ST_Geometry";
 	}
 }
 
@@ -1091,23 +1227,26 @@ static double PointOrdinate(string_t geom, Ordinate ord) {
 	}
 	const auto &v = model.vertices[0];
 	switch (ord) {
-	case Ordinate::X: return v.x;
-	case Ordinate::Y: return v.y;
-	default: return v.z;
+	case Ordinate::X:
+		return v.x;
+	case Ordinate::Y:
+		return v.y;
+	default:
+		return v.z;
 	}
 }
 
 static void ST_XFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
-		[](string_t geom) { return PointOrdinate(geom, Ordinate::X); });
+	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::X); });
 }
 static void ST_YFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
-		[](string_t geom) { return PointOrdinate(geom, Ordinate::Y); });
+	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::Y); });
 }
 static void ST_ZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
-		[](string_t geom) { return PointOrdinate(geom, Ordinate::Z); });
+	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::Z); });
 }
 
 static double Geom3DLength(string_t geom) {
@@ -1143,7 +1282,7 @@ static double Geom3DLength(string_t geom) {
 
 static void ST_3DLengthFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
-		[](string_t geom) { return Geom3DLength(geom); });
+	                                         [](string_t geom) { return Geom3DLength(geom); });
 }
 
 // ST_3DDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
@@ -1169,15 +1308,15 @@ static bool Geom3DWithinSQL(string_t g1, string_t g2, double dist) {
 }
 
 static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	TernaryExecutor::Execute<string_t, string_t, double, bool>(
-	    args.data[0], args.data[1], args.data[2], result, args.size(),
-	    [](string_t g1, string_t g2, double dist) {
-		    if (dist < 0.0) {
-			    return false;
-		    }
-		    // Uses bbox pruning + first-hit early exit instead of the exact distance.
-		    return Geom3DWithinSQL(g1, g2, dist);
-	    });
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
+	                                                           args.size(), [](string_t g1, string_t g2, double dist) {
+		                                                           if (dist < 0.0) {
+			                                                           return false;
+		                                                           }
+		                                                           // Uses bbox pruning + first-hit early exit instead
+		                                                           // of the exact distance.
+		                                                           return Geom3DWithinSQL(g1, g2, dist);
+	                                                           });
 }
 
 // ST_3DExtrude(polygon GEOM_3D, height DOUBLE) → SOLID_3D
@@ -1185,8 +1324,7 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, double height) {
 		    using namespace duckdb_3d;
-		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()),
-		                                       geom.GetSize());
+		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		    auto solid = BuildExtrudedSolid(poly, height);
 		    auto payload = SerializePayload(solid);
 		    return StringVector::AddStringOrBlob(
@@ -1198,12 +1336,11 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
-		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()),
-		                                      geom.GetSize());
+		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto solid = BuildSolidFromSurface(surface);
 		auto payload = SerializePayload(solid);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
@@ -1223,14 +1360,13 @@ static void ST_3DMaxDistanceFun(DataChunk &args, ExpressionState &state, Vector 
 
 // ST_3DDFullyWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
 static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	TernaryExecutor::Execute<string_t, string_t, double, bool>(
-	    args.data[0], args.data[1], args.data[2], result, args.size(),
-	    [](string_t g1, string_t g2, double dist) {
-		    if (dist < 0.0) {
-			    return false;
-		    }
-		    return Geom3DMaxDistanceSQL(g1, g2) <= dist;
-	    });
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
+	                                                           args.size(), [](string_t g1, string_t g2, double dist) {
+		                                                           if (dist < 0.0) {
+			                                                           return false;
+		                                                           }
+		                                                           return Geom3DMaxDistanceSQL(g1, g2) <= dist;
+	                                                           });
 }
 
 // ST_3DIntersects(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN
@@ -1307,8 +1443,8 @@ static void ST_AsBinaryFun(DataChunk &args, ExpressionState &state, Vector &resu
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto binary = Geom3DAsBinary(model);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(binary.data()), binary.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(binary.data()), binary.size()));
 	});
 }
 
@@ -1332,8 +1468,8 @@ static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &re
 		point.vertices.push_back(centroid);
 		point.ComputeBBox();
 		auto payload = SerializeGeomPayload(point);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
@@ -1345,8 +1481,8 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto payload = SerializeGeomPayload(model);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
@@ -1358,8 +1494,8 @@ static void ST_ConvexHullFun(DataChunk &args, ExpressionState &state, Vector &re
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto hull = Geom3DConvexHull(model);
 		auto payload = SerializeGeomPayload(hull);
-		return StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
 }
 
@@ -1399,8 +1535,7 @@ static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 	case GeomType::MultiLineString:
 	case GeomType::MultiPolygon:
 	case GeomType::GeometryCollection:
-		return model.part_offsets.empty() ? 0
-		                                  : static_cast<int32_t>(model.part_offsets.size() - 1);
+		return model.part_offsets.empty() ? 0 : static_cast<int32_t>(model.part_offsets.size() - 1);
 	default:
 		return 1;
 	}
@@ -1430,10 +1565,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterType("GEOM_3D", geom_3d_type);
 
 	// Test helper: generate tetrahedron WKB
-	loader.RegisterFunction(ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
-	    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBPointZFun));
+	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                                       LogicalType::BLOB, ST_AsWKBPointZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkblinez", {}, LogicalType::BLOB, ST_AsWKBLineZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbmultilinez", {}, LogicalType::BLOB, ST_AsWKBMultiLineZFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpolygonz", {}, LogicalType::BLOB, ST_AsWKBPolygonZFun));
@@ -1443,28 +1580,30 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
-	loader.RegisterFunction(ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
 	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
 	loader.RegisterFunction(ScalarFunction("st_y", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
 	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
 	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
 	loader.RegisterFunction(ScalarFunction("st_dimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
-	loader.RegisterFunction(ScalarFunction("st_numgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_numgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
 	loader.RegisterFunction(
 	    ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
 	loader.RegisterFunction(ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
 	                                       LogicalType::BOOLEAN, ST_3DDWithinFun));
-	loader.RegisterFunction(ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type},
-	                                       LogicalType::DOUBLE, ST_3DMaxDistanceFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DMaxDistanceFun));
 	loader.RegisterFunction(ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
 	                                       LogicalType::BOOLEAN, ST_3DDFullyWithinFun));
-	loader.RegisterFunction(ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type},
-	                                       LogicalType::BOOLEAN, ST_3DIntersectsFun));
-	loader.RegisterFunction(ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type},
-	                                       geom_3d_type, ST_3DClosestPointFun));
-	loader.RegisterFunction(ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type},
-	                                       geom_3d_type, ST_3DShortestLineFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun));
 	loader.RegisterFunction(ScalarFunction("st_astext", {geom_3d_type}, LogicalType::VARCHAR, ST_AsTextFun));
 	loader.RegisterFunction(ScalarFunction("st_asgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_AsGeoJSONFun));
 	loader.RegisterFunction(ScalarFunction("st_asbinary", {geom_3d_type}, LogicalType::BLOB, ST_AsBinaryFun));
@@ -1474,14 +1613,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_convexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
 	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
 	// functions, which bind on BLOB, compose directly on the result.
-	loader.RegisterFunction(ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE},
-	                                       LogicalType::BLOB, ST_3DExtrudeFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DExtrudeFun));
 	loader.RegisterFunction(ScalarFunction("st_makesolid", {geom_3d_type}, LogicalType::BLOB, ST_MakeSolidFun));
 
 	// ST_3DFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
 	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
-	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DFromWKBWithMetaFun);
+	auto from_wkb_2arg =
+	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DFromWKBWithMetaFun);
 	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_2arg);
 	loader.RegisterFunction(from_wkb_set);
@@ -1489,7 +1629,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// ST_3DTryFromWKB: 1-arg and 2-arg overloads
 	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
 	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
-	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DTryFromWKBWithMetaFun);
+	auto try_from_wkb_2arg =
+	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DTryFromWKBWithMetaFun);
 	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg);
 	loader.RegisterFunction(try_from_wkb_set);
@@ -1498,9 +1639,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_3daswkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
 
 	// Introspection: counts
-	loader.RegisterFunction(ScalarFunction("st_3dnumsolids", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumSolidsFun));
-	loader.RegisterFunction(ScalarFunction("st_3dnumshells", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumShellsFun));
-	loader.RegisterFunction(ScalarFunction("st_3dnumfaces", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumFacesFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dnumsolids", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumSolidsFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dnumshells", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumShellsFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dnumfaces", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumFacesFun));
 
 	// Introspection: bounds
 	child_list_t<LogicalType> bbox_children;
@@ -1514,9 +1658,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("st_3dbounds", {LogicalType::BLOB}, bbox_type, ST_3DBoundsFun));
 
 	// Validation functions
-	loader.RegisterFunction(ScalarFunction("st_3disclosed", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
-	loader.RegisterFunction(ScalarFunction("st_3dismanifold", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
-	loader.RegisterFunction(ScalarFunction("st_3disoriented", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3disclosed", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dismanifold", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3disoriented", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
 
 	// Validation report
 	child_list_t<LogicalType> report_children;
@@ -1534,15 +1681,18 @@ static void LoadInternal(ExtensionLoader &loader) {
 	report_children.push_back({"code", LogicalType::VARCHAR});
 	report_children.push_back({"message", LogicalType::VARCHAR});
 	auto report_type = LogicalType::STRUCT(std::move(report_children));
-	loader.RegisterFunction(ScalarFunction("st_3dvalidationreport", {LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dvalidationreport", {LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
 
 	// Measurement functions
-	loader.RegisterFunction(ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
 	loader.RegisterFunction(ScalarFunction("st_3darea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
 	loader.RegisterFunction(ScalarFunction("st_area", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
-	loader.RegisterFunction(ScalarFunction("st_3dperimeter", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
+	loader.RegisterFunction(
+	    ScalarFunction("st_3dperimeter", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
 
 	// Accessor functions
 	ScalarFunctionSet ndims_set("st_ndims");
@@ -1574,26 +1724,24 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Transform functions
 	ScalarFunctionSet translate_set("st_translate");
-	translate_set.AddFunction(ScalarFunction(
-	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    LogicalType::BLOB, ST_TranslateFun));
-	translate_set.AddFunction(ScalarFunction(
-	    {solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    solid_3d_type, ST_TranslateFun));
-	translate_set.AddFunction(ScalarFunction(
-	    {geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    geom_3d_type, ST_TranslateGeomFun));
+	translate_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                   LogicalType::BLOB, ST_TranslateFun));
+	translate_set.AddFunction(
+	    ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, solid_3d_type,
+	                   ST_TranslateFun));
+	translate_set.AddFunction(
+	    ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, geom_3d_type,
+	                   ST_TranslateGeomFun));
 	loader.RegisterFunction(translate_set);
 	ScalarFunctionSet scale_set("st_scale");
-	scale_set.AddFunction(ScalarFunction(
-	    {LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    LogicalType::BLOB, ST_ScaleFun));
-	scale_set.AddFunction(ScalarFunction(
-	    {solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    solid_3d_type, ST_ScaleFun));
-	scale_set.AddFunction(ScalarFunction(
-	    {geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	    geom_3d_type, ST_ScaleGeomFun));
+	scale_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                   LogicalType::BLOB, ST_ScaleFun));
+	scale_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                                     solid_3d_type, ST_ScaleFun));
+	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                                     geom_3d_type, ST_ScaleGeomFun));
 	loader.RegisterFunction(scale_set);
 	ScalarFunctionSet rotatex_set("st_rotatex");
 	rotatex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateXFun));

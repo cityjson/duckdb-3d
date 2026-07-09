@@ -129,7 +129,7 @@ void ReadPolygonPartsZ(Cursor &cur, GeomModel &model) {
 } // namespace
 
 GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
-	Cursor cur{data, size, 0, false};
+	Cursor cur {data, size, 0, false};
 
 	cur.ReadByteOrder();
 	uint32_t wkb_type = cur.U32();

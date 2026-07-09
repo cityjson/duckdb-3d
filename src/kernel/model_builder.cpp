@@ -15,9 +15,9 @@ namespace {
 struct Vertex3DHash {
 	size_t operator()(const Vertex3D &v) const {
 		// Combine hashes of x, y, z using a standard approach
-		size_t h1 = std::hash<double>{}(v.x);
-		size_t h2 = std::hash<double>{}(v.y);
-		size_t h3 = std::hash<double>{}(v.z);
+		size_t h1 = std::hash<double> {}(v.x);
+		size_t h2 = std::hash<double> {}(v.y);
+		size_t h3 = std::hash<double> {}(v.z);
 		h1 ^= h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2);
 		h1 ^= h3 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2);
 		return h1;
@@ -114,10 +114,9 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 	return model;
 }
 
-SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
-                           const GeometryMetadata &metadata) {
-	bool requests_multi_solid = metadata.solid_count > 1 || metadata.type == "MultiSolid" ||
-	                           metadata.type == "CompositeSolid";
+SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata) {
+	bool requests_multi_solid =
+	    metadata.solid_count > 1 || metadata.type == "MultiSolid" || metadata.type == "CompositeSolid";
 	if (requests_multi_solid) {
 		throw std::runtime_error(
 		    "geometry_properties: metadata-aware import for multi-solid geometries is unsupported in v1");
@@ -140,8 +139,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 
 	if (metadata.shell_face_counts.size() != metadata.shell_count) {
 		throw std::runtime_error("geometry_properties: shellFaceCounts length (" +
-		                         std::to_string(metadata.shell_face_counts.size()) +
-		                         ") does not match shellCount (" +
+		                         std::to_string(metadata.shell_face_counts.size()) + ") does not match shellCount (" +
 		                         std::to_string(metadata.shell_count) + ")");
 	}
 
@@ -151,8 +149,8 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	}
 	if (face_sum != total_wkb_faces) {
 		throw std::runtime_error("geometry_properties: shell face count mismatch: shellFaceCounts sum (" +
-		                         std::to_string(face_sum) + ") != WKB face count (" +
-		                         std::to_string(total_wkb_faces) + ")");
+		                         std::to_string(face_sum) + ") != WKB face count (" + std::to_string(total_wkb_faces) +
+		                         ")");
 	}
 
 	// Build the model with multiple shells in a single solid

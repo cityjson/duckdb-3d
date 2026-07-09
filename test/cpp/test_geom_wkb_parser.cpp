@@ -123,7 +123,7 @@ TEST_CASE("ParseGeomWKB: big-endian Polygon Z", "[geom_wkb_parser]") {
 
 	REQUIRE(model.type == GeomType::Polygon);
 	REQUIRE(model.vertices.size() == 4);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4});
 	REQUIRE(model.bbox.max_x == Approx(4.0));
 	REQUIRE(model.bbox.max_y == Approx(3.0));
 	REQUIRE(model.bbox.min_z == Approx(5.0));
@@ -147,16 +147,16 @@ TEST_CASE("ParseGeomWKB: big-endian PolyhedralSurface Z with big-endian children
 
 	REQUIRE(model.type == GeomType::PolyhedralSurface);
 	REQUIRE(model.vertices.size() == 6);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 3, 6});
-	REQUIRE(model.part_offsets == std::vector<uint32_t>{0, 1, 2});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 3, 6});
+	REQUIRE(model.part_offsets == std::vector<uint32_t> {0, 1, 2});
 	REQUIRE(model.bbox.max_z == Approx(2.0));
 }
 
 TEST_CASE("ParseGeomWKB: Polygon Z single exterior ring", "[geom_wkb_parser]") {
 	GeomWKBBuilder b;
-	b.U8(1);       // little-endian
-	b.U32(1003);   // Polygon Z
-	b.U32(1);      // ring count
+	b.U8(1);     // little-endian
+	b.U32(1003); // Polygon Z
+	b.U32(1);    // ring count
 	b.Ring({{0, 0, 5}, {4, 0, 5}, {4, 3, 5}, {0, 3, 5}});
 
 	auto model = ParseGeomWKB(b.buffer.data(), b.buffer.size());
@@ -164,7 +164,7 @@ TEST_CASE("ParseGeomWKB: Polygon Z single exterior ring", "[geom_wkb_parser]") {
 	REQUIRE(model.type == GeomType::Polygon);
 	// Closing vertex stripped: 4 distinct vertices.
 	REQUIRE(model.vertices.size() == 4);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4});
 	REQUIRE(model.part_offsets.empty());
 	REQUIRE(model.bbox.min_x == 0.0);
 	REQUIRE(model.bbox.max_x == 4.0);
@@ -193,8 +193,8 @@ TEST_CASE("ParseGeomWKB: PolyhedralSurface Z two faces", "[geom_wkb_parser]") {
 
 	REQUIRE(model.type == GeomType::PolyhedralSurface);
 	REQUIRE(model.vertices.size() == 6);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 3, 6});
-	REQUIRE(model.part_offsets == std::vector<uint32_t>{0, 1, 2});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 3, 6});
+	REQUIRE(model.part_offsets == std::vector<uint32_t> {0, 1, 2});
 	REQUIRE(model.bbox.max_z == 2.0);
 }
 
@@ -220,9 +220,9 @@ TEST_CASE("ParseGeomWKB: MultiPolygon Z two square parts", "[geom_wkb_parser]") 
 	REQUIRE(model.type == GeomType::MultiPolygon);
 	REQUIRE(model.vertices.size() == 12);
 	// 3 rings total → ring_offsets has 4 boundaries.
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4, 8, 12});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4, 8, 12});
 	// part_offsets index into ring boundaries: poly 0 = ring [0,1), poly 1 = rings [1,3).
-	REQUIRE(model.part_offsets == std::vector<uint32_t>{0, 1, 3});
+	REQUIRE(model.part_offsets == std::vector<uint32_t> {0, 1, 3});
 	REQUIRE(model.bbox.max_z == 7.0);
 }
 
@@ -231,7 +231,7 @@ TEST_CASE("ParseGeomWKB: MultiPoint Z", "[geom_wkb_parser]") {
 	b.U8(1);
 	b.U32(1004); // MultiPoint Z
 	b.U32(3);    // 3 points
-	for (auto &p : std::vector<std::array<double, 3>>{{1, 1, 1}, {2, 2, 2}, {3, 3, 9}}) {
+	for (auto &p : std::vector<std::array<double, 3>> {{1, 1, 1}, {2, 2, 2}, {3, 3, 9}}) {
 		b.U8(1);
 		b.U32(1001); // Point Z
 		b.Point(p[0], p[1], p[2]);
@@ -242,7 +242,7 @@ TEST_CASE("ParseGeomWKB: MultiPoint Z", "[geom_wkb_parser]") {
 	REQUIRE(model.type == GeomType::MultiPoint);
 	REQUIRE(model.vertices.size() == 3);
 	// One part per point, partitioning the vertex array directly.
-	REQUIRE(model.part_offsets == std::vector<uint32_t>{0, 1, 2, 3});
+	REQUIRE(model.part_offsets == std::vector<uint32_t> {0, 1, 2, 3});
 	REQUIRE(model.ring_offsets.empty());
 	REQUIRE(model.bbox.max_z == 9.0);
 }
@@ -259,5 +259,5 @@ TEST_CASE("ParseGeomWKB: Polygon Z with interior ring", "[geom_wkb_parser]") {
 
 	REQUIRE(model.type == GeomType::Polygon);
 	REQUIRE(model.vertices.size() == 8);
-	REQUIRE(model.ring_offsets == std::vector<uint32_t>{0, 4, 8});
+	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4, 8});
 }

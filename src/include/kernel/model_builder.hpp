@@ -16,7 +16,6 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 //! When metadata provides shellCount > 1 and shellFaceCounts, the faces of a
 //! single PolyhedralSurface are split into multiple shells per solid.
 //! Throws if metadata conflicts with WKB face counts.
-SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
-                           const GeometryMetadata &metadata);
+SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata);
 
 } // namespace duckdb_3d

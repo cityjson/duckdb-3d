@@ -100,7 +100,7 @@ std::vector<uint8_t> SerializeGeomPayload(const GeomModel &model) {
 }
 
 GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size) {
-	Reader r{data, size, 0};
+	Reader r {data, size, 0};
 	r.Require(4);
 	if (std::memcmp(data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
 		throw std::runtime_error("ReadGeomPayloadHeader: bad magic (not a GEOM_3D value)");
@@ -125,7 +125,7 @@ GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size) {
 }
 
 GeomModel DeserializeGeomPayload(const uint8_t *data, size_t size) {
-	Reader r{data, size, 0};
+	Reader r {data, size, 0};
 	r.Require(4);
 	if (std::memcmp(data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
 		throw std::runtime_error("DeserializeGeomPayload: bad magic (not a GEOM_3D value)");
