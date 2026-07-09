@@ -6,8 +6,8 @@ This document provides repository-specific guidance for coding agents and contri
 
 - This repository is for a reusable DuckDB extension focused on 3D solid processing.
 - The extension is not CityJSON-specific. CityJSON is an upstream integration, not the core architectural boundary.
-- The repo currently contains the template `quack` scaffold. The first implementation task is to rename that scaffold to `three_d` and replace the placeholder SQL functions.
-- Unless a later packaging alias proves cleaner, use `three_d` as the legal internal DuckDB extension target and entrypoint name during implementation, while keeping the repository/product name `duckdb-3d`.
+- The extension is implemented: it loads as `three_d` and exposes the `SOLID_3D` and `GEOM_3D` types with the `ST_*` / `ST_3D*` function family. The template `quack` scaffold has been fully replaced. For usage against real data see [docs/EXAMPLE.md](docs/EXAMPLE.md).
+- `three_d` is the legal internal DuckDB extension target and entrypoint name; the repository/product name remains `duckdb-3d`. Unless a later packaging alias proves cleaner, keep using `three_d`.
 
 ## Required Reading
 
@@ -74,7 +74,7 @@ Use the standard DuckDB extension workflow unless the repo evolves away from the
 4. Use `make test` for standard SQL test coverage.
 5. Add focused C++ tests under `test/cpp/` when introducing kernel logic.
 
-The loadable extension is expected to live under `build/debug/extension/three_d/` after the scaffold is renamed.
+The loadable extension is built under `build/debug/extension/three_d/` (and `build/release/extension/three_d/`).
 
 ## Coding Guidance
 
@@ -93,17 +93,13 @@ The loadable extension is expected to live under `build/debug/extension/three_d/
 - Add round-trip tests for any import or export logic.
 - Add regression tests for every bug fix.
 
-## Initial Implementation Priorities
+## Current Status And Roadmap
 
-After the documentation phase, implementation should proceed in this order:
-
-1. rename the template `quack` scaffold to `three_d`
-2. add failing tests for `SOLID_3D` construction and WKB import
-3. implement import/export and structural introspection
-4. add failing tests for validation functions
-5. implement validation and reporting
-6. add failing tests for surface area and volume
-7. implement measurement functions
+The v1 baseline (import/export, introspection, validation, measurement) and the
+class-generic `GEOM_3D` accessor/transform/distance/serialization surface are implemented.
+Remaining work — the `want`-tier functions and the deferred CGAL/SFCGAL backend cluster — is
+tracked in [docs/DESIGN_DOC.md §14 and §16](docs/DESIGN_DOC.md). Follow the same
+red-green-refactor discipline for every addition.
 
 ## References
 
