@@ -69,7 +69,11 @@ COPY (
     a.area                  AS pg_area3d,
     a.status                AS pg_area_status,
     v.vol                   AS pg_volume,
-    v.status                AS pg_volume_status
+    v.status                AS pg_volume_status,
+    -- 2D-XY convex-hull area. GEOS's ST_ConvexHull rejects a PolyhedralSurface,
+    -- so feed it the vertex set via ST_Points (matches the extension, which hulls
+    -- all XY-projected vertices). No planarity requirement, so no wrapper needed.
+    ST_Area(ST_ConvexHull(ST_Points(g.geom))) AS pg_hull_area
   FROM wkb_inputs i
   CROSS JOIN LATERAL (SELECT ST_GeomFromWKB(decode(i.wkb_hex, 'hex')) AS geom) g
   CROSS JOIN LATERAL oracle_area3d(g.geom) a

@@ -20,7 +20,13 @@ One row per geometry fed to the oracle. Columns:
 | `pg_is_closed` | `ST_IsClosed` (boolean) |
 | `pg_area3d`, `pg_area_status` | `ST_3DArea`; `ok` or `rejected` |
 | `pg_volume`, `pg_volume_status` | `abs(ST_Volume(ST_MakeSolid(·)))`; `ok` or `rejected` |
-| `source`, `pg_version`, `sfcgal_version` | provenance (constant per file) |
+| `pg_hull_area` | `ST_Area(ST_ConvexHull(ST_Points(·)))` — 2D-XY convex-hull area |
+| `source`, `pg_version`, `sfcgal_version`, `geos_version` | provenance (constant per file) |
+
+`pg_hull_area` feeds `ST_Points` to GEOS's `ST_ConvexHull` because GEOS rejects a
+`PolyhedralSurface` directly; this hulls the vertex set, matching the extension's
+`ST_Area(ST_ConvexHull(g))`. GEOS has no planarity requirement, so it is always
+`ok` (no status column).
 
 `rejected` = SFCGAL raised. SFCGAL requires exactly-coplanar faces and rejects
 most real 3DBAG roofs; the extension measures those by triangulation and is
@@ -42,17 +48,12 @@ duplicated here — it is resolved from `golden.csv` by joining on `feature_id`.
 | `pg_dwithin`, `pg_dfullywithin` | `ST_3DDWithin` / `ST_3DDFullyWithin` at `threshold` |
 | `pg_shortline_len` | `ST_3DLength(ST_3DShortestLine(a, b))` |
 | `pg_closestpoint_dist` | `ST_3DDistance(ST_3DClosestPoint(a, b), b)` |
-| `source`, `pg_version`, `sfcgal_version` | provenance |
+| `source`, `pg_version`, `sfcgal_version`, `geos_version` | provenance |
 
 The last two are scalars extracted from geometry-returning functions: we never
 round-trip PostGIS geometry back into the extension (PostGIS emits EWKB, whose
 SRID flag the extension's ISO-WKB parser rejects). Both equal the 3D distance by
 construction, so they also serve as an internal consistency check.
-
-**Not covered yet:** `ST_ConvexHull` — the extension returns the hull as a
-`GEOM_3D` polygon but exposes no area accessor for `GEOM_3D`, so there is no
-scalar to compare against PostGIS's hull area. Revisit once a polygon-area
-accessor lands.
 
 Pairs are chosen so every boolean predicate straddles true and false (two
 distinct buildings ≈ 517.6 m apart, plus self-pairs), keeping the Phase B
@@ -63,7 +64,8 @@ relation checks non-vacuous.
 - **source dataset:** `test/data/3dbag.city.jsonl` — a 3DBAG CityJSONSeq subset
   (9 Building/BuildingPart solids at LoD 2.2), committed alongside this file.
 - **oracle image (pinned):** `postgis/postgis:16-3.4` → PostgreSQL 16.4,
-  PostGIS 3.4.3, SFCGAL 1.3.8.
+  PostGIS 3.4.3, SFCGAL 1.3.8, GEOS 3.9.0 (backs `ST_ConvexHull`). All three
+  library versions are recorded per row and checked on regen.
 - **WKB producer:** the `three_d` release extension via `ST_3DAsWKB`.
 
 ## Regenerating

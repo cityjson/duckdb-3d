@@ -113,6 +113,31 @@ WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
 ----
 true
 
+# ── Convex-hull area (2D-XY). The extension measures its own hull with
+# ST_Area(ST_ConvexHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
+# because GEOS's ST_ConvexHull rejects a PolyhedralSurface. GEOS has no planarity
+# requirement, so this covers all geometry (no 'rejected' rows). ──
+# Non-vacuity: every geometry has a positive hull area to compare against.
+query I
+SELECT bool_and(pg_hull_area > 0) FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
+        <= 1e-6 * abs(pg_hull_area) + 1e-6)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Pin: the unit tetra's XY hull is the triangle (0,0),(1,0),(0,1) → area 0.5.
+query I
+SELECT ROUND(ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+0.5
+
 # ── Deterministic per-feature pins (high-signal regression anchors) ──
 # Unit tetrahedron: surface area 2.366…, volume 1/6.
 query II

@@ -57,7 +57,9 @@ SOURCE = "3dbag.city.jsonl"
 
 # Pinned oracle versions (postgis/postgis:16-3.4). A tag move that changes these
 # can shift the golden values, so warn loudly on drift (recorded in the CSV too).
+# GEOS backs ST_ConvexHull (the hull-area golden), so track it alongside SFCGAL.
 EXPECTED_PG, EXPECTED_SFCGAL = "3.4.3", "1.3.8"
+EXPECTED_GEOS = "3.9.0-CAPI-1.16.2"
 
 # The planar unit tetrahedron is the harness's canary: SFCGAL must accept it and
 # reproduce these exact analytic values. If it doesn't, the oracle is broken and
@@ -74,7 +76,7 @@ _HEX = re.compile(r"\A[0-9a-fA-F]*\Z")
 _SAFE_ID = re.compile(r"\A[\w:.\-]*\Z")
 
 # Columns whose values are floating-point and must be formatted deterministically.
-FLOAT_COLS = ("pg_area3d", "pg_volume")
+FLOAT_COLS = ("pg_area3d", "pg_volume", "pg_hull_area")
 PAIR_FLOAT_COLS = ("pg_dist3d", "pg_maxdist3d", "threshold",
                    "pg_shortline_len", "pg_closestpoint_dist")
 FLOAT_FMT = "%.17g"  # round-trippable, stable across runs of the same image
@@ -143,14 +145,14 @@ def frozen_wkb_inputs() -> list[dict[str, str]]:
         return [{c: r[c] for c in INPUT_COLS} for r in csv.DictReader(f)]
 
 
-def oracle_versions() -> tuple[str, str]:
-    out = psql("SELECT postgis_lib_version() || '|' || postgis_sfcgal_version();",
-               quiet=False)
+def oracle_versions() -> tuple[str, str, str]:
+    out = psql("SELECT postgis_lib_version() || '|' || postgis_sfcgal_version() "
+               "|| '|' || postgis_geos_version();", quiet=False)
     for line in out.splitlines():
-        if "|" in line and "." in line:
-            pg, sfcgal = line.strip().split("|")
-            return pg, sfcgal
-    raise SystemExit("could not read PostGIS/SFCGAL versions from container")
+        parts = line.strip().split("|")
+        if len(parts) == 3 and "." in line:
+            return parts[0], parts[1], parts[2]
+    raise SystemExit("could not read PostGIS/SFCGAL/GEOS versions from container")
 
 
 def _validate(rows: list[dict[str, str]]) -> None:
@@ -238,9 +240,10 @@ def check_pair_canary(rows: list[dict[str, str]]) -> None:
 
 
 def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str,
-                  *, float_cols, bool_cols, sort_key) -> str:
+                  geos_ver: str, *, float_cols, bool_cols, sort_key) -> str:
     """Deterministic CSV: sorted rows, fixed float format, provenance columns."""
-    fieldnames = list(rows[0].keys()) + ["source", "pg_version", "sfcgal_version"]
+    fieldnames = list(rows[0].keys()) + ["source", "pg_version", "sfcgal_version",
+                                         "geos_version"]
     for r in rows:
         for c in float_cols:
             if r.get(c) not in (None, ""):
@@ -251,6 +254,7 @@ def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str,
         r["source"] = SOURCE
         r["pg_version"] = pg_ver
         r["sfcgal_version"] = sfcgal_ver
+        r["geos_version"] = geos_ver
     rows.sort(key=sort_key)
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
@@ -275,23 +279,23 @@ def main() -> None:
     check_canary(oracle_rows)
     pair_rows = run_oracle_pairs(PAIRS, {r["feature_id"]: r["wkb_hex"] for r in inputs})
     check_pair_canary(pair_rows)
-    pg_ver, sfcgal_ver = oracle_versions()
-    if (pg_ver, sfcgal_ver) != (EXPECTED_PG, EXPECTED_SFCGAL):
+    pg_ver, sfcgal_ver, geos_ver = oracle_versions()
+    if (pg_ver, sfcgal_ver, geos_ver) != (EXPECTED_PG, EXPECTED_SFCGAL, EXPECTED_GEOS):
         sys.stderr.write(
-            f"warning: oracle versions {pg_ver}/{sfcgal_ver} differ from pinned "
-            f"{EXPECTED_PG}/{EXPECTED_SFCGAL}; golden values may shift\n")
+            f"warning: oracle versions {pg_ver}/{sfcgal_ver}/{geos_ver} differ from "
+            f"pinned {EXPECTED_PG}/{EXPECTED_SFCGAL}/{EXPECTED_GEOS}; values may shift\n")
     OUT_CSV.write_text(format_golden(
-        oracle_rows, pg_ver, sfcgal_ver,
+        oracle_rows, pg_ver, sfcgal_ver, geos_ver,
         float_cols=FLOAT_COLS, bool_cols=BOOL_COLS,
         sort_key=lambda r: (r["geom_role"], r["feature_id"], r["lod"])))
     OUT_PAIRS_CSV.write_text(format_golden(
-        pair_rows, pg_ver, sfcgal_ver,
+        pair_rows, pg_ver, sfcgal_ver, geos_ver,
         float_cols=PAIR_FLOAT_COLS, bool_cols=PAIR_BOOL_COLS,
         sort_key=lambda r: (r["feature_a"], r["feature_b"], float(r["threshold"]))))
     mode = "re-export" if args.reexport else "frozen-WKB"
     print(f"wrote {OUT_CSV.relative_to(REPO)}: {len(oracle_rows)} rows; "
           f"{OUT_PAIRS_CSV.name}: {len(pair_rows)} rows "
-          f"[{mode}] (PostGIS {pg_ver}, SFCGAL {sfcgal_ver})")
+          f"[{mode}] (PostGIS {pg_ver}, SFCGAL {sfcgal_ver}, GEOS {geos_ver})")
 
 
 if __name__ == "__main__":

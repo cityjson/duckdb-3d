@@ -469,7 +469,7 @@ v1 uses a small floating-point epsilon for repeated-point and near-zero-area che
 
 The extension's measurement math is cross-checked against **PostGIS + SFCGAL** as an independent reference oracle. PostGIS is **never** a build, runtime, or CI dependency: it runs offline, dev-time only, to produce frozen golden values that the normal test suite compares against.
 
-- **Harness.** `scripts/oracle/gen_golden.py` exports the extension's own geometry as ISO WKB (`ST_3DAsWKB` → `PolyhedralSurface Z`), feeds the *same bytes* to SFCGAL, and freezes the reference values into `test/data/postgis_oracle/golden.csv` (per-geometry: volume, surface area, closedness) and `golden_pairs.csv` (per-pair: `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DIntersects`, `ST_3DDWithin`, `ST_3DDFullyWithin`). The CI test `test/sql/postgis_oracle.test` re-imports that frozen WKB with `ST_3DFromWKB` / `ST_Geom3DFromWKB` and asserts agreement — `require three_d` only, no PostGIS, no network. Feeding identical bytes to both engines isolates the *math* from ingestion/quantisation differences. See `test/data/postgis_oracle/README.md`.
+- **Harness.** `scripts/oracle/gen_golden.py` exports the extension's own geometry as ISO WKB (`ST_3DAsWKB` → `PolyhedralSurface Z`), feeds the *same bytes* to SFCGAL, and freezes the reference values into `test/data/postgis_oracle/golden.csv` (per-geometry: volume, surface area, closedness, 2D convex-hull area) and `golden_pairs.csv` (per-pair: `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DIntersects`, `ST_3DDWithin`, `ST_3DDFullyWithin`, shortest-line length, closest-point distance). The CI test `test/sql/postgis_oracle.test` re-imports that frozen WKB with `ST_3DFromWKB` / `ST_Geom3DFromWKB` and asserts agreement — `require three_d` only, no PostGIS, no network. Feeding identical bytes to both engines isolates the *math* from ingestion/quantisation differences. See `test/data/postgis_oracle/README.md`.
 - **Two-tier numeric tolerance** on `|a − b| ≤ rel·|b| + abs`:
   - *tight* (`rel = 1e-6, abs = 1e-9`) — analytic fixtures with small integer coordinates and exactly-planar faces (unit tetrahedron); agreement is essentially machine-precision.
   - *loose* (`rel = 1e-3, abs = 1e-6`) — the real accepted 3DBAG geometry; conservative headroom for large real-world coordinate magnitudes, where the two engines' summation/triangulation order differs by a few ULPs (the one row SFCGAL currently accepts in fact agrees to ~6e-8, well inside the tight tier).
@@ -953,7 +953,9 @@ coordinates are transformed `DOUBLE` XYZ (§6.3).
   - **Polygon / MultiPolygon** — single-sided, **no halving**: the XY-projected area of
     each exterior ring minus its interior (hole) rings, summed over parts. This is the
     `ST_ConvexHull` case: `ST_Area(ST_ConvexHull(g))` gives the hull area, matching
-    PostGIS `ST_Area(ST_ConvexHull(g))` in the differential harness (§9.5.1).
+    PostGIS `ST_Area(ST_ConvexHull(ST_Points(g)))` in the differential harness
+    (§9.5.1) — GEOS's `ST_ConvexHull` rejects a `PolyhedralSurface`, so it is fed
+    the vertex set via `ST_Points`.
   - **PolyhedralSurface** — a two-sided shell, so **halved** (`0.5·Σ|projected face|`),
     consistent with the `SOLID_3D` footprint above; exact for closed vertically-simple
     shells, approximate otherwise.
