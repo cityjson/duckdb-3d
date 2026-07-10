@@ -27,7 +27,13 @@ COPY (
     ST_3DMaxDistance(ga.g, gb.g)                 AS pg_maxdist3d,
     ST_3DIntersects(ga.g, gb.g)                  AS pg_intersects,
     ST_3DDWithin(ga.g, gb.g, p.threshold)        AS pg_dwithin,
-    ST_3DDFullyWithin(ga.g, gb.g, p.threshold)   AS pg_dfullywithin
+    ST_3DDFullyWithin(ga.g, gb.g, p.threshold)   AS pg_dfullywithin,
+    -- Scalars from the geometry-returning functions (never round-trip PostGIS
+    -- geometry back — it emits EWKB the extension's ISO parser rejects). The
+    -- shortest line's length and the closest point's distance to gb both equal
+    -- the 3D distance by construction, so they double as a consistency check.
+    ST_3DLength(ST_3DShortestLine(ga.g, gb.g))          AS pg_shortline_len,
+    ST_3DDistance(ST_3DClosestPoint(ga.g, gb.g), gb.g)  AS pg_closestpoint_dist
   FROM pair_inputs p
   CROSS JOIN LATERAL (SELECT ST_GeomFromWKB(decode(p.wkb_a, 'hex')) AS g) ga
   CROSS JOIN LATERAL (SELECT ST_GeomFromWKB(decode(p.wkb_b, 'hex')) AS g) gb

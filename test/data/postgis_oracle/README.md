@@ -40,7 +40,19 @@ duplicated here — it is resolved from `golden.csv` by joining on `feature_id`.
 | `pg_dist3d`, `pg_maxdist3d` | `ST_3DDistance` / `ST_3DMaxDistance` |
 | `pg_intersects` | `ST_3DIntersects` |
 | `pg_dwithin`, `pg_dfullywithin` | `ST_3DDWithin` / `ST_3DDFullyWithin` at `threshold` |
+| `pg_shortline_len` | `ST_3DLength(ST_3DShortestLine(a, b))` |
+| `pg_closestpoint_dist` | `ST_3DDistance(ST_3DClosestPoint(a, b), b)` |
 | `source`, `pg_version`, `sfcgal_version` | provenance |
+
+The last two are scalars extracted from geometry-returning functions: we never
+round-trip PostGIS geometry back into the extension (PostGIS emits EWKB, whose
+SRID flag the extension's ISO-WKB parser rejects). Both equal the 3D distance by
+construction, so they also serve as an internal consistency check.
+
+**Not covered yet:** `ST_ConvexHull` — the extension returns the hull as a
+`GEOM_3D` polygon but exposes no area accessor for `GEOM_3D`, so there is no
+scalar to compare against PostGIS's hull area. Revisit once a polygon-area
+accessor lands.
 
 Pairs are chosen so every boolean predicate straddles true and false (two
 distinct buildings ≈ 517.6 m apart, plus self-pairs), keeping the Phase B

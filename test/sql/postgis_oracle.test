@@ -199,6 +199,37 @@ JOIN golden b ON b.feature_id = p.feature_b;
 ----
 true
 
+# Shortest-line length: the extension's ST_3DShortestLine, measured by
+# ST_3DLength, matches PostGIS's — scalars only, never a geometry round-trip
+# (PostGIS emits EWKB the ISO parser rejects). Equals the distance by construction.
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DLength(ST_3DShortestLine(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                          ST_Geom3DFromWKB(unhex(b.wkb_hex))))
+            - p.pg_shortline_len)
+        <= 1e-6 * abs(p.pg_shortline_len) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Closest point: the distance from ST_3DClosestPoint(a, b) back to b matches
+# PostGIS's (closest-point ties may sit at different coordinates between engines,
+# but this scalar is tie-invariant).
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DDistance(ST_3DClosestPoint(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                            ST_Geom3DFromWKB(unhex(b.wkb_hex))),
+                          ST_Geom3DFromWKB(unhex(b.wkb_hex)))
+            - p.pg_closestpoint_dist)
+        <= 1e-6 * abs(p.pg_closestpoint_dist) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
 # Relation predicates (intersects / dwithin / dfullywithin) agree EXACTLY.
 # IS NOT DISTINCT FROM (not =) so a predicate that unexpectedly returns NULL
 # fails the check rather than being silently skipped by bool_and.

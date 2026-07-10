@@ -75,7 +75,8 @@ _SAFE_ID = re.compile(r"\A[\w:.\-]*\Z")
 
 # Columns whose values are floating-point and must be formatted deterministically.
 FLOAT_COLS = ("pg_area3d", "pg_volume")
-PAIR_FLOAT_COLS = ("pg_dist3d", "pg_maxdist3d", "threshold")
+PAIR_FLOAT_COLS = ("pg_dist3d", "pg_maxdist3d", "threshold",
+                   "pg_shortline_len", "pg_closestpoint_dist")
 FLOAT_FMT = "%.17g"  # round-trippable, stable across runs of the same image
 
 # PostGIS COPY writes booleans as t/f; normalise to true/false so DuckDB's
