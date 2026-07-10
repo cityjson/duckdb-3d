@@ -369,4 +369,68 @@ GeomModel Geom3DConvexHull(const GeomModel &geom) {
 	return out;
 }
 
+namespace {
+
+//! Signed XY shoelace area of the ring spanning vertex indices [begin,end),
+//! wrapping the closing edge. Sign encodes winding; magnitude is the area.
+double ShoelaceXY(const GeomModel &m, uint32_t begin, uint32_t end) {
+	// DeserializeGeomPayload does not bound-check CSR offsets, so guard against a
+	// ring that runs past the vertex array rather than reading out of bounds.
+	if (begin >= end || end > static_cast<uint32_t>(m.vertices.size())) {
+		return 0.0;
+	}
+	double a = 0.0;
+	for (uint32_t i = begin; i < end; i++) {
+		const auto &p = m.vertices[i];
+		const auto &q = m.vertices[(i + 1 < end) ? i + 1 : begin];
+		a += p.x * q.y - q.x * p.y;
+	}
+	return 0.5 * a;
+}
+
+//! Footprint of one polygon whose rings are ring indices [r0,r1): the exterior
+//! ring's projected area minus the interior (hole) rings'. Never negative.
+double PolygonFootprint(const GeomModel &m, uint32_t r0, uint32_t r1) {
+	if (r1 <= r0 || r0 + 1 >= m.ring_offsets.size()) {
+		return 0.0;
+	}
+	double area = std::fabs(ShoelaceXY(m, m.ring_offsets[r0], m.ring_offsets[r0 + 1]));
+	for (uint32_t r = r0 + 1; r < r1 && r + 1 < m.ring_offsets.size(); r++) {
+		area -= std::fabs(ShoelaceXY(m, m.ring_offsets[r], m.ring_offsets[r + 1]));
+	}
+	return std::max(0.0, area);
+}
+
+} // namespace
+
+double Geom3DFootprintArea(const GeomModel &geom) {
+	switch (geom.type) {
+	case GeomType::Polygon:
+		// A single polygon: rings are all of ring_offsets, ring 0 is the exterior.
+		return PolygonFootprint(geom, 0, static_cast<uint32_t>(geom.ring_offsets.size()) - 1);
+	case GeomType::MultiPolygon: {
+		// Independent single-sided polygons: their footprints simply add.
+		double total = 0.0;
+		for (size_t k = 0; k + 1 < geom.part_offsets.size(); k++) {
+			total += PolygonFootprint(geom, geom.part_offsets[k], geom.part_offsets[k + 1]);
+		}
+		return total;
+	}
+	case GeomType::PolyhedralSurface: {
+		// A (typically closed) two-sided shell: each vertical column crosses the
+		// boundary once above and once below, so summing absolute face projections
+		// double-counts the footprint — halve it, matching ComputeFootprintArea for
+		// SOLID_3D. Exact for closed vertically-simple shells, approximate otherwise.
+		double total = 0.0;
+		for (size_t k = 0; k + 1 < geom.part_offsets.size(); k++) {
+			total += PolygonFootprint(geom, geom.part_offsets[k], geom.part_offsets[k + 1]);
+		}
+		return 0.5 * total;
+	}
+	default:
+		// Points and (multi)lines have no area.
+		return 0.0;
+	}
+}
+
 } // namespace duckdb_3d

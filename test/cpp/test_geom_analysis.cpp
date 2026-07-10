@@ -160,3 +160,103 @@ TEST_CASE("Geom3DConvexHull: single point", "[geom_analysis]") {
 	REQUIRE(hull.vertices[0].x == Approx(5.0));
 	REQUIRE(hull.vertices[0].z == Approx(7.0));
 }
+
+TEST_CASE("Geom3DFootprintArea: axis-aligned square", "[geom_analysis]") {
+	REQUIRE(Geom3DFootprintArea(FlatSquare()) == Approx(4.0)); // 2 x 2
+}
+
+TEST_CASE("Geom3DFootprintArea: right triangle", "[geom_analysis]") {
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {6, 0, 0}, {0, 6, 0}};
+	m.ring_offsets = {0, 3};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(18.0)); // 1/2 x 6 x 6
+}
+
+TEST_CASE("Geom3DFootprintArea: orientation-independent (clockwise ring)", "[geom_analysis]") {
+	// Same square wound clockwise — the footprint magnitude is unchanged.
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {0, 2, 0}, {2, 2, 0}, {2, 0, 0}};
+	m.ring_offsets = {0, 4};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(4.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: uses the XY projection, not the 3D area", "[geom_analysis]") {
+	// Square in the plane z = x: its true 3D area is 2 * (2 * sqrt(2)) ≈ 5.657,
+	// but the XY footprint is a 2 x 2 square = 4.
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {2, 0, 2}, {2, 2, 2}, {0, 2, 0}};
+	m.ring_offsets = {0, 4};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(4.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: a vertical wall projects to zero", "[geom_analysis]") {
+	// A polygon in the x-z plane (all y = 0): its XY projection is a line.
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {2, 0, 0}, {2, 0, 3}, {0, 0, 3}};
+	m.ring_offsets = {0, 4};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(0.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: polygon with a hole subtracts the hole", "[geom_analysis]") {
+	// 4x4 outer square with a 2x2 hole → 16 - 4 = 12. Hole wound opposite.
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0}, {1, 1, 0}, {1, 3, 0}, {3, 3, 0}, {3, 1, 0}};
+	m.ring_offsets = {0, 4, 8};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(12.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: a closed PolyhedralSurface shell is halved", "[geom_analysis]") {
+	// Unit cube as a 6-face PolyhedralSurface. The top and bottom each project to
+	// a unit square (area 1); the four walls project to zero. A two-sided shell is
+	// crossed twice per vertical column, so the footprint is 0.5 * (1 + 1) = 1.0,
+	// NOT the naive face-sum of 2.0.
+	GeomModel m;
+	m.type = GeomType::PolyhedralSurface;
+	m.vertices = {
+	    {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, // bottom (z=0)
+	    {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}, // top    (z=1)
+	    {0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}, // wall y=0
+	    {1, 0, 0}, {1, 1, 0}, {1, 1, 1}, {1, 0, 1}, // wall x=1
+	    {1, 1, 0}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}, // wall y=1
+	    {0, 1, 0}, {0, 0, 0}, {0, 0, 1}, {0, 1, 1}, // wall x=0
+	};
+	m.ring_offsets = {0, 4, 8, 12, 16, 20, 24};
+	m.part_offsets = {0, 1, 2, 3, 4, 5, 6};
+	m.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(m) == Approx(1.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: malformed offsets do not read out of bounds", "[geom_analysis]") {
+	// A ring offset past the vertex array (DeserializeGeomPayload does not bound-
+	// check CSR offsets) must be guarded, not read out of bounds.
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
+	m.ring_offsets = {0, 99}; // 99 > vertices.size()
+	REQUIRE_NOTHROW(Geom3DFootprintArea(m));
+	REQUIRE(Geom3DFootprintArea(m) == Approx(0.0));
+}
+
+TEST_CASE("Geom3DFootprintArea: non-areal geometries are zero", "[geom_analysis]") {
+	GeomModel pt;
+	pt.type = GeomType::Point;
+	pt.vertices = {{1, 2, 3}};
+	pt.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(pt) == Approx(0.0));
+
+	GeomModel line;
+	line.type = GeomType::LineString;
+	line.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 3, 0}};
+	line.ComputeBBox();
+	REQUIRE(Geom3DFootprintArea(line) == Approx(0.0));
+}

@@ -48,9 +48,10 @@ SELECT ST_3DPerimeter(NULL);
 ----
 NULL
 
-# Test: NULL propagation
+# Test: NULL propagation. ST_Area is overloaded over SOLID_3D / GEOM_3D / BLOB
+# (like ST_ZMin/ST_ZMax), so an untyped NULL is ambiguous and must be cast.
 query III
-SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL);
+SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL::SOLID_3D);
 ----
 NULL	NULL	NULL
 

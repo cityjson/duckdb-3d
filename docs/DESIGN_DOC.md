@@ -751,7 +751,7 @@ Class-generic; operate on `GEOM_3D` (and `SOLID_3D` where a bounding box suffice
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `SOLID_3D`. **2D footprint area** = area of XY projection. Key building metric. |
+| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on **both** `SOLID_3D` (footprint, §10-area) and `GEOM_3D` (XY-projected polygon area, single-sided; enables `ST_Area(ST_ConvexHull(g))`). **2D footprint area** = area of XY projection. Key building metric. |
 | `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `GEOM_3D`. 3D length of (multi)linestrings; 0 for areal/point. |
 | `ST_3DPerimeter` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. Total length of boundary edges (used by exactly one face); 0 for closed solids. |
 | `ST_3DArea` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. 3D surface area for surfaces; alias-aligned with existing `ST_3DSurfaceArea` (§5.3). |
@@ -947,6 +947,20 @@ coordinates are transformed `DOUBLE` XYZ (§6.3).
   approximate for overhangs/re-entrant profiles (documented limitation; no planar union in
   v1). Implemented in `ComputeFootprintArea` (`src/kernel/measurements.cpp`).
 - Precondition: none beyond a parseable model.
+- **GEOM_3D overload:** the same `ST_Area` also accepts a `GEOM_3D` value (dispatched
+  by payload magic, like `ST_ZMin`/`ST_ZMax`; an untyped `NULL` is therefore ambiguous
+  and must be cast, exactly as for `ST_ZMin`). Semantics by class:
+  - **Polygon / MultiPolygon** — single-sided, **no halving**: the XY-projected area of
+    each exterior ring minus its interior (hole) rings, summed over parts. This is the
+    `ST_ConvexHull` case: `ST_Area(ST_ConvexHull(g))` gives the hull area, matching
+    PostGIS `ST_Area(ST_ConvexHull(g))` in the differential harness (§9.5.1).
+  - **PolyhedralSurface** — a two-sided shell, so **halved** (`0.5·Σ|projected face|`),
+    consistent with the `SOLID_3D` footprint above; exact for closed vertically-simple
+    shells, approximate otherwise.
+  - **Points / lines / vertical faces** — 0.
+
+  Implemented in `Geom3DFootprintArea` (`src/kernel/geom_analysis.cpp`), which guards
+  against malformed (unbounded) CSR offsets rather than reading past the vertex array.
 
 #### 16.10.3 Distance — `must`
 
