@@ -55,3 +55,36 @@ NULL	NULL	NULL	true
 
 statement ok
 DROP TABLE solids;
+
+# ──────────────────────────────────────────────────────────────
+# Invalid solid: an open shell (tetrahedron missing one face) imports
+# successfully but is reported invalid — the extension is the oracle of
+# record for invalid geometry (it flags, it does not repair; design doc §9).
+# ──────────────────────────────────────────────────────────────
+statement ok
+CREATE TABLE open_solids AS
+SELECT ST_3DFromWKB(ST_AsWKBOpenTetra()) AS solid;
+
+# The report flags the open shell: not valid, not closed, with unpaired edges,
+# yet still manifold and correctly oriented on the faces that are present.
+query IIIIIIIIIIIII
+SELECT
+    r.is_valid,
+    r.is_closed,
+    r.is_manifold,
+    r.is_oriented,
+    r.solid_count,
+    r.shell_count,
+    r.face_count,
+    r.open_edge_count,
+    r.non_manifold_edge_count,
+    r.degenerate_face_count,
+    r.orientation_error_count,
+    r.code,
+    r.message
+FROM (SELECT ST_3DValidationReport(solid) AS r FROM open_solids);
+----
+false	false	true	true	1	1	3	3	0	0	0	INVALID	Invalid solid: not closed
+
+statement ok
+DROP TABLE open_solids;

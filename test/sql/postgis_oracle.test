@@ -1,0 +1,149 @@
+# name: test/sql/postgis_oracle.test
+# description: differential validation of three_d against frozen PostGIS/SFCGAL golden values (design doc §9.5)
+# group: [sql]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This test compares three_d's 3D measurements against reference values computed
+# offline by PostGIS + SFCGAL and frozen into
+# test/data/postgis_oracle/golden.csv (regenerate with `just oracle-regen`).
+#
+# It reads the FROZEN ISO WKB from golden.csv and runs each three_d function on
+# the SAME bytes SFCGAL saw — so a discrepancy is a real computation bug, not an
+# ingestion difference. PostGIS is NOT a test-time dependency: `require three_d`
+# only — no cityjson, no container, no network. This is the CI-enforced check.
+#
+# SFCGAL requires exactly-planar polygon faces and REJECTS most real 3DBAG roofs
+# ('rejected' rows carry no reference value); those are cross-checked against
+# 3DBAG's own published attributes in cityjson_delft_remote.test instead. The
+# tolerance is two-tier: analytic fixtures (small integer coordinates) agree to
+# machine precision (tight, 1e-6); the real accepted geometry uses a looser tier
+# (1e-3) as conservative headroom for large real-world coordinates, where the two
+# engines' summation/triangulation order costs a few more ULPs. See scripts/oracle/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+require three_d
+
+statement ok
+CREATE TABLE golden AS
+SELECT * FROM read_csv('test/data/postgis_oracle/golden.csv', header = true);
+
+# The frozen file is present and non-trivial.
+query I
+SELECT count(*) >= 10 FROM golden;
+----
+true
+
+# Every frozen WKB re-imports cleanly through ST_3DFromWKB.
+query I
+SELECT count(*) = count(ST_3DFromWKB(unhex(wkb_hex)))
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Non-vacuity guard: each tolerance tier below filters on pg_*_status = 'ok', so
+# an all-'rejected' golden (e.g. a broken oracle regen) would make those checks
+# pass on EMPTY subsets. Assert every tier actually has reference rows to compare.
+query I
+SELECT count(*) FILTER (WHERE pg_area_status = 'ok'   AND feature_id LIKE 'fixture:%')     >= 2
+   AND count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id LIKE 'fixture:%')     >= 1
+   AND count(*) FILTER (WHERE pg_area_status = 'ok'   AND feature_id NOT LIKE 'fixture:%') >= 1
+   AND count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id NOT LIKE 'fixture:%') >= 1
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Golden-side anchor: assert the PostGIS reference values themselves against
+# analytic truth (unit tetra: area = 3·0.5 + sqrt(3)/2 ≈ 2.366, volume = 1/6).
+# This catches a corrupted golden.csv independently of the extension, so the
+# tolerance checks below are meaningful on BOTH sides, not just self-consistent.
+query II
+SELECT ROUND(pg_area3d, 6), ROUND(pg_volume, 6)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+2.366025	0.166667
+
+# Closedness agrees exactly (boolean, both engines on the same bytes).
+query I
+SELECT bool_and(ST_3DIsClosed(ST_3DFromWKB(unhex(wkb_hex))) = pg_is_closed)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# ── Surface area — analytic fixtures, tight tier (rel 1e-6, abs 1e-9) ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))) - pg_area3d)
+        <= 1e-6 * abs(pg_area3d) + 1e-9)
+FROM golden
+WHERE geom_role = 'solid' AND pg_area_status = 'ok'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+# ── Surface area — real 3DBAG geometry, loose tier (rel 1e-3, abs 1e-6) ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))) - pg_area3d)
+        <= 1e-3 * abs(pg_area3d) + 1e-6)
+FROM golden
+WHERE geom_role = 'solid' AND pg_area_status = 'ok'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+# ── Enclosed volume — analytic fixtures, tight tier ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))) - pg_volume)
+        <= 1e-6 * abs(pg_volume) + 1e-9)
+FROM golden
+WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+# ── Enclosed volume — real 3DBAG geometry, loose tier ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))) - pg_volume)
+        <= 1e-3 * abs(pg_volume) + 1e-6)
+FROM golden
+WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+# ── Deterministic per-feature pins (high-signal regression anchors) ──
+# Unit tetrahedron: surface area 2.366…, volume 1/6.
+query II
+SELECT ROUND(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))), 6),
+       ROUND(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))), 6)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+2.366025	0.166667
+
+# Real flat-roof 3DBAG box that SFCGAL accepts (the only non-fixture 'ok' row).
+query II
+SELECT ROUND(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))), 2),
+       ROUND(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))), 1)
+FROM golden WHERE feature_id = 'NL.IMBAG.Pand.0703100000035935-0';
+----
+420.82	375.1
+
+# ── Invalid geometry: the extension is the oracle of record ──
+# The open shell (tetra missing a face) is 'rejected' by SFCGAL for volume; the
+# extension likewise refuses ST_3DVolume with the documented precondition error
+# (it flags, it does not repair — design doc §9).
+query I
+SELECT pg_volume_status FROM golden WHERE feature_id = 'fixture:open_tetra';
+----
+rejected
+
+statement error
+SELECT ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex)))
+FROM golden WHERE feature_id = 'fixture:open_tetra';
+----
+not closed
+
+statement ok
+DROP TABLE golden;

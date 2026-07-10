@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""gen_golden.py — Phase A of the duckdb-3d PostGIS/SFCGAL differential harness.
+
+Generates test/data/postgis_oracle/golden.csv: frozen reference values computed
+by PostGIS + SFCGAL on the *same* ISO WKB bytes the three_d extension exports.
+This is the ONLY place PostGIS exists — it runs offline, dev-time only. The
+committed golden.csv is what the CI test (test/sql/postgis_oracle.test) compares
+against, so `make test` never needs PostGIS, a container, or the network.
+
+The WKB inputs are frozen in golden.csv, so there are two regen modes:
+
+  * default (`just oracle-regen`) — read the frozen wkb_hex straight from the
+    existing golden.csv and recompute the PostGIS/SFCGAL reference values. Needs
+    ONLY the oracle container; no DuckDB, no cityjson, no fixture. Use this to
+    refresh values when the PostGIS/SFCGAL version changes.
+
+  * `--reexport` (`just oracle-reexport`) — re-derive the wkb_hex from the
+    fixture via the release DuckDB CLI + cityjson, then recompute. Use this only
+    when the fixture (test/data/3dbag.city.jsonl) or the input set changes. It
+    requires a DuckDB version for which the cityjson community extension is
+    published (see README.md).
+
+Both modes then feed the bytes into PostGIS (scripts/oracle/postgis_oracle.sql),
+sort rows, and fixed-format floats -> deterministic golden.csv (+ provenance).
+The oracle runs in a container managed by `just oracle-up` (Apple `container`,
+Docker-compatible); a clean run leaves golden.csv byte-identical.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import math
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+DUCKDB = REPO / "build" / "release" / "duckdb"
+EXPORT_SQL = REPO / "scripts" / "oracle" / "export_wkb.sql"
+ORACLE_SQL = REPO / "scripts" / "oracle" / "postgis_oracle.sql"
+OUT_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden.csv"
+
+# Container runtime + image are configurable so the harness also runs under
+# plain Docker; the defaults target Apple `container` with the pinned image.
+RUNTIME = os.environ.get("ORACLE_RUNTIME", "container")
+CONTAINER = os.environ.get("ORACLE_CONTAINER", "pg_oracle")
+IMAGE = os.environ.get("ORACLE_IMAGE", "postgis/postgis:16-3.4")
+SOURCE = "3dbag.city.jsonl"
+
+# Pinned oracle versions (postgis/postgis:16-3.4). A tag move that changes these
+# can shift the golden values, so warn loudly on drift (recorded in the CSV too).
+EXPECTED_PG, EXPECTED_SFCGAL = "3.4.3", "1.3.8"
+
+# The planar unit tetrahedron is the harness's canary: SFCGAL must accept it and
+# reproduce these exact analytic values. If it doesn't, the oracle is broken and
+# generation must fail rather than freeze every row as 'rejected'.
+CANARY = "fixture:tetra"
+# Tetra (0,0,0),(1,0,0),(0,1,0),(0,0,1): three right-triangle faces of area 1/2
+# plus the equilateral hypotenuse face of area sqrt(3)/2 -> 3·0.5 + sqrt(3)/2.
+CANARY_AREA = 2.3660254037844384
+CANARY_VOLUME = 1.0 / 6.0
+
+# Reject anything but hex in wkb_hex and a conservative id charset before it is
+# interpolated into the INSERT below (defence in depth; inputs are our own).
+_HEX = re.compile(r"\A[0-9a-fA-F]*\Z")
+_SAFE_ID = re.compile(r"\A[\w:.\-]*\Z")
+
+# Columns whose values are floating-point and must be formatted deterministically.
+FLOAT_COLS = ("pg_area3d", "pg_volume")
+FLOAT_FMT = "%.17g"  # round-trippable, stable across runs of the same image
+
+# PostGIS COPY writes booleans as t/f; normalise to true/false so DuckDB's
+# read_csv infers a real BOOLEAN column in Phase B.
+BOOL_COLS = ("pg_is_closed",)
+_BOOL = {"t": "true", "f": "false"}
+
+
+def run(cmd: list[str], *, stdin: str | None = None) -> str:
+    """Run a subprocess, return stdout, raise with stderr on failure."""
+    proc = subprocess.run(
+        cmd,
+        input=stdin,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(f"command failed ({proc.returncode}): {' '.join(cmd)}")
+    return proc.stdout
+
+
+def psql(sql: str, *, quiet: bool = True) -> str:
+    """Run SQL in the oracle container via `<runtime> exec -i <name> psql`."""
+    args = [RUNTIME, "exec", "-i", CONTAINER, "psql", "-U", "postgres",
+            "-v", "ON_ERROR_STOP=1"]
+    if quiet:
+        args.append("-q")  # suppress command tags so COPY TO STDOUT is clean
+    return run(args, stdin=sql)
+
+
+INPUT_COLS = ("feature_id", "lod", "geom_role", "wkb_hex")
+
+
+def export_wkb_inputs() -> list[dict[str, str]]:
+    """DuckDB side: (feature_id, lod, geom_role, wkb_hex) rows from the fixture."""
+    if not DUCKDB.exists():
+        raise SystemExit(f"release CLI not found at {DUCKDB}; run `just build` first")
+    out = run([str(DUCKDB), "-unsigned", "-cmd", "LOAD three_d;",
+               "-c", f".read {EXPORT_SQL}"])
+    return list(csv.DictReader(io.StringIO(out)))
+
+
+def frozen_wkb_inputs() -> list[dict[str, str]]:
+    """Read the frozen (feature_id, lod, geom_role, wkb_hex) from golden.csv."""
+    if not OUT_CSV.exists():
+        raise SystemExit(f"{OUT_CSV} not found; bootstrap it once with --reexport")
+    with OUT_CSV.open() as f:
+        return [{c: r[c] for c in INPUT_COLS} for r in csv.DictReader(f)]
+
+
+def oracle_versions() -> tuple[str, str]:
+    out = psql("SELECT postgis_lib_version() || '|' || postgis_sfcgal_version();",
+               quiet=False)
+    for line in out.splitlines():
+        if "|" in line and "." in line:
+            pg, sfcgal = line.strip().split("|")
+            return pg, sfcgal
+    raise SystemExit("could not read PostGIS/SFCGAL versions from container")
+
+
+def _validate(rows: list[dict[str, str]]) -> None:
+    for r in rows:
+        if not _HEX.match(r["wkb_hex"]):
+            raise SystemExit(f"unsafe wkb_hex for {r['feature_id']!r}")
+        for c in ("feature_id", "lod", "geom_role"):
+            if not _SAFE_ID.match(r[c]):
+                raise SystemExit(f"unsafe {c}: {r[c]!r}")
+
+
+def run_oracle(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Load wkb_inputs into PostGIS, run postgis_oracle.sql, return CSV rows."""
+    _validate(rows)
+    values = ",\n".join(
+        "(" + ",".join(_pgquote(r[c]) for c in
+                       ("feature_id", "lod", "geom_role", "wkb_hex")) + ")"
+        for r in rows
+    )
+    load = (
+        "CREATE TEMP TABLE wkb_inputs"
+        " (feature_id text, lod text, geom_role text, wkb_hex text);\n"
+        f"INSERT INTO wkb_inputs VALUES\n{values};\n"
+    )
+    out = psql(load + ORACLE_SQL.read_text())
+    return list(csv.DictReader(io.StringIO(out)))
+
+
+def _pgquote(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def check_canary(rows: list[dict[str, str]]) -> None:
+    """Fail generation if SFCGAL didn't reproduce the tetra fixture exactly.
+
+    Guards against the EXCEPTION-WHEN-others wrappers silently masking a broken
+    oracle (missing SFCGAL, wrong image) as blanket 'rejected' rows — which would
+    otherwise produce a useless golden.csv that the CI test can't distinguish.
+    """
+    row = next((r for r in rows if r["feature_id"] == CANARY), None)
+    if row is None:
+        raise SystemExit(f"sanity: canary {CANARY!r} missing from oracle output")
+    if row["pg_area_status"] != "ok" or row["pg_volume_status"] != "ok":
+        raise SystemExit(
+            f"sanity: SFCGAL rejected the planar {CANARY} — oracle likely broken "
+            f"(area={row['pg_area_status']}, volume={row['pg_volume_status']})")
+    if not math.isclose(float(row["pg_area3d"]), CANARY_AREA, rel_tol=1e-9):
+        raise SystemExit(f"sanity: {CANARY} area {row['pg_area3d']} != {CANARY_AREA}")
+    if not math.isclose(float(row["pg_volume"]), CANARY_VOLUME, rel_tol=1e-9):
+        raise SystemExit(f"sanity: {CANARY} volume {row['pg_volume']} != {CANARY_VOLUME}")
+
+
+def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str) -> str:
+    """Deterministic CSV: sorted rows, fixed float format, provenance columns."""
+    fieldnames = list(rows[0].keys()) + ["source", "pg_version", "sfcgal_version"]
+    for r in rows:
+        for c in FLOAT_COLS:
+            if r.get(c) not in (None, ""):
+                r[c] = FLOAT_FMT % float(r[c])
+        for c in BOOL_COLS:
+            if r.get(c) in _BOOL:
+                r[c] = _BOOL[r[c]]
+        r["source"] = SOURCE
+        r["pg_version"] = pg_ver
+        r["sfcgal_version"] = sfcgal_ver
+    rows.sort(key=lambda r: (r["geom_role"], r["feature_id"], r["lod"]))
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
+    w.writeheader()
+    w.writerows(rows)
+    return buf.getvalue()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--reexport", action="store_true",
+                    help="re-derive wkb_hex from the fixture via DuckDB+cityjson "
+                         "(needs a published cityjson); default reuses frozen WKB")
+    args = ap.parse_args()
+
+    inputs = export_wkb_inputs() if args.reexport else frozen_wkb_inputs()
+    if not inputs:
+        raise SystemExit("no WKB inputs")
+    # run_oracle runs postgis_oracle.sql's CREATE EXTENSION first, so query the
+    # versions afterwards — on a fresh container SFCGAL isn't registered yet.
+    oracle_rows = run_oracle(inputs)
+    check_canary(oracle_rows)
+    pg_ver, sfcgal_ver = oracle_versions()
+    if (pg_ver, sfcgal_ver) != (EXPECTED_PG, EXPECTED_SFCGAL):
+        sys.stderr.write(
+            f"warning: oracle versions {pg_ver}/{sfcgal_ver} differ from pinned "
+            f"{EXPECTED_PG}/{EXPECTED_SFCGAL}; golden values may shift\n")
+    OUT_CSV.write_text(format_golden(oracle_rows, pg_ver, sfcgal_ver))
+    mode = "re-export" if args.reexport else "frozen-WKB"
+    print(f"wrote {OUT_CSV.relative_to(REPO)}: {len(oracle_rows)} rows "
+          f"[{mode}] (PostGIS {pg_ver}, SFCGAL {sfcgal_ver})")
+
+
+if __name__ == "__main__":
+    main()
