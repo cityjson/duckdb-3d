@@ -26,6 +26,26 @@ One row per geometry fed to the oracle. Columns:
 most real 3DBAG roofs; the extension measures those by triangulation and is
 cross-checked against 3DBAG attributes in `cityjson_delft_remote.test` instead.
 
+### `golden_pairs.csv` — distance & relation reference
+
+One row per geometry **pair**, for the 3D distance/relation functions. Unlike
+volume/area, SFCGAL's distance predicates do not require planar faces, so these
+cover the real non-planar surfaces too. The two geometries' WKB is not
+duplicated here — it is resolved from `golden.csv` by joining on `feature_id`.
+
+| column | meaning |
+|---|---|
+| `feature_a`, `feature_b` | the paired feature ids (found in `golden.csv`) |
+| `threshold` | distance threshold for the `*within` predicates |
+| `pg_dist3d`, `pg_maxdist3d` | `ST_3DDistance` / `ST_3DMaxDistance` |
+| `pg_intersects` | `ST_3DIntersects` |
+| `pg_dwithin`, `pg_dfullywithin` | `ST_3DDWithin` / `ST_3DDFullyWithin` at `threshold` |
+| `source`, `pg_version`, `sfcgal_version` | provenance |
+
+Pairs are chosen so every boolean predicate straddles true and false (two
+distinct buildings ≈ 517.6 m apart, plus self-pairs), keeping the Phase B
+relation checks non-vacuous.
+
 ## Provenance
 
 - **source dataset:** `test/data/3dbag.city.jsonl` — a 3DBAG CityJSONSeq subset

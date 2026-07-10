@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """gen_golden.py — Phase A of the duckdb-3d PostGIS/SFCGAL differential harness.
 
-Generates test/data/postgis_oracle/golden.csv: frozen reference values computed
-by PostGIS + SFCGAL on the *same* ISO WKB bytes the three_d extension exports.
+Generates test/data/postgis_oracle/golden.csv (per-geometry volume, surface
+area, closedness) and golden_pairs.csv (per-pair distance and relation
+predicates): frozen reference values computed by PostGIS + SFCGAL on the *same*
+ISO WKB bytes the three_d extension exports.
 This is the ONLY place PostGIS exists — it runs offline, dev-time only. The
 committed golden.csv is what the CI test (test/sql/postgis_oracle.test) compares
 against, so `make test` never needs PostGIS, a container, or the network.
@@ -42,7 +44,9 @@ REPO = Path(__file__).resolve().parents[2]
 DUCKDB = REPO / "build" / "release" / "duckdb"
 EXPORT_SQL = REPO / "scripts" / "oracle" / "export_wkb.sql"
 ORACLE_SQL = REPO / "scripts" / "oracle" / "postgis_oracle.sql"
+ORACLE_PAIRS_SQL = REPO / "scripts" / "oracle" / "postgis_oracle_pairs.sql"
 OUT_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden.csv"
+OUT_PAIRS_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden_pairs.csv"
 
 # Container runtime + image are configurable so the harness also runs under
 # plain Docker; the defaults target Apple `container` with the pinned image.
@@ -71,12 +75,28 @@ _SAFE_ID = re.compile(r"\A[\w:.\-]*\Z")
 
 # Columns whose values are floating-point and must be formatted deterministically.
 FLOAT_COLS = ("pg_area3d", "pg_volume")
+PAIR_FLOAT_COLS = ("pg_dist3d", "pg_maxdist3d", "threshold")
 FLOAT_FMT = "%.17g"  # round-trippable, stable across runs of the same image
 
 # PostGIS COPY writes booleans as t/f; normalise to true/false so DuckDB's
 # read_csv infers a real BOOLEAN column in Phase B.
 BOOL_COLS = ("pg_is_closed",)
+PAIR_BOOL_COLS = ("pg_intersects", "pg_dwithin", "pg_dfullywithin")
 _BOOL = {"t": "true", "f": "false"}
+
+# Geometry pairs for the distance/relation oracle: (feature_a, feature_b,
+# threshold). Chosen so every boolean predicate below straddles true and false
+# (dist(035935,028278) ≈ 517.6, maxdist ≈ 563.8), keeping Phase B non-vacuous:
+#   intersects — false for the two distinct buildings, true for the self-pairs
+#   dwithin    — false at 100, true at 1000 / for the self-pairs
+#   dfullywithin — false at 100 and for the real self-pair (its diameter > 1),
+#                  true at 1000 and for the tetra self-pair (diameter √2 < 2)
+PAIRS = (
+    ("NL.IMBAG.Pand.0703100000035935-0", "NL.IMBAG.Pand.0703100000028278-0", 1000.0),
+    ("NL.IMBAG.Pand.0703100000035935-0", "NL.IMBAG.Pand.0703100000028278-0", 100.0),
+    ("NL.IMBAG.Pand.0703100000035935-0", "NL.IMBAG.Pand.0703100000035935-0", 1.0),
+    ("fixture:tetra", "fixture:tetra", 2.0),
+)
 
 
 def run(cmd: list[str], *, stdin: str | None = None) -> str:
@@ -182,20 +202,55 @@ def check_canary(rows: list[dict[str, str]]) -> None:
         raise SystemExit(f"sanity: {CANARY} volume {row['pg_volume']} != {CANARY_VOLUME}")
 
 
-def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str) -> str:
+def run_oracle_pairs(pairs, wkb_by_id: dict[str, str]) -> list[dict[str, str]]:
+    """Load pair_inputs into PostGIS, run postgis_oracle_pairs.sql, return rows."""
+    for a, b, _ in pairs:
+        for fid in (a, b):
+            if fid not in wkb_by_id:
+                raise SystemExit(f"pair references unknown feature {fid!r}")
+    values = ",\n".join(
+        "(" + ",".join([_pgquote(a), _pgquote(b),
+                        _pgquote(wkb_by_id[a]), _pgquote(wkb_by_id[b]),
+                        repr(float(thr))]) + ")"
+        for a, b, thr in pairs
+    )
+    load = (
+        "CREATE TEMP TABLE pair_inputs (feature_a text, feature_b text,"
+        " wkb_a text, wkb_b text, threshold double precision);\n"
+        f"INSERT INTO pair_inputs VALUES\n{values};\n"
+    )
+    out = psql(load + ORACLE_PAIRS_SQL.read_text())
+    return list(csv.DictReader(io.StringIO(out)))
+
+
+def check_pair_canary(rows: list[dict[str, str]]) -> None:
+    """The tetra self-pair must have distance 0 and intersect — cheap proof the
+    distance/relation oracle actually computed rather than silently degenerating."""
+    row = next((r for r in rows if r["feature_a"] == CANARY
+                and r["feature_b"] == CANARY), None)
+    if row is None:
+        raise SystemExit(f"sanity: pair canary {CANARY}/{CANARY} missing")
+    if not math.isclose(float(row["pg_dist3d"]), 0.0, abs_tol=1e-9):
+        raise SystemExit(f"sanity: {CANARY} self-distance {row['pg_dist3d']} != 0")
+    if row["pg_intersects"] != "t":
+        raise SystemExit(f"sanity: {CANARY} self-pair not intersecting")
+
+
+def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str,
+                  *, float_cols, bool_cols, sort_key) -> str:
     """Deterministic CSV: sorted rows, fixed float format, provenance columns."""
     fieldnames = list(rows[0].keys()) + ["source", "pg_version", "sfcgal_version"]
     for r in rows:
-        for c in FLOAT_COLS:
+        for c in float_cols:
             if r.get(c) not in (None, ""):
                 r[c] = FLOAT_FMT % float(r[c])
-        for c in BOOL_COLS:
+        for c in bool_cols:
             if r.get(c) in _BOOL:
                 r[c] = _BOOL[r[c]]
         r["source"] = SOURCE
         r["pg_version"] = pg_ver
         r["sfcgal_version"] = sfcgal_ver
-    rows.sort(key=lambda r: (r["geom_role"], r["feature_id"], r["lod"]))
+    rows.sort(key=sort_key)
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
     w.writeheader()
@@ -217,14 +272,24 @@ def main() -> None:
     # versions afterwards — on a fresh container SFCGAL isn't registered yet.
     oracle_rows = run_oracle(inputs)
     check_canary(oracle_rows)
+    pair_rows = run_oracle_pairs(PAIRS, {r["feature_id"]: r["wkb_hex"] for r in inputs})
+    check_pair_canary(pair_rows)
     pg_ver, sfcgal_ver = oracle_versions()
     if (pg_ver, sfcgal_ver) != (EXPECTED_PG, EXPECTED_SFCGAL):
         sys.stderr.write(
             f"warning: oracle versions {pg_ver}/{sfcgal_ver} differ from pinned "
             f"{EXPECTED_PG}/{EXPECTED_SFCGAL}; golden values may shift\n")
-    OUT_CSV.write_text(format_golden(oracle_rows, pg_ver, sfcgal_ver))
+    OUT_CSV.write_text(format_golden(
+        oracle_rows, pg_ver, sfcgal_ver,
+        float_cols=FLOAT_COLS, bool_cols=BOOL_COLS,
+        sort_key=lambda r: (r["geom_role"], r["feature_id"], r["lod"])))
+    OUT_PAIRS_CSV.write_text(format_golden(
+        pair_rows, pg_ver, sfcgal_ver,
+        float_cols=PAIR_FLOAT_COLS, bool_cols=PAIR_BOOL_COLS,
+        sort_key=lambda r: (r["feature_a"], r["feature_b"], float(r["threshold"]))))
     mode = "re-export" if args.reexport else "frozen-WKB"
-    print(f"wrote {OUT_CSV.relative_to(REPO)}: {len(oracle_rows)} rows "
+    print(f"wrote {OUT_CSV.relative_to(REPO)}: {len(oracle_rows)} rows; "
+          f"{OUT_PAIRS_CSV.name}: {len(pair_rows)} rows "
           f"[{mode}] (PostGIS {pg_ver}, SFCGAL {sfcgal_ver})")
 
 

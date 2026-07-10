@@ -145,5 +145,93 @@ FROM golden WHERE feature_id = 'fixture:open_tetra';
 ----
 not closed
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Distance + relation predicates between geometry PAIRS. Unlike volume/area,
+# SFCGAL's 3D distance/relation functions compute on the non-planar 3DBAG
+# surfaces without rejection, so these cover real geometry too. Each pair's
+# frozen WKB is resolved from the solids golden above by joining on feature id.
+# ─────────────────────────────────────────────────────────────────────────────
+statement ok
+CREATE TABLE golden_pairs AS
+SELECT * FROM read_csv('test/data/postgis_oracle/golden_pairs.csv', header = true);
+
+# Non-vacuity: each boolean predicate is exercised with BOTH outcomes, so the
+# bool_and(... = ...) checks below can't pass trivially on a constant column.
+query I
+SELECT count(DISTINCT pg_intersects) = 2
+   AND count(DISTINCT pg_dwithin) = 2
+   AND count(DISTINCT pg_dfullywithin) = 2
+FROM golden_pairs;
+----
+true
+
+# The WKB-resolving join is TOTAL: every pair endpoint exists in golden, so no
+# pair is silently dropped (which would let the checks below pass on a subset).
+query I
+SELECT (SELECT count(*) FROM golden_pairs) = count(*)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# 3D minimum distance agrees (SFCGAL computes on the raw non-planar surfaces).
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                          ST_Geom3DFromWKB(unhex(b.wkb_hex))) - p.pg_dist3d)
+        <= 1e-6 * abs(p.pg_dist3d) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# 3D maximum distance agrees.
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DMaxDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                             ST_Geom3DFromWKB(unhex(b.wkb_hex))) - p.pg_maxdist3d)
+        <= 1e-6 * abs(p.pg_maxdist3d) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Relation predicates (intersects / dwithin / dfullywithin) agree EXACTLY.
+# IS NOT DISTINCT FROM (not =) so a predicate that unexpectedly returns NULL
+# fails the check rather than being silently skipped by bool_and.
+query I
+SELECT bool_and(ST_3DIntersects(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                ST_Geom3DFromWKB(unhex(b.wkb_hex))) IS NOT DISTINCT FROM p.pg_intersects)
+   AND bool_and(ST_3DDWithin(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                             ST_Geom3DFromWKB(unhex(b.wkb_hex)), p.threshold) IS NOT DISTINCT FROM p.pg_dwithin)
+   AND bool_and(ST_3DDFullyWithin(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                  ST_Geom3DFromWKB(unhex(b.wkb_hex)), p.threshold) IS NOT DISTINCT FROM p.pg_dfullywithin)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Deterministic pin: the two distinct buildings are ~517.6 m apart (min),
+# ~563.8 m (max), and do not intersect.
+query III
+SELECT ROUND(ST_3DDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                           ST_Geom3DFromWKB(unhex(b.wkb_hex))), 2),
+       ROUND(ST_3DMaxDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                              ST_Geom3DFromWKB(unhex(b.wkb_hex))), 2),
+       ST_3DIntersects(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                       ST_Geom3DFromWKB(unhex(b.wkb_hex)))
+FROM golden a, golden b
+WHERE a.feature_id = 'NL.IMBAG.Pand.0703100000035935-0'
+  AND b.feature_id = 'NL.IMBAG.Pand.0703100000028278-0';
+----
+517.64	563.84	false
+
+statement ok
+DROP TABLE golden_pairs;
+
 statement ok
 DROP TABLE golden;
