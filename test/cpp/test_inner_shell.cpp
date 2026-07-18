@@ -168,14 +168,31 @@ TEST_CASE("Hollow solid: volume is shell-grouping invariant for a disjoint cavit
 	REQUIRE(ComputeVolume(plain) == Approx(56.0).epsilon(1e-12));
 }
 
-TEST_CASE("Hollow solid: a same-wound interior shell is NOT subtracted (documents §9.3 gap)", "[inner_shell]") {
-	// The interior shell wound OUTWARD (same as exterior) instead of inward.
-	// DESIGN_DOC §9.3 promises interior shells are oriented opposite the exterior,
-	// but ValidateSolidModel checks orientation per-shell only and does not enforce
-	// the cross-shell relationship (tracked in docs/FUTURE_WORK.md). So this still
-	// validates and the volume ADDS (64 + 8 = 72) rather than subtracting. When the
-	// cross-shell check lands, this becomes the regression test that drives it.
-	auto model = BuildHollowCube(/*with_metadata=*/true, /*inner_inward=*/false);
-	REQUIRE(model.validation.is_valid); // current (imperfect) behaviour
-	REQUIRE(ComputeVolume(model) == Approx(72.0).epsilon(1e-12));
+TEST_CASE("Hollow solid: a same-wound interior shell is REJECTED (§9.3 enforced)", "[inner_shell]") {
+	// The interior shell wound OUTWARD (same as exterior) instead of inward. Its
+	// signed volume would ADD (64 + 8 = 72) rather than subtract, so DESIGN_DOC
+	// §9.3 requires interior shells to be wound opposite the exterior. The
+	// cross-shell orientation check now enforces this: the model is not oriented,
+	// hence not valid, and ComputeVolume refuses to run (it would be wrong).
+	auto wkb = MakeHollowCubeWKB(/*inner_inward=*/false);
+	auto surfaces = ParseWKB(wkb.data(), wkb.size());
+	GeometryMetadata meta;
+	meta.type = "Solid";
+	meta.shells = {{6, 6}};
+	auto model = BuildSolidModel(surfaces, meta);
+
+	REQUIRE(model.validation.orientation_error_count >= 1);
+	REQUIRE_FALSE(model.validation.is_oriented);
+	REQUIRE_FALSE(model.validation.is_valid);
+	REQUIRE_THROWS_WITH(ComputeVolume(model), Catch::Contains("orientation"));
+}
+
+TEST_CASE("Hollow solid: a correctly opposite-wound interior shell stays oriented", "[inner_shell]") {
+	// The mirror of the case above: a properly inward-wound cavity must NOT be
+	// flagged, and volume subtracts (64 - 8 = 56).
+	auto model = BuildHollowCube(/*with_metadata=*/true, /*inner_inward=*/true);
+	REQUIRE(model.validation.orientation_error_count == 0);
+	REQUIRE(model.validation.is_oriented);
+	REQUIRE(model.validation.is_valid);
+	REQUIRE(ComputeVolume(model) == Approx(56.0).epsilon(1e-12));
 }

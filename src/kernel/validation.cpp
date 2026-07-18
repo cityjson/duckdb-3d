@@ -183,6 +183,111 @@ ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t sh
 	return result;
 }
 
+//! Signed volume of a shell: the divergence-theorem sum of origin-based tetrahedra
+//! over the shell's triangulation. The sign encodes winding — an outward-wound
+//! shell is positive, an inward-wound (cavity) shell negative. Vertices are
+//! translated to the shell's first vertex before summing so the magnitudes stay
+//! O(shell size)³ rather than O(distance-from-origin)³; this avoids catastrophic
+//! cancellation for projected-CRS coordinates (e.g. EPSG:28992 at ~10^5), where a
+//! small cavity's true volume would otherwise drown in rounding noise. Translation
+//! does not change a closed shell's signed volume. `abs_sum` (the sum of absolute
+//! per-triangle contributions) is returned as a conditioning measure for the
+//! relative degeneracy test.
+struct ShellSignedVolume {
+	double signed_vol = 0.0;
+	double abs_sum = 0.0;
+};
+
+ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t shell_idx) {
+	ShellSignedVolume out;
+	uint32_t face_start = model.shell_face_offsets[shell_idx];
+	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
+
+	// Local origin: the shell's first triangulated vertex.
+	bool have_origin = false;
+	Vertex3D o = {0, 0, 0};
+	for (uint32_t f = face_start; f < face_end && !have_origin; f++) {
+		uint32_t tri_start = model.face_triangle_offsets[f];
+		uint32_t tri_end = model.face_triangle_offsets[f + 1];
+		if (tri_start < tri_end) {
+			o = model.vertices[model.triangle_vertex_indices[tri_start * 3 + 0]];
+			have_origin = true;
+		}
+	}
+	if (!have_origin) {
+		return out; // no triangles → nothing to integrate
+	}
+
+	for (uint32_t f = face_start; f < face_end; f++) {
+		uint32_t tri_start = model.face_triangle_offsets[f];
+		uint32_t tri_end = model.face_triangle_offsets[f + 1];
+		for (uint32_t t = tri_start; t < tri_end; t++) {
+			const auto &va = model.vertices[model.triangle_vertex_indices[t * 3 + 0]];
+			const auto &vb = model.vertices[model.triangle_vertex_indices[t * 3 + 1]];
+			const auto &vc = model.vertices[model.triangle_vertex_indices[t * 3 + 2]];
+			double ax = va.x - o.x, ay = va.y - o.y, az = va.z - o.z;
+			double bx = vb.x - o.x, by = vb.y - o.y, bz = vb.z - o.z;
+			double cx = vc.x - o.x, cy = vc.y - o.y, cz = vc.z - o.z;
+			double cross_x = by * cz - bz * cy;
+			double cross_y = bz * cx - bx * cz;
+			double cross_z = bx * cy - by * cx;
+			double tv = ax * cross_x + ay * cross_y + az * cross_z;
+			out.signed_vol += tv;
+			out.abs_sum += std::abs(tv);
+		}
+	}
+	return out;
+}
+
+//! Enforce CityGML §9.3's interior-opposite-exterior winding within each solid
+//! (DESIGN_DOC §9.3 / §10.2.1). Shell 0 is the exterior (CityJSON writes the
+//! outer shell first, §7.1); every interior shell MUST be wound opposite to it,
+//! else its volume would silently add instead of subtract. Two error classes:
+//!   * an interior shell wound the SAME way as the exterior;
+//!   * an interior shell whose |signed volume| >= the exterior's (it cannot be
+//!     contained, so it is not a real cavity).
+//! Scope is deliberately RELATIVE: the exterior's absolute orientation (outward
+//! vs inward) and true point-in-polyhedron containment are out of scope — this
+//! guards volume integrity, the property ComputeVolume depends on. The check
+//! assumes closed, consistently-oriented shells (validated separately) and is a
+//! no-op for single-shell solids. Returns the number of orientation errors found.
+uint32_t CheckInteriorShellWinding(const SolidModel &model) {
+	constexpr double kRelEps = 1e-9; // relative degeneracy tolerance
+	uint32_t errors = 0;
+	uint32_t solid_count = model.SolidCount();
+
+	for (uint32_t solid_idx = 0; solid_idx < solid_count; solid_idx++) {
+		uint32_t shell_start = model.solid_shell_offsets[solid_idx];
+		uint32_t shell_end = model.solid_shell_offsets[solid_idx + 1];
+		if (shell_end - shell_start < 2) {
+			continue; // no interior shells → nothing to compare
+		}
+
+		auto ext = ComputeShellSignedVolume(model, shell_start);
+		// A degenerate/near-zero exterior gives no reliable sign; leave it to the
+		// topology/degeneracy checks rather than guessing here.
+		if (ext.abs_sum == 0.0 || std::abs(ext.signed_vol) < kRelEps * ext.abs_sum) {
+			continue;
+		}
+		bool ext_positive = ext.signed_vol > 0.0;
+		double ext_mag = std::abs(ext.signed_vol);
+
+		for (uint32_t s = shell_start + 1; s < shell_end; s++) {
+			auto in = ComputeShellSignedVolume(model, s);
+			if (in.abs_sum == 0.0 || std::abs(in.signed_vol) < kRelEps * in.abs_sum) {
+				continue; // degenerate interior shell — sign is noise, skip
+			}
+			bool in_positive = in.signed_vol > 0.0;
+			if (in_positive == ext_positive) {
+				errors++; // same winding as exterior → cavity would add, not subtract
+			} else if (std::abs(in.signed_vol) >= ext_mag) {
+				errors++; // larger than the exterior → cannot be an interior cavity
+			}
+		}
+	}
+	return errors;
+}
+
 } // anonymous namespace
 
 void ValidateSolidModel(SolidModel &model) {
@@ -219,6 +324,17 @@ void ValidateSolidModel(SolidModel &model) {
 			all_manifold = false;
 		}
 		if (!result.is_oriented) {
+			all_oriented = false;
+		}
+	}
+
+	// Cross-shell winding (CityGML §9.3): interior shells must be wound opposite
+	// the exterior, else a mis-wound cavity's volume would silently add. Requires
+	// the triangulation; when absent (never at build time) it is skipped.
+	if (model.TriangleCount() > 0) {
+		uint32_t winding_errors = CheckInteriorShellWinding(model);
+		total_orientation_errors += winding_errors;
+		if (winding_errors > 0) {
 			all_oriented = false;
 		}
 	}
