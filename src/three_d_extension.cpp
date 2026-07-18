@@ -20,10 +20,13 @@
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_analysis.hpp"
 #include "kernel/geom_serialize.hpp"
+#include "kernel/crs_transform.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <unordered_map>
 
 namespace duckdb {
 
@@ -140,6 +143,111 @@ static std::vector<uint8_t> BuildOpenTetrahedronWKB() {
 
 static void ST_AsWKBOpenTetraFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto wkb = BuildOpenTetrahedronWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+// WKB helpers shared by the cube-based test fixtures below.
+namespace {
+void WkbU8(std::vector<uint8_t> &buf, uint8_t v) {
+	buf.push_back(v);
+}
+void WkbU32(std::vector<uint8_t> &buf, uint32_t v) {
+	buf.push_back(v & 0xFF);
+	buf.push_back((v >> 8) & 0xFF);
+	buf.push_back((v >> 16) & 0xFF);
+	buf.push_back((v >> 24) & 0xFF);
+}
+void WkbF64(std::vector<uint8_t> &buf, double v) {
+	uint8_t b[8];
+	memcpy(b, &v, 8);
+	buf.insert(buf.end(), b, b + 8);
+}
+//! Emit one quad face (Polygon Z with a single closed ring of 4 corners).
+void WkbQuad(std::vector<uint8_t> &buf, const double c[4][3]) {
+	WkbU8(buf, 1);
+	WkbU32(buf, 1003); // PolygonZ
+	WkbU32(buf, 1);    // one ring
+	WkbU32(buf, 5);    // 4 corners + closing vertex
+	for (int i = 0; i < 4; i++) {
+		WkbF64(buf, c[i][0]);
+		WkbF64(buf, c[i][1]);
+		WkbF64(buf, c[i][2]);
+	}
+	WkbF64(buf, c[0][0]);
+	WkbF64(buf, c[0][1]);
+	WkbF64(buf, c[0][2]);
+}
+//! Append the 6 quad faces of an axis-aligned cube [lo,hi]^3 to buf.
+//! reversed=false → outward-facing; reversed=true → inward-facing (interior shell).
+void WkbCubeFaces(std::vector<uint8_t> &buf, double lo, double hi, bool reversed) {
+	// Six outward-wound faces as corner-quads.
+	double faces[6][4][3] = {
+	    {{lo, lo, lo}, {lo, hi, lo}, {hi, hi, lo}, {hi, lo, lo}}, // bottom z=lo
+	    {{lo, lo, hi}, {hi, lo, hi}, {hi, hi, hi}, {lo, hi, hi}}, // top z=hi
+	    {{lo, lo, lo}, {hi, lo, lo}, {hi, lo, hi}, {lo, lo, hi}}, // front y=lo
+	    {{lo, hi, lo}, {lo, hi, hi}, {hi, hi, hi}, {hi, hi, lo}}, // back y=hi
+	    {{lo, lo, lo}, {lo, lo, hi}, {lo, hi, hi}, {lo, hi, lo}}, // left x=lo
+	    {{hi, lo, lo}, {hi, hi, lo}, {hi, hi, hi}, {hi, lo, hi}}, // right x=hi
+	};
+	for (auto &f : faces) {
+		if (reversed) {
+			double r[4][3];
+			for (int i = 0; i < 4; i++) {
+				for (int k = 0; k < 3; k++) {
+					r[i][k] = f[3 - i][k];
+				}
+			}
+			WkbQuad(buf, r);
+		} else {
+			WkbQuad(buf, f);
+		}
+	}
+}
+} // namespace
+
+// Test helper: a hollow cube — outer cube [0,4]^3 (outward) enclosing inner cube
+// [1,3]^3 (inward) as a single 12-face PolyhedralSurface Z. Paired with
+// geometry_properties {"shellCount":2,"shellFaceCounts":[6,6]} it imports as one
+// solid with two shells: volume 64-8=56, surface area 96+24=120.
+static std::vector<uint8_t> BuildHollowCubeWKB() {
+	std::vector<uint8_t> buf;
+	WkbU8(buf, 1);
+	WkbU32(buf, 1015); // PolyhedralSurfaceZ
+	WkbU32(buf, 12);   // 12 faces
+	WkbCubeFaces(buf, 0.0, 4.0, /*reversed=*/false);
+	WkbCubeFaces(buf, 1.0, 3.0, /*reversed=*/true);
+	return buf;
+}
+
+static void ST_AsWKBHollowCubeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildHollowCubeWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+// Test helper: two disjoint outward cubes ([0,2]^3 and [5,7]^3, each volume 8) as
+// a GeometryCollection Z of two PolyhedralSurface Z — a MultiSolid analogue.
+// Imports (plain path) as two single-shell solids: ST_3DNumSolids=2,
+// total volume 16, total surface area 48.
+static std::vector<uint8_t> BuildMultiCubeWKB() {
+	std::vector<uint8_t> buf;
+	WkbU8(buf, 1);
+	WkbU32(buf, 1007); // GeometryCollectionZ
+	WkbU32(buf, 2);    // two members
+	for (double base : {0.0, 5.0}) {
+		WkbU8(buf, 1);
+		WkbU32(buf, 1015); // PolyhedralSurfaceZ
+		WkbU32(buf, 6);
+		WkbCubeFaces(buf, base, base + 2.0, /*reversed=*/false);
+	}
+	return buf;
+}
+
+static void ST_AsWKBMultiCubeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildMultiCubeWKB();
 	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
@@ -1560,6 +1668,126 @@ static void ST_NumGeometriesFun(DataChunk &args, ExpressionState &state, Vector 
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_Transform — 2D CRS reprojection (X/Y only, Z preserved).
+// Accepts SOLID_3D or GEOM_3D (dispatched by payload magic); output type
+// equals input type. PROJ is confined to kernel/crs_transform.
+// ──────────────────────────────────────────────────────────────
+
+//! Reproject one payload BLOB using an already-built transform. Recomputes the
+//! bbox; re-validates solids because reprojection can invert winding.
+static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t size, const duckdb_3d::CrsTransform &tf) {
+	using namespace duckdb_3d;
+	switch (GetPayloadKind(data, size)) {
+	case PayloadKind::Solid: {
+		auto model = DeserializePayload(data, size);
+		tf.ReprojectXY(model.vertices);
+		model.ComputeBBox();
+		ValidateSolidModel(model);
+		return SerializePayload(model);
+	}
+	case PayloadKind::Geom: {
+		auto model = DeserializeGeomPayload(data, size);
+		tf.ReprojectXY(model.vertices);
+		model.ComputeBBox();
+		return SerializeGeomPayload(model);
+	}
+	default:
+		throw InvalidInputException("ST_Transform: argument is not a SOLID_3D or GEOM_3D value");
+	}
+}
+
+//! Shared chunk loop. `get_crs(i)` returns the {source, target} CRS strings for
+//! row i. One CrsTransform is built per distinct pair and reused across rows.
+template <class GetCrs>
+static void TransformChunk(DataChunk &args, Vector &result, GetCrs get_crs) {
+	using namespace duckdb_3d;
+	auto count = args.size();
+
+	UnifiedVectorFormat geom_data;
+	args.data[0].ToUnifiedFormat(count, geom_data);
+	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	std::unordered_map<std::string, std::unique_ptr<CrsTransform>> cache;
+
+	for (idx_t i = 0; i < count; i++) {
+		auto geom_idx = geom_data.sel->get_index(i);
+
+		bool crs_valid = true;
+		std::string source;
+		std::string target;
+		if (!geom_data.validity.RowIsValid(geom_idx) || !get_crs(i, source, target, crs_valid) || !crs_valid) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		std::string key = source;
+		key.push_back('\x1f');
+		key += target;
+		auto it = cache.find(key);
+		if (it == cache.end()) {
+			it = cache.emplace(key, std::make_unique<CrsTransform>(source, target)).first;
+		}
+
+		auto &blob = geom_strings[geom_idx];
+		auto payload =
+		    ReprojectPayloadBlob(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(), *it->second);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ST_Transform(geom, source_crs VARCHAR, target_crs VARCHAR)
+static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+	UnifiedVectorFormat src_data, tgt_data;
+	args.data[1].ToUnifiedFormat(count, src_data);
+	args.data[2].ToUnifiedFormat(count, tgt_data);
+	auto src_strings = UnifiedVectorFormat::GetData<string_t>(src_data);
+	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
+
+	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto si = src_data.sel->get_index(i);
+		auto ti = tgt_data.sel->get_index(i);
+		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
+		source = src_strings[si].GetString();
+		target = tgt_strings[ti].GetString();
+		return true;
+	});
+}
+
+// ST_Transform(geom, source_srid INTEGER, target_srid INTEGER)
+static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	using namespace duckdb_3d;
+	auto count = args.size();
+	UnifiedVectorFormat src_data, tgt_data;
+	args.data[1].ToUnifiedFormat(count, src_data);
+	args.data[2].ToUnifiedFormat(count, tgt_data);
+	auto src_vals = UnifiedVectorFormat::GetData<int32_t>(src_data);
+	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
+
+	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto si = src_data.sel->get_index(i);
+		auto ti = tgt_data.sel->get_index(i);
+		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
+		source = EpsgToAuthString(src_vals[si]);
+		target = EpsgToAuthString(tgt_vals[ti]);
+		return true;
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -1578,6 +1806,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(
 	    ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbhollowcube", {}, LogicalType::BLOB, ST_AsWKBHollowCubeFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbmulticube", {}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_AsWKBPointZFun));
@@ -1776,6 +2006,23 @@ static void LoadInternal(ExtensionLoader &loader) {
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateZFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateZGeomFun));
 	loader.RegisterFunction(rotatez_set);
+
+	// ST_Transform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
+	// on SOLID_3D and GEOM_3D. Output type equals input type.
+	ScalarFunctionSet transform_set("st_transform");
+	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER},
+	                                         LogicalType::BLOB, ST_TransformIntFun));
+	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                         LogicalType::BLOB, ST_TransformStrFun));
+	transform_set.AddFunction(
+	    ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type, ST_TransformIntFun));
+	transform_set.AddFunction(
+	    ScalarFunction({geom_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, geom_3d_type, ST_TransformIntFun));
+	transform_set.AddFunction(
+	    ScalarFunction({solid_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, solid_3d_type, ST_TransformStrFun));
+	transform_set.AddFunction(
+	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_TransformStrFun));
+	loader.RegisterFunction(transform_set);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

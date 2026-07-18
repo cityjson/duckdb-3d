@@ -1,0 +1,44 @@
+# name: test/sql/st_3d_multisolid.test
+# description: multi-solid (collection of solids) coverage, ungated by cityjson
+# group: [sql]
+
+require three_d
+
+# Fixture (ST_AsWKBMultiCube): two disjoint outward cubes [0,2]^3 and [5,7]^3, each
+# volume 8, surface area 24, as a GeometryCollection Z of two PolyhedralSurface Z.
+# The plain-WKB path imports them as two single-shell solids. Per DESIGN_DOC §10.2
+# multi-solid volume/area sum member contributions.
+
+# Two solids, total volume 8 + 8 = 16.
+query II
+SELECT ST_3DNumSolids(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+2	16.0
+
+# Total surface area 24 + 24 = 48; the collection is closed.
+query II
+SELECT ST_3DSurfaceArea(s), ST_3DIsClosed(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+48.0	true
+
+# Bounds span both members: [0,7] in X, [0,7] in Y/Z.
+query III
+SELECT (ST_3DBounds(s)).min_x, (ST_3DBounds(s)).max_x, (ST_3DBounds(s)).max_z
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+0.0	7.0	7.0
+
+# Documented v1 boundary: metadata-aware import of a MultiSolid raises. This is
+# the deferred capability in docs/FUTURE_WORK.md §1 (per-solid interior shells).
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "solidCount": 2}');
+----
+multi-solid
+
+# The TRY variant returns NULL on that same unsupported input.
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "solidCount": 2}') IS NULL;
+----
+true

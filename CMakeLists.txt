@@ -32,10 +32,21 @@ set(EXTENSION_SOURCES
     src/kernel/geom_distance.cpp
     src/kernel/geom_construct.cpp
     src/kernel/geom_analysis.cpp
-    src/kernel/geom_serialize.cpp)
+    src/kernel/geom_serialize.cpp
+    src/kernel/crs_transform.cpp)
+
+# PROJ backs ST_Transform (kernel/crs_transform.cpp). Under the vcpkg toolchain
+# the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.
+if(APPLE)
+  list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew" "/usr/local")
+endif()
+find_package(PROJ CONFIG REQUIRED)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
+
+target_link_libraries(${EXTENSION_NAME} PROJ::proj)
+target_link_libraries(${LOADABLE_EXTENSION_NAME} PROJ::proj)
 
 install(
   TARGETS ${EXTENSION_NAME}

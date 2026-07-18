@@ -26,7 +26,8 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/geom_distance.cpp
     ${REPO_ROOT}/src/kernel/geom_construct.cpp
     ${REPO_ROOT}/src/kernel/geom_analysis.cpp
-    ${REPO_ROOT}/src/kernel/geom_serialize.cpp)
+    ${REPO_ROOT}/src/kernel/geom_serialize.cpp
+    ${REPO_ROOT}/src/kernel/crs_transform.cpp)
 
 # Test sources
 set(TEST_SOURCES
@@ -41,9 +42,21 @@ set(TEST_SOURCES
     test_geom_distance.cpp
     test_geom_construct.cpp
     test_geom_analysis.cpp
-    test_geom_serialize.cpp)
+    test_geom_serialize.cpp
+    test_crs_transform.cpp
+    test_wkb_export.cpp
+    test_inner_shell.cpp
+    test_triangulation.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 
 target_include_directories(three_d_unit_tests PRIVATE ${CATCH_INCLUDE_DIR}
                                                       ${REPO_ROOT}/src/include)
+
+# PROJ (crs_transform.cpp). Under the vcpkg toolchain its copy is found first;
+# on a bare macOS/Linux dev box fall back to the Homebrew/system install.
+if(APPLE)
+  list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew" "/usr/local")
+endif()
+find_package(PROJ CONFIG REQUIRED)
+target_link_libraries(three_d_unit_tests PRIVATE PROJ::proj)
