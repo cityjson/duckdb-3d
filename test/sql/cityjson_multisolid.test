@@ -1,0 +1,80 @@
+# name: test/sql/cityjson_multisolid.test
+# description: real CityJSON MultiSolid / CompositeSolid datasets through three_d
+# group: [sql]
+
+# Exercises the design-doc §12 composition on the canonical cityjson.org example
+# datasets (https://www.cityjson.org/datasets/#simple-geometries):
+#   test/data/multisolid.city.json      — one MultiSolid, 2 non-adjacent unit cubes
+#   test/data/compositesolid.city.json  — one CompositeSolid, 2 adjacent unit cubes
+#
+# All expected values below were verified against the live `cityjson` community
+# extension (INSTALL cityjson FROM community). `require cityjson` skips this test
+# where the extension is not registered; see docs/CITYJSON_INTEROP.md.
+#
+# What it pins: (1) the plain-WKB path imports either dataset as a collection of
+# single-shell solids with correct summed geometry maths; (2) the documented v1
+# boundary — metadata-aware import of a MultiSolid/CompositeSolid raises, and the
+# TRY variant returns NULL (deferred capability: docs/FUTURE_WORK.md §1).
+require cityjson
+
+require three_d
+
+# ── MultiSolid: 2 non-adjacent unit cubes ─────────────────────────────────────
+
+# Plain path: two single-shell solids, summed volume 2 m³, surface area 12 m²,
+# closed. (cityjson emits a GeometryCollection Z of two PolyhedralSurface Z.)
+query IIII
+SELECT
+    ST_3DNumSolids(s),
+    ROUND(ST_3DVolume(s), 6),
+    ROUND(ST_3DSurfaceArea(s), 6),
+    ST_3DIsClosed(s)
+FROM (
+    SELECT ST_3DFromWKB(geometry) AS s
+    FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
+    WHERE geometry IS NOT NULL
+) q;
+----
+2	2.0	12.0	true
+
+# Metadata-aware import raises (MultiSolid shell/solid grouping unsupported in v1).
+statement error
+SELECT ST_3DFromWKB(geometry, geometry_properties)
+FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
+WHERE geometry IS NOT NULL;
+----
+multi-solid
+
+# The TRY variant degrades to NULL on that same input.
+query I
+SELECT ST_3DTryFromWKB(geometry, geometry_properties) IS NULL
+FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
+WHERE geometry IS NOT NULL;
+----
+true
+
+# ── CompositeSolid: 2 adjacent unit cubes ─────────────────────────────────────
+
+# Plain path: also two single-shell solids (cityjson keeps the members separate),
+# so the shared face does not create non-manifold topology; volume/area still sum.
+query IIII
+SELECT
+    ST_3DNumSolids(s),
+    ROUND(ST_3DVolume(s), 6),
+    ROUND(ST_3DSurfaceArea(s), 6),
+    ST_3DIsClosed(s)
+FROM (
+    SELECT ST_3DFromWKB(geometry) AS s
+    FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
+    WHERE geometry IS NOT NULL
+) q;
+----
+2	2.0	12.0	true
+
+# Metadata-aware import of a CompositeSolid likewise degrades to NULL under TRY.
+query I
+SELECT ST_3DTryFromWKB(geometry, geometry_properties) IS NULL
+FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
+WHERE geometry IS NOT NULL;
+----
+true
