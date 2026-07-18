@@ -30,7 +30,7 @@ true
 query I
 SELECT abs(ST_3DVolume(ST_Translate(h, 5, 5, 5)) - 56.0) < 1e-9
    AND abs(ST_3DVolume(ST_Scale(h, 2, 2, 2)) - 8 * 56.0) < 1e-9
-FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}') AS h) q;
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS h) q;
 ----
 true
 

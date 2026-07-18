@@ -10,27 +10,27 @@ require three_d
 
 # Volume subtracts the interior shell.
 query I
-SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}'));
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
 ----
 56.0
 
 # Surface area sums all faces (exterior + cavity walls).
 query I
-SELECT ST_3DSurfaceArea(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}'));
+SELECT ST_3DSurfaceArea(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
 ----
 120.0
 
 # Introspection: two shells, twelve faces, one solid.
 query III
 SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
-FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}') AS s) q;
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS s) q;
 ----
 1	2	12
 
 # The hollow solid is closed, manifold, oriented, and valid.
 query IIII
 SELECT ST_3DIsClosed(s), ST_3DIsManifold(s), ST_3DIsOriented(s), (ST_3DValidationReport(s)).is_valid
-FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}') AS s) q;
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS s) q;
 ----
 true	true	true	true
 
@@ -48,8 +48,8 @@ query II
 SELECT ST_3DNumShells(r), ST_3DVolume(r)
 FROM (
     SELECT ST_3DFromWKB(
-               ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}')),
-               '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [6, 6]}') AS r
+               ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}')),
+               '{"type": "Solid", "shells": [6, 6]}') AS r
 ) q;
 ----
 2	56.0

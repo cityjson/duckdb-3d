@@ -6,18 +6,18 @@
 
 namespace duckdb_3d {
 
-//! Parsed CityJSON geometry_properties metadata relevant to shell grouping.
+//! Parsed CityParquet spec §8 geometry_properties metadata relevant to shell
+//! grouping. The WKB flattens a solid's shells into one flat face list, so the
+//! shell partition is recovered from the `shells` key here.
 struct GeometryMetadata {
-	//! CityJSON geometry type: "Solid", "MultiSolid", "CompositeSolid", etc.
+	//! CityJSON geometry type string: "Solid", "MultiSolid", "CompositeSolid", …
 	std::string type;
-	//! Number of shells per solid (for "Solid" type).
-	//! If > 1, the faces in the PolyhedralSurface are split into shells.
-	uint32_t shell_count = 1;
-	//! Number of solids (for GeometryCollection-backed types).
-	uint32_t solid_count = 1;
-	//! Face counts per shell (if available). Used to split face ranges.
-	//! When non-empty, sum must equal total face count from WKB.
-	std::vector<uint32_t> shell_face_counts;
+	//! Per-solid, per-shell emitted-face counts (spec §8 `shells`):
+	//!   Solid                    -> {{12}} or {{12, 4}}   (one solid)
+	//!   MultiSolid/CompositeSolid -> {{12}, {8, 4}}        (one array per solid)
+	//! Empty when the geometry carries no `shells` (non-solid types); the builder
+	//! then falls back to one solid / one shell per WKB member.
+	std::vector<std::vector<uint32_t>> shells;
 };
 
 //! Parse geometry_properties JSON text into GeometryMetadata.

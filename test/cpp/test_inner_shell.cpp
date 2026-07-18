@@ -115,8 +115,7 @@ SolidModel BuildHollowCube(bool with_metadata, bool inner_inward = true) {
 	if (with_metadata) {
 		GeometryMetadata meta;
 		meta.type = "Solid";
-		meta.shell_count = 2;
-		meta.shell_face_counts = {6, 6};
+		meta.shells = {{6, 6}};
 		model = BuildSolidModel(surfaces, meta);
 	} else {
 		model = BuildSolidModel(surfaces);

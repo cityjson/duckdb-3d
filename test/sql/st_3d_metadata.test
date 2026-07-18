@@ -24,7 +24,7 @@ true
 
 # Test: 2-arg ST_3DTryFromWKB with conflicting metadata returns NULL
 query I
-SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [3, 3]}') IS NULL;
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [3, 3]}') IS NULL;
 ----
 true
 
@@ -36,7 +36,7 @@ true
 
 # Test: 2-arg ST_3DFromWKB with conflicting metadata raises
 statement error
-SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shellCount": 2, "shellFaceCounts": [3, 3]}');
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [3, 3]}');
 ----
 face count mismatch
 

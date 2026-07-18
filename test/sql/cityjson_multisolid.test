@@ -37,21 +37,18 @@ FROM (
 ----
 2	2.0	12.0	true
 
-# Metadata-aware import raises (MultiSolid shell/solid grouping unsupported in v1).
-statement error
-SELECT ST_3DFromWKB(geometry, geometry_properties)
-FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
-WHERE geometry IS NOT NULL;
+# Metadata-aware import of a MultiSolid is now supported (G2). These two cubes are
+# single-shell solids, so whether the properties carry a spec §8 nested `shells`
+# ([[6],[6]]) or none at all, the result matches the plain path: two solids, 2 m³.
+query II
+SELECT ST_3DNumSolids(s), ROUND(ST_3DVolume(s), 6)
+FROM (
+    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
+    WHERE geometry IS NOT NULL
+) q;
 ----
-multi-solid
-
-# The TRY variant degrades to NULL on that same input.
-query I
-SELECT ST_3DTryFromWKB(geometry, geometry_properties) IS NULL
-FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
-WHERE geometry IS NOT NULL;
-----
-true
+2	2.0
 
 # ── CompositeSolid: 2 adjacent unit cubes ─────────────────────────────────────
 
@@ -71,10 +68,13 @@ FROM (
 ----
 2	2.0	12.0	true
 
-# Metadata-aware import of a CompositeSolid likewise degrades to NULL under TRY.
-query I
-SELECT ST_3DTryFromWKB(geometry, geometry_properties) IS NULL
-FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
-WHERE geometry IS NOT NULL;
+# Metadata-aware import of a CompositeSolid likewise now succeeds: two solids, 2 m³.
+query II
+SELECT ST_3DNumSolids(s), ROUND(ST_3DVolume(s), 6)
+FROM (
+    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
+    WHERE geometry IS NOT NULL
+) q;
 ----
-true
+2	2.0

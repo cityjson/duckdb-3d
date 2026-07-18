@@ -115,45 +115,20 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 }
 
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata) {
-	bool requests_multi_solid =
-	    metadata.solid_count > 1 || metadata.type == "MultiSolid" || metadata.type == "CompositeSolid";
-	if (requests_multi_solid) {
-		throw std::runtime_error(
-		    "geometry_properties: metadata-aware import for multi-solid geometries is unsupported in v1");
-	}
-
-	// If no shell splitting requested, delegate to the plain overload
-	if (metadata.shell_face_counts.empty() || metadata.shell_count <= 1) {
+	// No `shells` metadata: one solid / one shell per WKB member (a plain Solid,
+	// or a MultiSolid/CompositeSolid whose solids have no inner shells).
+	if (metadata.shells.empty()) {
 		return BuildSolidModel(surfaces);
 	}
 
-	// Validate: shell_face_counts must be provided and sum to total face count
-	// For v1: only supported for single PolyhedralSurface (single surface input)
-	if (surfaces.size() != 1) {
-		throw std::runtime_error(
-		    "geometry_properties: metadata-aware shell grouping is unsupported for multi-surface input in v1");
+	// With `shells`, one per-shell-count array must map to one WKB member (solid).
+	// A Solid gives a single member; a MultiSolid/CompositeSolid one per solid.
+	if (metadata.shells.size() != surfaces.size()) {
+		throw std::runtime_error("geometry_properties: shells solid count (" +
+		                         std::to_string(metadata.shells.size()) + ") does not match WKB member count (" +
+		                         std::to_string(surfaces.size()) + ")");
 	}
 
-	const auto &surface = surfaces[0];
-	uint32_t total_wkb_faces = surface.polygon_count;
-
-	if (metadata.shell_face_counts.size() != metadata.shell_count) {
-		throw std::runtime_error("geometry_properties: shellFaceCounts length (" +
-		                         std::to_string(metadata.shell_face_counts.size()) + ") does not match shellCount (" +
-		                         std::to_string(metadata.shell_count) + ")");
-	}
-
-	uint32_t face_sum = 0;
-	for (auto fc : metadata.shell_face_counts) {
-		face_sum += fc;
-	}
-	if (face_sum != total_wkb_faces) {
-		throw std::runtime_error("geometry_properties: shell face count mismatch: shellFaceCounts sum (" +
-		                         std::to_string(face_sum) + ") != WKB face count (" + std::to_string(total_wkb_faces) +
-		                         ")");
-	}
-
-	// Build the model with multiple shells in a single solid
 	SolidModel model;
 	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
 
@@ -170,53 +145,72 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 
 	uint32_t total_faces = 0;
 	uint32_t total_rings = 0;
+	uint32_t total_shells = 0;
 
-	// 1 solid with N shells
 	model.solid_shell_offsets.push_back(0);
 
-	size_t vertex_cursor = 0;
-	size_t ring_idx = 0;
-	uint32_t face_cursor = 0;
+	// Each surface is one solid; its faces are partitioned into shells by the
+	// matching per-shell face-count array (spec §8 `shells`).
+	for (size_t solid_idx = 0; solid_idx < surfaces.size(); solid_idx++) {
+		const auto &surface = surfaces[solid_idx];
+		const auto &shell_counts = metadata.shells[solid_idx];
 
-	for (uint32_t shell = 0; shell < metadata.shell_count; shell++) {
-		model.shell_face_offsets.push_back(total_faces);
-		uint32_t shell_faces = metadata.shell_face_counts[shell];
-
-		for (uint32_t f = 0; f < shell_faces; f++) {
-			uint32_t p = face_cursor + f;
-			uint32_t num_rings = surface.polygon_ring_counts[p];
-			model.face_ring_offsets.push_back(total_rings);
-
-			for (uint32_t r = 0; r < num_rings; r++) {
-				uint32_t ring_vcount = surface.ring_vertex_counts[ring_idx];
-				model.ring_vertex_offsets.push_back(static_cast<uint32_t>(model.ring_vertex_indices.size()));
-
-				Vertex3D prev = {};
-				bool has_prev = false;
-
-				for (uint32_t vi = 0; vi < ring_vcount; vi++) {
-					const Vertex3D &v = surface.vertices[vertex_cursor + vi];
-					if (has_prev && IsConsecutiveDuplicate(prev, v)) {
-						continue;
-					}
-					uint32_t idx = GetOrAddVertex(v);
-					model.ring_vertex_indices.push_back(idx);
-					prev = v;
-					has_prev = true;
-				}
-
-				vertex_cursor += ring_vcount;
-				ring_idx++;
-				total_rings++;
-			}
-
-			total_faces++;
+		uint32_t face_sum = 0;
+		for (auto fc : shell_counts) {
+			face_sum += fc;
+		}
+		if (face_sum != surface.polygon_count) {
+			throw std::runtime_error("geometry_properties: shell face count mismatch for solid " +
+			                         std::to_string(solid_idx) + ": shells sum (" + std::to_string(face_sum) +
+			                         ") != WKB face count (" + std::to_string(surface.polygon_count) + ")");
 		}
 
-		face_cursor += shell_faces;
-	}
+		// Walk this surface's faces in order, marking a shell boundary at each
+		// per-shell count. vertex_cursor / ring_idx walk the surface's own arrays.
+		size_t vertex_cursor = 0;
+		size_t ring_idx = 0;
+		uint32_t face_in_surface = 0;
 
-	model.solid_shell_offsets.push_back(metadata.shell_count);
+		for (uint32_t shell_faces : shell_counts) {
+			model.shell_face_offsets.push_back(total_faces);
+
+			for (uint32_t f = 0; f < shell_faces; f++) {
+				uint32_t p = face_in_surface;
+				uint32_t num_rings = surface.polygon_ring_counts[p];
+				model.face_ring_offsets.push_back(total_rings);
+
+				for (uint32_t r = 0; r < num_rings; r++) {
+					uint32_t ring_vcount = surface.ring_vertex_counts[ring_idx];
+					model.ring_vertex_offsets.push_back(static_cast<uint32_t>(model.ring_vertex_indices.size()));
+
+					Vertex3D prev = {};
+					bool has_prev = false;
+
+					for (uint32_t vi = 0; vi < ring_vcount; vi++) {
+						const Vertex3D &v = surface.vertices[vertex_cursor + vi];
+						if (has_prev && IsConsecutiveDuplicate(prev, v)) {
+							continue;
+						}
+						uint32_t idx = GetOrAddVertex(v);
+						model.ring_vertex_indices.push_back(idx);
+						prev = v;
+						has_prev = true;
+					}
+
+					vertex_cursor += ring_vcount;
+					ring_idx++;
+					total_rings++;
+				}
+
+				face_in_surface++;
+				total_faces++;
+			}
+
+			total_shells++;
+		}
+
+		model.solid_shell_offsets.push_back(total_shells);
+	}
 
 	// Close remaining offset arrays
 	model.shell_face_offsets.push_back(total_faces);

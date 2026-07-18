@@ -30,15 +30,17 @@ FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
 ----
 0.0	7.0	7.0
 
-# Documented v1 boundary: metadata-aware import of a MultiSolid raises. This is
-# the deferred capability in docs/FUTURE_WORK.md §1 (per-solid interior shells).
-statement error
-SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "solidCount": 2}');
+# Metadata-aware import of a MultiSolid is now supported: the spec §8 nested
+# `shells` maps one per-shell-count array to each solid (G2). Here two solids of
+# one shell each ([[6],[6]]) — two solids, total volume 16.
+query II
+SELECT ST_3DNumSolids(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "shells": [[6], [6]]}') AS s) q;
 ----
-multi-solid
+2	16.0
 
-# The TRY variant returns NULL on that same unsupported input.
-query I
-SELECT ST_3DTryFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "solidCount": 2}') IS NULL;
+# A shells array count that disagrees with the WKB member count is rejected.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "shells": [[6]]}');
 ----
-true
+solid count
