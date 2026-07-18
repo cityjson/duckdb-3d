@@ -1,0 +1,293 @@
+# name: test/sql/postgis_oracle.test
+# description: differential validation of three_d against frozen PostGIS/SFCGAL golden values (design doc §9.5)
+# group: [sql]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This test compares three_d's 3D measurements against reference values computed
+# offline by PostGIS + SFCGAL and frozen into
+# test/data/postgis_oracle/golden.csv (regenerate with `just oracle-regen`).
+#
+# It reads the FROZEN ISO WKB from golden.csv and runs each three_d function on
+# the SAME bytes SFCGAL saw — so a discrepancy is a real computation bug, not an
+# ingestion difference. PostGIS is NOT a test-time dependency: `require three_d`
+# only — no cityjson, no container, no network. This is the CI-enforced check.
+#
+# SFCGAL requires exactly-planar polygon faces and REJECTS most real 3DBAG roofs
+# ('rejected' rows carry no reference value); those are cross-checked against
+# 3DBAG's own published attributes in cityjson_delft_remote.test instead. The
+# tolerance is two-tier: analytic fixtures (small integer coordinates) agree to
+# machine precision (tight, 1e-6); the real accepted geometry uses a looser tier
+# (1e-3) as conservative headroom for large real-world coordinates, where the two
+# engines' summation/triangulation order costs a few more ULPs. See scripts/oracle/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+require three_d
+
+statement ok
+CREATE TABLE golden AS
+SELECT * FROM read_csv('test/data/postgis_oracle/golden.csv', header = true);
+
+# The frozen file is present and non-trivial.
+query I
+SELECT count(*) >= 10 FROM golden;
+----
+true
+
+# Every frozen WKB re-imports cleanly through ST_3DFromWKB.
+query I
+SELECT count(*) = count(ST_3DFromWKB(unhex(wkb_hex)))
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Non-vacuity guard: each tolerance tier below filters on pg_*_status = 'ok', so
+# an all-'rejected' golden (e.g. a broken oracle regen) would make those checks
+# pass on EMPTY subsets. Assert every tier actually has reference rows to compare.
+query I
+SELECT count(*) FILTER (WHERE pg_area_status = 'ok'   AND feature_id LIKE 'fixture:%')     >= 2
+   AND count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id LIKE 'fixture:%')     >= 1
+   AND count(*) FILTER (WHERE pg_area_status = 'ok'   AND feature_id NOT LIKE 'fixture:%') >= 1
+   AND count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id NOT LIKE 'fixture:%') >= 1
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Golden-side anchor: assert the PostGIS reference values themselves against
+# analytic truth (unit tetra: area = 3·0.5 + sqrt(3)/2 ≈ 2.366, volume = 1/6).
+# This catches a corrupted golden.csv independently of the extension, so the
+# tolerance checks below are meaningful on BOTH sides, not just self-consistent.
+query II
+SELECT ROUND(pg_area3d, 6), ROUND(pg_volume, 6)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+2.366025	0.166667
+
+# Closedness agrees exactly (boolean, both engines on the same bytes).
+query I
+SELECT bool_and(ST_3DIsClosed(ST_3DFromWKB(unhex(wkb_hex))) = pg_is_closed)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# ── Surface area — analytic fixtures, tight tier (rel 1e-6, abs 1e-9) ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))) - pg_area3d)
+        <= 1e-6 * abs(pg_area3d) + 1e-9)
+FROM golden
+WHERE geom_role = 'solid' AND pg_area_status = 'ok'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+# ── Surface area — real 3DBAG geometry, loose tier (rel 1e-3, abs 1e-6) ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))) - pg_area3d)
+        <= 1e-3 * abs(pg_area3d) + 1e-6)
+FROM golden
+WHERE geom_role = 'solid' AND pg_area_status = 'ok'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+# ── Enclosed volume — analytic fixtures, tight tier ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))) - pg_volume)
+        <= 1e-6 * abs(pg_volume) + 1e-9)
+FROM golden
+WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+# ── Enclosed volume — real 3DBAG geometry, loose tier ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))) - pg_volume)
+        <= 1e-3 * abs(pg_volume) + 1e-6)
+FROM golden
+WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+# ── Convex-hull area (2D-XY). The extension measures its own hull with
+# ST_Area(ST_ConvexHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
+# because GEOS's ST_ConvexHull rejects a PolyhedralSurface. GEOS has no planarity
+# requirement, so this covers all geometry (no 'rejected' rows). ──
+# Non-vacuity: every geometry has a positive hull area to compare against.
+query I
+SELECT bool_and(pg_hull_area > 0) FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
+        <= 1e-6 * abs(pg_hull_area) + 1e-6)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+# Pin: the unit tetra's XY hull is the triangle (0,0),(1,0),(0,1) → area 0.5.
+query I
+SELECT ROUND(ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+0.5
+
+# ── Deterministic per-feature pins (high-signal regression anchors) ──
+# Unit tetrahedron: surface area 2.366…, volume 1/6.
+query II
+SELECT ROUND(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))), 6),
+       ROUND(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))), 6)
+FROM golden WHERE feature_id = 'fixture:tetra';
+----
+2.366025	0.166667
+
+# Real flat-roof 3DBAG box that SFCGAL accepts (the only non-fixture 'ok' row).
+query II
+SELECT ROUND(ST_3DSurfaceArea(ST_3DFromWKB(unhex(wkb_hex))), 2),
+       ROUND(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))), 1)
+FROM golden WHERE feature_id = 'NL.IMBAG.Pand.0703100000035935-0';
+----
+420.82	375.1
+
+# ── Invalid geometry: the extension is the oracle of record ──
+# The open shell (tetra missing a face) is 'rejected' by SFCGAL for volume; the
+# extension likewise refuses ST_3DVolume with the documented precondition error
+# (it flags, it does not repair — design doc §9).
+query I
+SELECT pg_volume_status FROM golden WHERE feature_id = 'fixture:open_tetra';
+----
+rejected
+
+statement error
+SELECT ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex)))
+FROM golden WHERE feature_id = 'fixture:open_tetra';
+----
+not closed
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Distance + relation predicates between geometry PAIRS. Unlike volume/area,
+# SFCGAL's 3D distance/relation functions compute on the non-planar 3DBAG
+# surfaces without rejection, so these cover real geometry too. Each pair's
+# frozen WKB is resolved from the solids golden above by joining on feature id.
+# ─────────────────────────────────────────────────────────────────────────────
+statement ok
+CREATE TABLE golden_pairs AS
+SELECT * FROM read_csv('test/data/postgis_oracle/golden_pairs.csv', header = true);
+
+# Non-vacuity: each boolean predicate is exercised with BOTH outcomes, so the
+# bool_and(... = ...) checks below can't pass trivially on a constant column.
+query I
+SELECT count(DISTINCT pg_intersects) = 2
+   AND count(DISTINCT pg_dwithin) = 2
+   AND count(DISTINCT pg_dfullywithin) = 2
+FROM golden_pairs;
+----
+true
+
+# The WKB-resolving join is TOTAL: every pair endpoint exists in golden, so no
+# pair is silently dropped (which would let the checks below pass on a subset).
+query I
+SELECT (SELECT count(*) FROM golden_pairs) = count(*)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# 3D minimum distance agrees (SFCGAL computes on the raw non-planar surfaces).
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                          ST_Geom3DFromWKB(unhex(b.wkb_hex))) - p.pg_dist3d)
+        <= 1e-6 * abs(p.pg_dist3d) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# 3D maximum distance agrees.
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DMaxDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                             ST_Geom3DFromWKB(unhex(b.wkb_hex))) - p.pg_maxdist3d)
+        <= 1e-6 * abs(p.pg_maxdist3d) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Shortest-line length: the extension's ST_3DShortestLine, measured by
+# ST_3DLength, matches PostGIS's — scalars only, never a geometry round-trip
+# (PostGIS emits EWKB the ISO parser rejects). Equals the distance by construction.
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DLength(ST_3DShortestLine(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                          ST_Geom3DFromWKB(unhex(b.wkb_hex))))
+            - p.pg_shortline_len)
+        <= 1e-6 * abs(p.pg_shortline_len) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Closest point: the distance from ST_3DClosestPoint(a, b) back to b matches
+# PostGIS's (closest-point ties may sit at different coordinates between engines,
+# but this scalar is tie-invariant).
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DDistance(ST_3DClosestPoint(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                            ST_Geom3DFromWKB(unhex(b.wkb_hex))),
+                          ST_Geom3DFromWKB(unhex(b.wkb_hex)))
+            - p.pg_closestpoint_dist)
+        <= 1e-6 * abs(p.pg_closestpoint_dist) + 1e-6)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Relation predicates (intersects / dwithin / dfullywithin) agree EXACTLY.
+# IS NOT DISTINCT FROM (not =) so a predicate that unexpectedly returns NULL
+# fails the check rather than being silently skipped by bool_and.
+query I
+SELECT bool_and(ST_3DIntersects(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                ST_Geom3DFromWKB(unhex(b.wkb_hex))) IS NOT DISTINCT FROM p.pg_intersects)
+   AND bool_and(ST_3DDWithin(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                             ST_Geom3DFromWKB(unhex(b.wkb_hex)), p.threshold) IS NOT DISTINCT FROM p.pg_dwithin)
+   AND bool_and(ST_3DDFullyWithin(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                                  ST_Geom3DFromWKB(unhex(b.wkb_hex)), p.threshold) IS NOT DISTINCT FROM p.pg_dfullywithin)
+FROM golden_pairs p
+JOIN golden a ON a.feature_id = p.feature_a
+JOIN golden b ON b.feature_id = p.feature_b;
+----
+true
+
+# Deterministic pin: the two distinct buildings are ~517.6 m apart (min),
+# ~563.8 m (max), and do not intersect.
+query III
+SELECT ROUND(ST_3DDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                           ST_Geom3DFromWKB(unhex(b.wkb_hex))), 2),
+       ROUND(ST_3DMaxDistance(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                              ST_Geom3DFromWKB(unhex(b.wkb_hex))), 2),
+       ST_3DIntersects(ST_Geom3DFromWKB(unhex(a.wkb_hex)),
+                       ST_Geom3DFromWKB(unhex(b.wkb_hex)))
+FROM golden a, golden b
+WHERE a.feature_id = 'NL.IMBAG.Pand.0703100000035935-0'
+  AND b.feature_id = 'NL.IMBAG.Pand.0703100000028278-0';
+----
+517.64	563.84	false
+
+statement ok
+DROP TABLE golden_pairs;
+
+statement ok
+DROP TABLE golden;

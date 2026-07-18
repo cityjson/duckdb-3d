@@ -82,3 +82,23 @@ query I
 SELECT ST_ConvexHull(NULL::GEOM_3D);
 ----
 NULL
+
+# ST_Area on a GEOM_3D polygon: the XY-footprint area of the 4x3 rectangle = 12.
+query I
+SELECT ST_Area(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+12.0
+
+# ST_Area composed with ST_ConvexHull: the hull of the 4x3 rectangle is the
+# rectangle itself, so its footprint area is also 12 (this is the metric the
+# PostGIS differential harness uses for ST_ConvexHull).
+query I
+SELECT ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+----
+12.0
+
+# ST_Area(GEOM_3D): NULL propagation.
+query I
+SELECT ST_Area(NULL::GEOM_3D);
+----
+NULL

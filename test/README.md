@@ -9,3 +9,14 @@ or
 ```bash
 make test_debug
 ```
+
+## PostGIS/SFCGAL differential oracle
+
+`sql/postgis_oracle.test` cross-checks the extension's 3D measurements against
+PostGIS + SFCGAL reference values frozen in `data/postgis_oracle/golden.csv`. It
+runs under `make test` with **no** PostGIS, container, or network (it reads the
+frozen ISO WKB and asserts agreement within tolerance; design doc §9.5.1).
+
+PostGIS is used offline, dev-time only, to regenerate the golden values — see
+`data/postgis_oracle/README.md` and the `just oracle-*` recipes. It is never
+wired into `just ci`.
