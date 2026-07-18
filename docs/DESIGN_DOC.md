@@ -465,6 +465,18 @@ Faces are degenerate if:
 
 v1 uses a small floating-point epsilon for repeated-point and near-zero-area checks. The epsilon is an implementation constant and must be documented in code when introduced.
 
+#### 9.5.1 Differential Oracle (PostGIS/SFCGAL)
+
+The extension's measurement math is cross-checked against **PostGIS + SFCGAL** as an independent reference oracle. PostGIS is **never** a build, runtime, or CI dependency: it runs offline, dev-time only, to produce frozen golden values that the normal test suite compares against.
+
+- **Harness.** `scripts/oracle/gen_golden.py` exports the extension's own geometry as ISO WKB (`ST_3DAsWKB` → `PolyhedralSurface Z`), feeds the *same bytes* to SFCGAL, and freezes the reference values into `test/data/postgis_oracle/golden.csv` (per-geometry: volume, surface area, closedness, 2D convex-hull area) and `golden_pairs.csv` (per-pair: `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DIntersects`, `ST_3DDWithin`, `ST_3DDFullyWithin`, shortest-line length, closest-point distance). The CI test `test/sql/postgis_oracle.test` re-imports that frozen WKB with `ST_3DFromWKB` / `ST_Geom3DFromWKB` and asserts agreement — `require three_d` only, no PostGIS, no network. Feeding identical bytes to both engines isolates the *math* from ingestion/quantisation differences. See `test/data/postgis_oracle/README.md`.
+- **Two-tier numeric tolerance** on `|a − b| ≤ rel·|b| + abs`:
+  - *tight* (`rel = 1e-6, abs = 1e-9`) — analytic fixtures with small integer coordinates and exactly-planar faces (unit tetrahedron); agreement is essentially machine-precision.
+  - *loose* (`rel = 1e-3, abs = 1e-6`) — the real accepted 3DBAG geometry; conservative headroom for large real-world coordinate magnitudes, where the two engines' summation/triangulation order differs by a few ULPs (the one row SFCGAL currently accepts in fact agrees to ~6e-8, well inside the tight tier).
+  - Booleans (closedness) are compared **exactly**.
+- **Planarity boundary.** SFCGAL's area/volume require exactly-coplanar polygon faces and *reject* (do not approximate) most real reconstructed roofs; the extension deliberately measures such faces by triangulation, so where SFCGAL rejects, the oracle of record for real-geometry area/volume is 3DBAG's published attributes (`cityjson_delft_remote.test`), not SFCGAL. The 3D distance/relation predicates have no such requirement — they compute on the raw non-planar surfaces, so `golden_pairs.csv` covers real geometry directly.
+- **Invalid geometry.** PostGIS is the *wrong* oracle here (it repairs or rejects, the opposite of the extension's "fail clearly, no repair" contract). The extension's own `ST_3DValidationReport` is the oracle of record; SFCGAL rejection is recorded only as corroboration.
+
 ## 10. Measurement Rules
 
 ### 10.1 Surface Area
@@ -739,7 +751,7 @@ Class-generic; operate on `GEOM_3D` (and `SOLID_3D` where a bounding box suffice
 
 | Function | Signature (input → output) | Priority | Backend | Notes / preconditions |
 | --- | --- | --- | --- | --- |
-| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on `SOLID_3D`. **2D footprint area** = area of XY projection. Key building metric. |
+| `ST_Area` | `(geom GEOM_3D) → DOUBLE` | must | kernel | ✅ implemented on **both** `SOLID_3D` (footprint, §10-area) and `GEOM_3D` (XY-projected polygon area, single-sided; enables `ST_Area(ST_ConvexHull(g))`). **2D footprint area** = area of XY projection. Key building metric. |
 | `ST_3DLength` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `GEOM_3D`. 3D length of (multi)linestrings; 0 for areal/point. |
 | `ST_3DPerimeter` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. Total length of boundary edges (used by exactly one face); 0 for closed solids. |
 | `ST_3DArea` | `(geom GEOM_3D) → DOUBLE` | should | kernel | ✅ implemented on `SOLID_3D`. 3D surface area for surfaces; alias-aligned with existing `ST_3DSurfaceArea` (§5.3). |
@@ -935,6 +947,22 @@ coordinates are transformed `DOUBLE` XYZ (§6.3).
   approximate for overhangs/re-entrant profiles (documented limitation; no planar union in
   v1). Implemented in `ComputeFootprintArea` (`src/kernel/measurements.cpp`).
 - Precondition: none beyond a parseable model.
+- **GEOM_3D overload:** the same `ST_Area` also accepts a `GEOM_3D` value (dispatched
+  by payload magic, like `ST_ZMin`/`ST_ZMax`; an untyped `NULL` is therefore ambiguous
+  and must be cast, exactly as for `ST_ZMin`). Semantics by class:
+  - **Polygon / MultiPolygon** — single-sided, **no halving**: the XY-projected area of
+    each exterior ring minus its interior (hole) rings, summed over parts. This is the
+    `ST_ConvexHull` case: `ST_Area(ST_ConvexHull(g))` gives the hull area, matching
+    PostGIS `ST_Area(ST_ConvexHull(ST_Points(g)))` in the differential harness
+    (§9.5.1) — GEOS's `ST_ConvexHull` rejects a `PolyhedralSurface`, so it is fed
+    the vertex set via `ST_Points`.
+  - **PolyhedralSurface** — a two-sided shell, so **halved** (`0.5·Σ|projected face|`),
+    consistent with the `SOLID_3D` footprint above; exact for closed vertically-simple
+    shells, approximate otherwise.
+  - **Points / lines / vertical faces** — 0.
+
+  Implemented in `Geom3DFootprintArea` (`src/kernel/geom_analysis.cpp`), which guards
+  against malformed (unbounded) CSR offsets rather than reading past the vertex array.
 
 #### 16.10.3 Distance — `must`
 

@@ -501,14 +501,6 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 	});
 }
 
-static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		return ComputeFootprintArea(model);
-	});
-}
-
 static void ST_3DPerimeterFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
 		using namespace duckdb_3d;
@@ -587,6 +579,24 @@ static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) 
 			return ReadGeomPayloadHeader(data, size).bbox.max_z;
 		default:
 			throw InvalidInputException("ST_ZMax: argument is not a SOLID_3D or GEOM_3D value");
+		}
+	});
+}
+
+// ST_Area accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
+// (footprint of the geometry, e.g. a convex hull) — both the XY projection.
+static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
+		using namespace duckdb_3d;
+		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
+		auto size = blob.GetSize();
+		switch (GetPayloadKind(data, size)) {
+		case PayloadKind::Solid:
+			return ComputeFootprintArea(DeserializePayload(data, size));
+		case PayloadKind::Geom:
+			return Geom3DFootprintArea(DeserializeGeomPayload(data, size));
+		default:
+			throw InvalidInputException("ST_Area: argument is not a SOLID_3D or GEOM_3D value");
 		}
 	});
 }
@@ -1690,7 +1700,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
 	loader.RegisterFunction(ScalarFunction("st_3darea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
-	loader.RegisterFunction(ScalarFunction("st_area", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
+	// ST_Area dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
+	// raw BLOB) — same pattern as ST_ZMin/ST_ZMax.
+	ScalarFunctionSet area_set("st_area");
+	area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
+	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
+	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
+	loader.RegisterFunction(area_set);
 	loader.RegisterFunction(
 	    ScalarFunction("st_3dperimeter", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
 

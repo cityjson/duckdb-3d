@@ -17,4 +17,9 @@ Vertex3D Geom3DCentroid(const GeomModel &geom);
 //! (or LineString Z / Point Z for degenerate inputs) at the minimum Z of the input.
 GeomModel Geom3DConvexHull(const GeomModel &geom);
 
+//! Area of the geometry's XY projection (footprint). Polygon/MultiPolygon/
+//! PolyhedralSurface only; exterior rings add and interior rings subtract.
+//! Non-areal geometries (points, lines) and vertical faces project to 0.
+double Geom3DFootprintArea(const GeomModel &geom);
+
 } // namespace duckdb_3d
