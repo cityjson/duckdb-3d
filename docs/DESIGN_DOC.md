@@ -402,33 +402,38 @@ For v1, the parser does not attempt to ingest general simple-features geometry i
 
 When `geometry_properties` is provided, the import layer may use it to recover structure unavailable in plain WKB.
 
-The second argument is JSON text stored in a `VARCHAR`, matching the current `cityjson` extension contract for `geometry_properties`.
+The second argument is JSON text stored in a `VARCHAR`, in the CityParquet
+**spec §8** `geometry_properties` form emitted by `duckdb-cityjson`.
 
-Expected CityJSON-related metadata fields include:
+The only field the import layer consumes for shell grouping is:
 
-- `type`
-- `cityjsonType`
-- `lod`
-- `children`
-- `shellCount`
-- `solidCount`
-- `semantics`
+- **`shells`** — per-shell emitted-face counts. A flat array is one solid
+  (`[12]`, `[12, 4]`); a nested array is one per-shell-count array per solid
+  (`[[12], [8, 4]]`) for a `MultiSolid`/`CompositeSolid`. This recovers the
+  shell partition the WKB `PolyhedralSurface Z` flattens away. A `0` entry is a
+  fully-dropped shell (spec §8) and creates no shell.
 
-If metadata conflicts with WKB:
+`type` (a CityJSON string) is read but informational; all other keys
+(`surfaces`, `face_semantics`, `lod`, …) are ignored for grouping. A non-string
+`type` from a pre-spec producer is tolerated.
+
+If metadata conflicts with WKB (a `shells` solid count that does not match the
+WKB member count, or a per-solid face-count sum that does not match its member's
+face count):
 
 - `ST_3DFromWKB` raises
 - `ST_3DTryFromWKB` returns `NULL`
 
-### 8.2.1 Current CityJSON Constraint
+### 8.2.1 CityJSON shell-grouping support
 
-The current CityJSON extension preserves useful shell hierarchy for `Solid`, but its `geometry_properties` payload is not yet rich enough to guarantee full shell grouping for all `MultiSolid` and `CompositeSolid` cases with interior shells.
+Driven by the spec §8 `shells` key, shell grouping is supported uniformly:
 
-Therefore v1 `duckdb-3d` support is defined as follows:
-
-- `Solid` with plain WKB: supported as one-shell solid
-- `Solid` with CityJSON shell metadata: supported with recovered shell grouping where the metadata is sufficient
-- `MultiSolid` or `CompositeSolid` with plain WKB: supported only as a collection of one-shell solids
-- `MultiSolid` or `CompositeSolid` with richer future metadata: reserved for a future compatibility extension
+- `Solid` with plain WKB: one-shell solid
+- `Solid` with `shells`: recovered shell grouping (including interior shells)
+- `MultiSolid`/`CompositeSolid` with plain WKB: a collection of one-shell solids
+- `MultiSolid`/`CompositeSolid` with nested `shells`: full per-solid shell
+  grouping, including per-solid interior shells (one per-shell-count array per
+  WKB member)
 
 This limitation is explicit and must not be hidden behind silent inference.
 
@@ -448,8 +453,15 @@ A shell is manifold when no undirected edge belongs to more than two incident fa
 
 Orientation checks ensure:
 
-- each shell has consistent face winding
-- interior shells, when present, are oriented opposite to the exterior shell
+- each shell has consistent face winding (per-shell edge cancellation)
+- interior shells, when present, are oriented opposite to the exterior shell —
+  **enforced** by `CheckInteriorShellWinding` (§10.2.1): shell 0 is the exterior,
+  and each interior shell must be wound opposite it and be smaller in |signed
+  volume| (a larger shell cannot be contained). A violation clears `is_oriented`
+  / `is_valid`, so `ST_3DVolume` refuses rather than returning a wrong total. The
+  check is relative-only (the exterior's absolute outward orientation and true
+  point-in-polyhedron containment are out of scope) and a no-op for single-shell
+  solids.
 
 v1 does not silently correct orientation.
 
@@ -547,19 +559,23 @@ shells. A plain WKB `PolyhedralSurface Z` import (which collapses everything int
 per solid**, §5.1.3) of a correctly-wound cavity still produces the *same, correct* volume —
 and, because the exterior and cavity surfaces share no edges, still passes the per-edge
 closed/manifold checks (they are **not** rejected as non-manifold; each closed component
-cancels its own edges independently). What `geometry_properties` metadata (`shellCount` +
-`shellFaceCounts`, §8.2.1; single `PolyhedralSurface` only, `MultiSolid`/`CompositeSolid`
-deferred — [FUTURE_WORK.md §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells))
-actually buys is correct **introspection**: `ST_3DNumShells` reports 2 rather than 1.
+cancels its own edges independently). What the spec §8 `geometry_properties`
+`shells` key (§8.2.1; flat for `Solid`, nested per solid for
+`MultiSolid`/`CompositeSolid`) actually buys is correct **introspection**
+(`ST_3DNumShells` reports 2 rather than 1) **and** the shell partition the
+winding check below needs.
 
-**Known gap — the interior-opposite-exterior invariant is not enforced.** §9.3 promises interior
-shells are oriented opposite the exterior, but `ValidateSolidModel` checks orientation
-*per shell* only; it does not cross-check that a nested shell is wound opposite its enclosing
-shell. Consequently an interior shell wound the *same* way as the exterior still validates as
-`is_valid` and its volume **adds** (`V_outer + V_inner`) instead of subtracting. Correct results
-therefore depend on the WKB producer winding cavities inward. Adding the cross-shell check is
-tracked in [FUTURE_WORK.md](./FUTURE_WORK.md); the behaviour is pinned by
-`test/cpp/test_inner_shell.cpp`.
+**The interior-opposite-exterior invariant is enforced.** §9.3 requires interior
+shells to be wound opposite the exterior. `CheckInteriorShellWinding` computes
+each shell's signed volume (origin-translated tetra sum, to survive projected-CRS
+coordinates) and requires every interior shell to be opposite-signed to, and
+smaller in magnitude than, the exterior (shell 0). A same-wound cavity — whose
+volume would **add** (`V_outer + V_inner`) instead of subtract — now clears
+`is_oriented`/`is_valid`, so `ST_3DVolume` refuses. This needs the shell
+partition, so it fires on the metadata (`shells`) import path, not the plain
+one-merged-shell path. The behaviour is pinned by `test/cpp/test_inner_shell.cpp`.
+Scope is relative opposition only; the exterior's absolute orientation and true
+containment remain out of scope.
 
 **Surface area and footprint are not shell-aware.** `ST_3DSurfaceArea` / `ST_3DArea`
 (`ComputeSurfaceArea`) and `ST_Area` (`ComputeFootprintArea`) sum over *all* faces without any

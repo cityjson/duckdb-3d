@@ -119,9 +119,14 @@ by exporting `HOME=$(mktemp -d)` for the test invocation.
   `container-overflow` check while opening remote files. If the stack trace
   points at DuckDB settings during `read_cityjsonseq('https://...')`, rerun
   the debug shell with `ASAN_OPTIONS=detect_container_overflow=0`.
-- The `geometry_properties` JSON emitted by cityjson uses a numeric
-  `"type"` field (a WKB type code) and the human-readable name lives in
-  `"cityjsonType"`. `duckdb-3d` accepts both forms.
+- `duckdb-3d` reads the CityParquet **spec §8** `geometry_properties` form:
+  a string `"type"` and a `"shells"` key giving per-shell face counts (flat
+  `[12]` for a `Solid`, nested `[[12],[8,4]]` per solid for a
+  `MultiSolid`/`CompositeSolid`). `"shells"` is what recovers the inner-shell /
+  multi-solid partition the flat WKB drops. `"type"` is informational and a
+  non-string value from a pre-spec producer is tolerated, so plain-path interop
+  with older `cityjson` builds still works (it just imports one shell per WKB
+  member).
 - Filter `WHERE geometry IS NOT NULL` upstream — objects without the
   requested LOD have a NULL geometry and would propagate NULL through
   the constructor.

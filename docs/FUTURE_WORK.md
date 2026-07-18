@@ -10,46 +10,25 @@ then implementation, then a design-doc update in the same change.
 
 ---
 
-## 1. Composite / Multi-solid Support With Interior Shells
+## 1. Composite / Multi-solid Support With Interior Shells — ✅ Done
 
-### Current behaviour
+Implemented via the CityParquet **spec §8 `shells`** key. `geometry_properties`
+now carries per-shell emitted-face counts: flat for a `Solid` (`[12]`, `[12,4]`)
+and nested per solid for a `MultiSolid`/`CompositeSolid` (`[[12],[8,4]]`).
+`src/kernel/metadata_parser.cpp` parses both forms into
+`GeometryMetadata.shells` (`vector<vector<uint32_t>>`), and
+`BuildSolidModel(surfaces, metadata)` maps one per-shell-count array to each WKB
+member — building N solids each with per-solid shell grouping (including interior
+shells). The old `requests_multi_solid` guard is gone; a `shells`/member count
+mismatch, per-solid face-sum mismatch, or a solid with no non-empty shell is
+rejected. Upstream `duckdb-cityjson` emits the `shells` key (its Phase A change).
 
 | Input | Result |
 | --- | --- |
-| `PolyhedralSurface Z`, plain WKB | one solid, **one shell** |
-| `PolyhedralSurface Z` + `geometry_properties` (`shellCount`, `shellFaceCounts`) | one solid, **N shells** — interior shells recovered and measured (see [DESIGN_DOC §10.2.1](./DESIGN_DOC.md#1021-interior-inner-shell-handling--mechanism-and-rationale)) |
-| `GeometryCollection Z` of `PolyhedralSurface Z`, plain WKB | collection of **single-shell solids** (no interior-shell recovery per member) |
-| `type = MultiSolid` / `CompositeSolid`, or `solidCount > 1`, via metadata | **raises** — `"metadata-aware import for multi-solid geometries is unsupported in v1"` (`src/kernel/model_builder.cpp`) |
-
-So the one gap is: **a multi/composite solid whose members have interior shells cannot be
-imported with correct per-member shell grouping.** Volume of such an input is either rejected
-or (via the plain path) computed as a set of solid outer shells, ignoring cavities.
-
-### What "done" requires
-
-The canonical model already supports the target shape — `solid_shell_offsets` can describe
-several solids, each with several shells, and `ComputeVolume` already sums `abs(per-solid)`
-across solids and sums signed shells within a solid. The missing pieces are **import
-grouping** and a **metadata contract**:
-
-1. **Metadata schema.** Extend the `geometry_properties` contract from a flat
-   `shellFaceCounts` to a per-solid nesting, e.g. `solidFaceCounts: [[outer, inner, …], …]`
-   (or equivalent `solidShellCounts` + flat `shellFaceCounts`). Parse it in
-   `src/kernel/metadata_parser.cpp`.
-2. **Builder.** Add a builder path that slices the flat face list into `solid → shell → face`
-   using the nested counts, populating `solid_shell_offsets` and `shell_face_offsets` for
-   `solid_count > 1`. Remove the `requests_multi_solid` guard once covered.
-3. **Validation.** Confirm `ValidateSolidModel` treats each solid's shells independently
-   (closedness/manifoldness are per-shell; orientation must hold the interior-opposite-
-   exterior invariant per solid). Add tests for a two-solid input where one solid is hollow.
-4. **Export.** `wkb_export.cpp` already emits multi-solid as `GeometryCollection Z` of
-   `PolyhedralSurface Z`; verify round-trip once multi-shell members exist.
-
-### Blocking dependency
-
-This is gated by item 2 below — the multi-solid shell grouping must be *produced upstream*.
-See §8.2.1 of the design doc: the current CityJSON extension's `geometry_properties` is not
-yet rich enough to describe per-solid interior shells for `MultiSolid`/`CompositeSolid`.
+| `PolyhedralSurface Z`, plain WKB | one solid, one shell |
+| `PolyhedralSurface Z` + `shells [a,b]` | one solid, N shells (interior shells recovered) |
+| `GeometryCollection Z`, plain WKB | collection of single-shell solids |
+| `GeometryCollection Z` + nested `shells [[…],[…]]` | N solids, per-solid shell grouping incl. cavities |
 
 ---
 
@@ -124,31 +103,22 @@ suitable metric CRS before those measurements.
 
 ---
 
-## 4. Enforce the interior-opposite-exterior orientation invariant
+## 4. Enforce the interior-opposite-exterior orientation invariant — ✅ Done
 
-### The gap
+`CheckInteriorShellWinding` (`src/kernel/validation.cpp`) now enforces §9.3. Per
+solid with ≥2 shells it computes each shell's signed volume (origin-translated
+tetrahedra sum, so projected-CRS coordinates don't lose a small cavity to
+cancellation) and requires every interior shell to be **opposite-signed to, and
+smaller in magnitude than, the exterior (shell 0)**. Either violation increments
+`orientation_error_count` and clears `is_oriented`/`is_valid`, so `ComputeVolume`
+refuses rather than returning `V_outer + V_inner` for a mis-wound cavity. A
+bbox-scale relative guard skips genuinely degenerate (near-planar) shells before
+the sign test. The `test/cpp/test_inner_shell.cpp` same-wound case now asserts
+rejection.
 
-`DESIGN_DOC.md` §9.3 promises "interior shells, when present, are oriented opposite to the
-exterior shell", but `ValidateSolidModel` (`src/kernel/validation.cpp`) checks orientation
-*per shell* only (each shell's directed edges must cancel). It never cross-checks that a
-nested shell is wound opposite its enclosing shell.
-
-**Consequence:** a hollow solid whose interior shell is wound the *same* way as the exterior
-still reports `is_valid = true`, and `ComputeVolume` returns `V_outer + V_inner` (the cavity
-is *added*) instead of `V_outer − V_inner`. Correct volumes therefore depend entirely on the
-WKB producer winding cavities inward; the extension cannot detect a mis-wound cavity. This is
-pinned as current behaviour by `test/cpp/test_inner_shell.cpp` ("same-wound interior shell is
-NOT subtracted").
-
-### What "done" requires
-
-1. After per-shell validation, determine shell nesting within each solid — bbox containment
-   (inner shell bbox ⊂ outer shell bbox) as a cheap first pass, or a point-in-solid test on
-   one vertex for robustness.
-2. Require that a nested shell's signed volume has the opposite sign of its enclosing shell;
-   otherwise increment `orientation_error_count` and clear `is_oriented` / `is_valid`.
-3. Flip the `test/cpp/test_inner_shell.cpp` "same-wound" case from documenting the gap to
-   asserting rejection (it is already structured to become that regression test).
-
-Low-to-moderate effort, no external backend. Highest-value correctness improvement for
-multi-shell solids.
+Instead of bbox/point-in-solid containment (the original sketch), the exterior is
+taken as shell 0 (CityJSON writes the outer shell first) and the magnitude test
+catches a mislabelled larger "interior" shell. Scope is **relative** opposition
+only: the exterior's absolute outward orientation and true point-in-polyhedron
+containment remain out of scope (a future absolute-orientation check would
+complete full §9.3 conformance without touching this one).
