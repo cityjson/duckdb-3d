@@ -1,0 +1,34 @@
+# name: test/sql/cityjson_hollow_solid.test
+# description: a hollow Solid (interior shell) read from CityJSON through three_d
+# group: [sql]
+
+# End-to-end of the design-doc §12 composition for the capability this stack
+# exists to serve: computing the volume of a solid with an interior shell
+# (a cavity), where the shell partition the WKB flattens away is recovered from
+# the spec §8 `geometry_properties` `shells` key.
+#
+# Fixture: test/data/hollow_solid.city.json — outer cube [0,4]^3 (V=64) with a
+# concentric cavity [1,3]^3 (V=8), the cavity wound opposite the exterior.
+# Hollow volume = 64 - 8 = 56.
+#
+# When the loaded `cityjson` emits spec §8 `geometry_properties` (shells:[6,6]),
+# the metadata path recovers two shells and the winding check applies; an older
+# `cityjson` that emits no `shells` falls back to one merged shell. Either way
+# the volume is 56 — signed-volume subtraction is shell-grouping invariant for a
+# disjoint cavity (DESIGN_DOC §10.2.1). This asserts the value; the shells-driven
+# two-shell path and the winding enforcement are pinned CI-independently by
+# test/sql/st_3d_hollow_solid.test and test/cpp/test_inner_shell.cpp.
+require cityjson
+
+require three_d
+
+# Hollow volume 56, and the solid is closed.
+query IT
+SELECT ROUND(ST_3DVolume(s), 6), ST_3DIsClosed(s)
+FROM (
+    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    FROM read_cityjson('test/data/hollow_solid.city.json', lod => '2')
+    WHERE geometry IS NOT NULL
+) q;
+----
+56.0	true
