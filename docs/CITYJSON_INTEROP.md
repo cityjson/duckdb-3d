@@ -55,6 +55,59 @@ id   | faces | closed | area | volume
 cube | 6     | true   | 6.0  | 1.0
 ```
 
+## Hollow solids (interior shells) — the `shells` contract end-to-end
+
+A CityJSON `Solid` is encoded as one WKB `PolyhedralSurface Z` whose faces are
+**all shells flattened into one list** — the exterior/interior distinction is
+gone from the WKB. `duckdb-cityjson` preserves it in the spec §8
+`geometry_properties` `shells` key (per-shell face counts), and `duckdb-3d` uses
+that to rebuild the shell partition, so a cavity's volume subtracts instead of
+being ignored.
+
+Using `test/data/hollow_solid.city.json` — an outer cube (V=64) with a
+concentric cavity (V=8):
+
+```sh
+./build/release/duckdb -unsigned -c "
+LOAD cityjson;
+LOAD three_d;
+
+SELECT geometry_properties FROM
+  read_cityjson('test/data/hollow_solid.city.json', lod => '2')
+  WHERE geometry IS NOT NULL;
+-- {\"lod\":\"2\",\"shells\":[6,6],\"type\":\"Solid\"}
+
+SELECT ST_3DNumShells(s)          AS shells,
+       ST_3DIsClosed(s)           AS closed,
+       ROUND(ST_3DVolume(s), 6)   AS volume
+FROM (
+  SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+  FROM read_cityjson('test/data/hollow_solid.city.json', lod => '2')
+  WHERE geometry IS NOT NULL
+);
+"
+```
+
+Expected — the cavity is recovered from `shells:[6,6]` and subtracted
+(64 − 8 = 56):
+
+```
+shells | closed | volume
+2      | true   | 56.0
+```
+
+The winding matters: `duckdb-3d` enforces that an interior shell is wound
+opposite the exterior (CityGML §9.3). A cavity wound the *same* way as the
+exterior would silently *add* its volume, so it is rejected instead —
+`ST_3DVolume` raises `solid has inconsistent orientation` and `ST_3DTryFromWKB`
+returns a solid that fails `ST_3DIsValid`. Correct volumes therefore never
+depend on trusting the producer's winding blindly.
+
+> Requires a `cityjson` build that emits the spec §8 `shells` key. An older
+> build that omits it still returns 56 here (volume subtraction is
+> shell-grouping invariant for a disjoint cavity), but as a single merged shell
+> and without the winding check.
+
 ## Remote CityJSONSeq smoke test
 
 For remote CityJSONSeq data, pass `lod => '...'` so `cityjson` emits WKB
