@@ -1,5 +1,6 @@
 #include "kernel/metadata_parser.hpp"
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -140,6 +141,9 @@ public:
 			if (value < 0) {
 				throw std::runtime_error("geometry_properties JSON: expected non-negative integer");
 			}
+			if (value > std::numeric_limits<uint32_t>::max()) {
+				throw std::runtime_error("geometry_properties JSON: shell face count out of range");
+			}
 			result.push_back(static_cast<uint32_t>(value));
 			if (Consume(']')) {
 				return result;
@@ -173,6 +177,9 @@ public:
 			int64_t value = ParseInteger();
 			if (value < 0) {
 				throw std::runtime_error("geometry_properties JSON: expected non-negative integer");
+			}
+			if (value > std::numeric_limits<uint32_t>::max()) {
+				throw std::runtime_error("geometry_properties JSON: shell face count out of range");
 			}
 			flat.push_back(static_cast<uint32_t>(value));
 			if (Consume(']')) {

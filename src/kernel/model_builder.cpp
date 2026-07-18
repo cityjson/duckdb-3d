@@ -155,14 +155,26 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 		const auto &surface = surfaces[solid_idx];
 		const auto &shell_counts = metadata.shells[solid_idx];
 
-		uint32_t face_sum = 0;
+		// Accumulate in 64-bit so a crafted count near UINT32_MAX cannot wrap the
+		// sum back to a value that spuriously matches the WKB face count.
+		uint64_t face_sum = 0;
+		uint32_t non_empty_shells = 0;
 		for (auto fc : shell_counts) {
 			face_sum += fc;
+			if (fc > 0) {
+				non_empty_shells++;
+			}
 		}
 		if (face_sum != surface.polygon_count) {
 			throw std::runtime_error("geometry_properties: shell face count mismatch for solid " +
 			                         std::to_string(solid_idx) + ": shells sum (" + std::to_string(face_sum) +
 			                         ") != WKB face count (" + std::to_string(surface.polygon_count) + ")");
+		}
+		// A `0` in `shells` is a fully-dropped shell (spec §8) and creates no shell;
+		// a solid must still have at least one real shell.
+		if (non_empty_shells == 0) {
+			throw std::runtime_error("geometry_properties: solid " + std::to_string(solid_idx) +
+			                         " has no non-empty shell");
 		}
 
 		// Walk this surface's faces in order, marking a shell boundary at each
@@ -172,6 +184,9 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 		uint32_t face_in_surface = 0;
 
 		for (uint32_t shell_faces : shell_counts) {
+			if (shell_faces == 0) {
+				continue; // dropped shell — contributes no faces and no shell entry
+			}
 			model.shell_face_offsets.push_back(total_faces);
 
 			for (uint32_t f = 0; f < shell_faces; f++) {

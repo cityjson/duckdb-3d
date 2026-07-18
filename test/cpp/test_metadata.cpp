@@ -130,6 +130,26 @@ TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
 	REQUIRE_THROWS_WITH(ParseGeometryProperties("{"), Catch::Contains("JSON"));
 }
 
+TEST_CASE("ParseGeometryProperties: a shell count above uint32 range raises", "[metadata]") {
+	// 2^32 exceeds a uint32 face count; reject rather than truncate-and-wrap.
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [4294967296]})"),
+	                    Catch::Contains("out of range"));
+}
+
+TEST_CASE("BuildSolidModel with metadata: a zero shell count is a dropped shell", "[metadata]") {
+	// A `0` in `shells` (spec §8: a fully-dropped shell) creates no shell. Here
+	// [0, 8] on an 8-face surface yields a single 8-face shell.
+	auto wkb = MakeTwoShellWKB();
+	auto surfaces = ParseWKB(wkb.data(), wkb.size());
+	GeometryMetadata meta;
+	meta.type = "Solid";
+	meta.shells = {{0, 8}};
+	auto model = BuildSolidModel(surfaces, meta);
+	REQUIRE(model.SolidCount() == 1);
+	REQUIRE(model.ShellCount() == 1);
+	REQUIRE(model.FaceCount() == 8);
+}
+
 TEST_CASE("BuildSolidModel with metadata: split into 2 shells", "[metadata]") {
 	auto wkb = MakeTwoShellWKB();
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());

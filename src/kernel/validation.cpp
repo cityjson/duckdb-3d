@@ -195,7 +195,12 @@ ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t sh
 //! relative degeneracy test.
 struct ShellSignedVolume {
 	double signed_vol = 0.0;
-	double abs_sum = 0.0;
+	//! Cube of the shell's bounding-box diagonal — a scale for the degeneracy test.
+	//! |signed_vol| that is a negligible fraction of this means the shell encloses
+	//! no real volume (flat/collapsed), independent of how concave or finely
+	//! tessellated it is (so a valid concave shell is not mistaken for degenerate).
+	double scale = 0.0;
+	bool has_geometry = false;
 };
 
 ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t shell_idx) {
@@ -217,7 +222,9 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 	if (!have_origin) {
 		return out; // no triangles → nothing to integrate
 	}
+	out.has_geometry = true;
 
+	Vertex3D lo = o, hi = o;
 	for (uint32_t f = face_start; f < face_end; f++) {
 		uint32_t tri_start = model.face_triangle_offsets[f];
 		uint32_t tri_end = model.face_triangle_offsets[f + 1];
@@ -225,17 +232,26 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 			const auto &va = model.vertices[model.triangle_vertex_indices[t * 3 + 0]];
 			const auto &vb = model.vertices[model.triangle_vertex_indices[t * 3 + 1]];
 			const auto &vc = model.vertices[model.triangle_vertex_indices[t * 3 + 2]];
+			for (const auto &v : {va, vb, vc}) {
+				lo.x = std::min(lo.x, v.x);
+				lo.y = std::min(lo.y, v.y);
+				lo.z = std::min(lo.z, v.z);
+				hi.x = std::max(hi.x, v.x);
+				hi.y = std::max(hi.y, v.y);
+				hi.z = std::max(hi.z, v.z);
+			}
 			double ax = va.x - o.x, ay = va.y - o.y, az = va.z - o.z;
 			double bx = vb.x - o.x, by = vb.y - o.y, bz = vb.z - o.z;
 			double cx = vc.x - o.x, cy = vc.y - o.y, cz = vc.z - o.z;
 			double cross_x = by * cz - bz * cy;
 			double cross_y = bz * cx - bx * cz;
 			double cross_z = bx * cy - by * cx;
-			double tv = ax * cross_x + ay * cross_y + az * cross_z;
-			out.signed_vol += tv;
-			out.abs_sum += std::abs(tv);
+			out.signed_vol += ax * cross_x + ay * cross_y + az * cross_z;
 		}
 	}
+	double dx = hi.x - lo.x, dy = hi.y - lo.y, dz = hi.z - lo.z;
+	double diag = std::sqrt(dx * dx + dy * dy + dz * dz);
+	out.scale = diag * diag * diag;
 	return out;
 }
 
@@ -265,8 +281,10 @@ uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 
 		auto ext = ComputeShellSignedVolume(model, shell_start);
 		// A degenerate/near-zero exterior gives no reliable sign; leave it to the
-		// topology/degeneracy checks rather than guessing here.
-		if (ext.abs_sum == 0.0 || std::abs(ext.signed_vol) < kRelEps * ext.abs_sum) {
+		// topology/degeneracy checks rather than guessing here. Degeneracy is
+		// measured against the shell's own bbox scale, so a valid concave shell
+		// (small volume, large surface) is not misjudged as degenerate.
+		if (!ext.has_geometry || ext.scale == 0.0 || std::abs(ext.signed_vol) < kRelEps * ext.scale) {
 			continue;
 		}
 		bool ext_positive = ext.signed_vol > 0.0;
@@ -274,7 +292,7 @@ uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 
 		for (uint32_t s = shell_start + 1; s < shell_end; s++) {
 			auto in = ComputeShellSignedVolume(model, s);
-			if (in.abs_sum == 0.0 || std::abs(in.signed_vol) < kRelEps * in.abs_sum) {
+			if (!in.has_geometry || in.scale == 0.0 || std::abs(in.signed_vol) < kRelEps * in.scale) {
 				continue; // degenerate interior shell — sign is noise, skip
 			}
 			bool in_positive = in.signed_vol > 0.0;
