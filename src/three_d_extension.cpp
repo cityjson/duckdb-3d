@@ -20,10 +20,13 @@
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_analysis.hpp"
 #include "kernel/geom_serialize.hpp"
+#include "kernel/crs_transform.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <unordered_map>
 
 namespace duckdb {
 
@@ -1560,6 +1563,126 @@ static void ST_NumGeometriesFun(DataChunk &args, ExpressionState &state, Vector 
 }
 
 // ──────────────────────────────────────────────────────────────
+// Transforms: ST_Transform — 2D CRS reprojection (X/Y only, Z preserved).
+// Accepts SOLID_3D or GEOM_3D (dispatched by payload magic); output type
+// equals input type. PROJ is confined to kernel/crs_transform.
+// ──────────────────────────────────────────────────────────────
+
+//! Reproject one payload BLOB using an already-built transform. Recomputes the
+//! bbox; re-validates solids because reprojection can invert winding.
+static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t size, const duckdb_3d::CrsTransform &tf) {
+	using namespace duckdb_3d;
+	switch (GetPayloadKind(data, size)) {
+	case PayloadKind::Solid: {
+		auto model = DeserializePayload(data, size);
+		tf.ReprojectXY(model.vertices);
+		model.ComputeBBox();
+		ValidateSolidModel(model);
+		return SerializePayload(model);
+	}
+	case PayloadKind::Geom: {
+		auto model = DeserializeGeomPayload(data, size);
+		tf.ReprojectXY(model.vertices);
+		model.ComputeBBox();
+		return SerializeGeomPayload(model);
+	}
+	default:
+		throw InvalidInputException("ST_Transform: argument is not a SOLID_3D or GEOM_3D value");
+	}
+}
+
+//! Shared chunk loop. `get_crs(i)` returns the {source, target} CRS strings for
+//! row i. One CrsTransform is built per distinct pair and reused across rows.
+template <class GetCrs>
+static void TransformChunk(DataChunk &args, Vector &result, GetCrs get_crs) {
+	using namespace duckdb_3d;
+	auto count = args.size();
+
+	UnifiedVectorFormat geom_data;
+	args.data[0].ToUnifiedFormat(count, geom_data);
+	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
+	auto &result_validity = FlatVector::Validity(result);
+
+	std::unordered_map<std::string, std::unique_ptr<CrsTransform>> cache;
+
+	for (idx_t i = 0; i < count; i++) {
+		auto geom_idx = geom_data.sel->get_index(i);
+
+		bool crs_valid = true;
+		std::string source;
+		std::string target;
+		if (!geom_data.validity.RowIsValid(geom_idx) || !get_crs(i, source, target, crs_valid) || !crs_valid) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+
+		std::string key = source;
+		key.push_back('\x1f');
+		key += target;
+		auto it = cache.find(key);
+		if (it == cache.end()) {
+			it = cache.emplace(key, std::make_unique<CrsTransform>(source, target)).first;
+		}
+
+		auto &blob = geom_strings[geom_idx];
+		auto payload =
+		    ReprojectPayloadBlob(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(), *it->second);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ST_Transform(geom, source_crs VARCHAR, target_crs VARCHAR)
+static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+	UnifiedVectorFormat src_data, tgt_data;
+	args.data[1].ToUnifiedFormat(count, src_data);
+	args.data[2].ToUnifiedFormat(count, tgt_data);
+	auto src_strings = UnifiedVectorFormat::GetData<string_t>(src_data);
+	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
+
+	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto si = src_data.sel->get_index(i);
+		auto ti = tgt_data.sel->get_index(i);
+		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
+		source = src_strings[si].GetString();
+		target = tgt_strings[ti].GetString();
+		return true;
+	});
+}
+
+// ST_Transform(geom, source_srid INTEGER, target_srid INTEGER)
+static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	using namespace duckdb_3d;
+	auto count = args.size();
+	UnifiedVectorFormat src_data, tgt_data;
+	args.data[1].ToUnifiedFormat(count, src_data);
+	args.data[2].ToUnifiedFormat(count, tgt_data);
+	auto src_vals = UnifiedVectorFormat::GetData<int32_t>(src_data);
+	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
+
+	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto si = src_data.sel->get_index(i);
+		auto ti = tgt_data.sel->get_index(i);
+		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
+		source = EpsgToAuthString(src_vals[si]);
+		target = EpsgToAuthString(tgt_vals[ti]);
+		return true;
+	});
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -1776,6 +1899,23 @@ static void LoadInternal(ExtensionLoader &loader) {
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateZFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateZGeomFun));
 	loader.RegisterFunction(rotatez_set);
+
+	// ST_Transform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
+	// on SOLID_3D and GEOM_3D. Output type equals input type.
+	ScalarFunctionSet transform_set("st_transform");
+	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER},
+	                                         LogicalType::BLOB, ST_TransformIntFun));
+	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                         LogicalType::BLOB, ST_TransformStrFun));
+	transform_set.AddFunction(
+	    ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type, ST_TransformIntFun));
+	transform_set.AddFunction(
+	    ScalarFunction({geom_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, geom_3d_type, ST_TransformIntFun));
+	transform_set.AddFunction(
+	    ScalarFunction({solid_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, solid_3d_type, ST_TransformStrFun));
+	transform_set.AddFunction(
+	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_TransformStrFun));
+	loader.RegisterFunction(transform_set);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

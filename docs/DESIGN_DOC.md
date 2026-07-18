@@ -495,6 +495,66 @@ Rules:
 
 If shell roles are unavailable, v1 only computes volume for one-shell solids.
 
+#### 10.2.1 Interior (Inner) Shell Handling — Mechanism And Rationale
+
+This subsection is the reference for **how a solid with interior shells (cavities) is
+measured, and why the implementation is shaped the way it is**. It documents behaviour that
+was previously only implicit in the code (`ComputeVolume`, `src/kernel/measurements.cpp`).
+
+**Mechanism.** `ComputeVolume` iterates over *every* shell of a solid and accumulates the
+signed tetrahedral volume of each triangle into a single `solid_volume` running total, then
+takes the absolute value **once per solid** before summing across solids:
+
+```text
+for each solid:
+    solid_volume = Σ_shells Σ_faces Σ_triangles  SignedTriangleVolume(tri)   // signed
+    total_volume += abs(solid_volume)                                        // abs per solid
+total_volume /= 6
+```
+
+`SignedTriangleVolume` is `a · (b × c)` — the signed volume of the tetrahedron from the
+origin to the triangle. Its sign is determined entirely by the triangle's winding, i.e. by
+**face orientation**.
+
+**Why interior shells subtract automatically.** By the orientation contract (§9.3), an
+interior shell is wound *opposite* to the exterior shell. Therefore:
+
+- the exterior shell contributes `+V_outer`
+- an interior shell contributes `−V_inner`
+- their sum is the net material volume `V_outer − V_inner`
+
+No explicit "this shell is a hole" branch is needed: the subtraction falls out of the signed
+arithmetic plus the opposite-orientation invariant.
+
+**Why `abs` is applied per solid, after summing all shells — not per shell.** Global winding
+direction is ambiguous (a solid may be stored CCW-outward or CW-outward; §9.3 enforces only
+*consistency*, not a fixed handedness). Taking `abs` once, after the interior/exterior terms
+have already cancelled, collapses that global ambiguity **while preserving** the cavity
+subtraction. Taking `abs` per shell would make cavities *add* instead of subtract, and would
+be wrong.
+
+**Recognition of inner vs outer is by orientation, not by a stored flag.** The canonical
+model does not tag a shell as "interior". Which shell subtracts is decided implicitly by its
+signed contribution. The larger, positively-oriented exterior shell dominates; an
+oppositely-wound nested shell subtracts. This mirrors how PostGIS/SFCGAL determines
+inner/outer for a solid — also by orientation and signed volume — because standard WKB
+`PolyhedralSurface` carries no shell-grouping token (see §8, §12).
+
+**Hard precondition — interior shells must have been *grouped* at import.** An interior shell
+only exists in the model if import placed multiple shells inside one solid. Per §5.1.3 and §8:
+
+- plain WKB `PolyhedralSurface Z` → **one shell per solid** (a cavity is invisible; the inner
+  faces are lumped into the single shell and the result is typically rejected as non-manifold)
+- multiple shells in one solid are recovered **only** from `geometry_properties` metadata
+  (`shellCount` + `shellFaceCounts`), and today only for a **single** `PolyhedralSurface`
+  input (§8.2.1). `MultiSolid` / `CompositeSolid` with interior shells is **not** yet
+  supported — see the future-work note in [FUTURE_WORK.md](./FUTURE_WORK.md).
+
+**Surface area and footprint are not shell-aware.** `ST_3DSurfaceArea` / `ST_3DArea`
+(`ComputeSurfaceArea`) and `ST_Area` (`ComputeFootprintArea`) sum over *all* faces without any
+shell logic, so interior-shell (cavity) walls contribute to reported surface area. Only volume
+distinguishes shell roles.
+
 ## 11. DuckDB Integration Architecture
 
 The extension will be split into these implementation layers:
@@ -610,13 +670,21 @@ serialization surface (§16) are implemented. What remains open is tracked in tw
 
 - the prioritised, per-function backlog — `should` items not yet built and every `want`
   item — lives in [§16](#16-3d-function-roadmap-postgis-derived);
-- the larger deferred workstreams below.
+- three larger design-level workstreams — composite/multi-solid interior shells, moving
+  CityJSON-aware interpretation upstream into `duckdb-cityjson`, and CRS/`ST_Transform`
+  support — are written up in [FUTURE_WORK.md](./FUTURE_WORK.md);
+- the deferred workstreams below.
 
 ### 14.1 Near-Term
 
 - performance tuning (bbox pre-filters for the distance family, etc.)
 - richer metadata-aware import
 - improved interoperability with CityJSON multi-shell and multi-solid cases
+  ([FUTURE_WORK.md §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells))
+- move CityJSON-specific interpretation out of the kernel into `duckdb-cityjson`
+  ([FUTURE_WORK.md §2](./FUTURE_WORK.md#2-move-cityjson-aware-interpretation-out-of-duckdb-3d))
+- CRS / SRID awareness and `ST_Transform`
+  ([FUTURE_WORK.md §3](./FUTURE_WORK.md#3-coordinate-reference-system-support-st_transform-srid))
 
 ### 14.2 Deferred (backend decision required)
 
@@ -782,6 +850,7 @@ The proximity primitives for building-to-building queries.
 | `ST_RotateX` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about X axis. |
 | `ST_RotateY` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Y axis. |
 | `ST_RotateZ` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Z axis. |
+| `ST_Transform` | `(geom, source_srid INT, target_srid INT) → same type` and `(geom, source_crs VARCHAR, target_crs VARCHAR) → same type` | should | **PROJ** | ✅ implemented on `SOLID_3D` and `GEOM_3D`. **Horizontal (2D) only**: reprojects X/Y, preserves Z (no vertical datum), matching PostGIS default. Axis order normalised to easting/northing (lon/lat). bbox recomputed; solids re-validated. The only function with an external backend (PROJ); confined to `src/kernel/crs_transform.cpp`. Remaining CRS work (stored SRID, vertical datum, `proj.db` bundling) in [FUTURE_WORK.md §3](./FUTURE_WORK.md#3-coordinate-reference-system-support-st_transform-srid). |
 | `ST_Force3D` / `ST_Force3DZ` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. Identity on GEOM_3D (already XYZ); future 2D inputs would gain Z=0. |
 | `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | ✅ implemented. **Vertical** prism extrusion (footprint → LoD1 box); footprint normalised to CCW, result validated closed+oriented. Returns plain BLOB. |
 | `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | ✅ implemented. Cast a closed/oriented/manifold `PolyhedralSurface` to a solid; raises if not solid-eligible (no repair). Returns plain BLOB. |
@@ -872,6 +941,7 @@ and the closest-point-pair kernel `Geom3DClosestPoints`
 | `ST_RotateX` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateX` |
 | `ST_RotateY` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateY` |
 | `ST_RotateZ` | `(solid SOLID_3D \| geom GEOM_3D, radians DOUBLE) → same type` | should | `ST_RotateZ` |
+| `ST_Transform` | `(solid SOLID_3D \| geom GEOM_3D, source, target [INT\|VARCHAR]) → same type` | should | `ST_Transform` (2D only) |
 | `ST_Z` | `(point GEOM_3D) → DOUBLE` | must | `ST_Z` |
 | `ST_X` | `(point GEOM_3D) → DOUBLE` | should | `ST_X` |
 | `ST_Y` | `(point GEOM_3D) → DOUBLE` | should | `ST_Y` |
