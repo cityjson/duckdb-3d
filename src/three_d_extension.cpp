@@ -148,6 +148,111 @@ static void ST_AsWKBOpenTetraFun(DataChunk &args, ExpressionState &state, Vector
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
 }
 
+// WKB helpers shared by the cube-based test fixtures below.
+namespace {
+void WkbU8(std::vector<uint8_t> &buf, uint8_t v) {
+	buf.push_back(v);
+}
+void WkbU32(std::vector<uint8_t> &buf, uint32_t v) {
+	buf.push_back(v & 0xFF);
+	buf.push_back((v >> 8) & 0xFF);
+	buf.push_back((v >> 16) & 0xFF);
+	buf.push_back((v >> 24) & 0xFF);
+}
+void WkbF64(std::vector<uint8_t> &buf, double v) {
+	uint8_t b[8];
+	memcpy(b, &v, 8);
+	buf.insert(buf.end(), b, b + 8);
+}
+//! Emit one quad face (Polygon Z with a single closed ring of 4 corners).
+void WkbQuad(std::vector<uint8_t> &buf, const double c[4][3]) {
+	WkbU8(buf, 1);
+	WkbU32(buf, 1003); // PolygonZ
+	WkbU32(buf, 1);    // one ring
+	WkbU32(buf, 5);    // 4 corners + closing vertex
+	for (int i = 0; i < 4; i++) {
+		WkbF64(buf, c[i][0]);
+		WkbF64(buf, c[i][1]);
+		WkbF64(buf, c[i][2]);
+	}
+	WkbF64(buf, c[0][0]);
+	WkbF64(buf, c[0][1]);
+	WkbF64(buf, c[0][2]);
+}
+//! Append the 6 quad faces of an axis-aligned cube [lo,hi]^3 to buf.
+//! reversed=false → outward-facing; reversed=true → inward-facing (interior shell).
+void WkbCubeFaces(std::vector<uint8_t> &buf, double lo, double hi, bool reversed) {
+	// Six outward-wound faces as corner-quads.
+	double faces[6][4][3] = {
+	    {{lo, lo, lo}, {lo, hi, lo}, {hi, hi, lo}, {hi, lo, lo}}, // bottom z=lo
+	    {{lo, lo, hi}, {hi, lo, hi}, {hi, hi, hi}, {lo, hi, hi}}, // top z=hi
+	    {{lo, lo, lo}, {hi, lo, lo}, {hi, lo, hi}, {lo, lo, hi}}, // front y=lo
+	    {{lo, hi, lo}, {lo, hi, hi}, {hi, hi, hi}, {hi, hi, lo}}, // back y=hi
+	    {{lo, lo, lo}, {lo, lo, hi}, {lo, hi, hi}, {lo, hi, lo}}, // left x=lo
+	    {{hi, lo, lo}, {hi, hi, lo}, {hi, hi, hi}, {hi, lo, hi}}, // right x=hi
+	};
+	for (auto &f : faces) {
+		if (reversed) {
+			double r[4][3];
+			for (int i = 0; i < 4; i++) {
+				for (int k = 0; k < 3; k++) {
+					r[i][k] = f[3 - i][k];
+				}
+			}
+			WkbQuad(buf, r);
+		} else {
+			WkbQuad(buf, f);
+		}
+	}
+}
+} // namespace
+
+// Test helper: a hollow cube — outer cube [0,4]^3 (outward) enclosing inner cube
+// [1,3]^3 (inward) as a single 12-face PolyhedralSurface Z. Paired with
+// geometry_properties {"shellCount":2,"shellFaceCounts":[6,6]} it imports as one
+// solid with two shells: volume 64-8=56, surface area 96+24=120.
+static std::vector<uint8_t> BuildHollowCubeWKB() {
+	std::vector<uint8_t> buf;
+	WkbU8(buf, 1);
+	WkbU32(buf, 1015); // PolyhedralSurfaceZ
+	WkbU32(buf, 12);   // 12 faces
+	WkbCubeFaces(buf, 0.0, 4.0, /*reversed=*/false);
+	WkbCubeFaces(buf, 1.0, 3.0, /*reversed=*/true);
+	return buf;
+}
+
+static void ST_AsWKBHollowCubeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildHollowCubeWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+// Test helper: two disjoint outward cubes ([0,2]^3 and [5,7]^3, each volume 8) as
+// a GeometryCollection Z of two PolyhedralSurface Z — a MultiSolid analogue.
+// Imports (plain path) as two single-shell solids: ST_3DNumSolids=2,
+// total volume 16, total surface area 48.
+static std::vector<uint8_t> BuildMultiCubeWKB() {
+	std::vector<uint8_t> buf;
+	WkbU8(buf, 1);
+	WkbU32(buf, 1007); // GeometryCollectionZ
+	WkbU32(buf, 2);    // two members
+	for (double base : {0.0, 5.0}) {
+		WkbU8(buf, 1);
+		WkbU32(buf, 1015); // PolyhedralSurfaceZ
+		WkbU32(buf, 6);
+		WkbCubeFaces(buf, base, base + 2.0, /*reversed=*/false);
+	}
+	return buf;
+}
+
+static void ST_AsWKBMultiCubeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto wkb = BuildMultiCubeWKB();
+	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
 // ──────────────────────────────────────────────────────────────
 // ST_3DFromWKB(wkb BLOB) → SOLID_3D (BLOB)
 // ──────────────────────────────────────────────────────────────
@@ -1701,6 +1806,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(
 	    ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbhollowcube", {}, LogicalType::BLOB, ST_AsWKBHollowCubeFun));
+	loader.RegisterFunction(ScalarFunction("st_aswkbmulticube", {}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_AsWKBPointZFun));
