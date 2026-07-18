@@ -45,7 +45,8 @@ set(TEST_SOURCES
     test_geom_serialize.cpp
     test_crs_transform.cpp
     test_wkb_export.cpp
-    test_inner_shell.cpp)
+    test_inner_shell.cpp
+    test_triangulation.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 

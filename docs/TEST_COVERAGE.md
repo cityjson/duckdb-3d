@@ -23,6 +23,18 @@ gaps. Generated as part of the test-comprehensiveness pass.
 - **C++ kernel: most units have direct tests.** Direct-test gaps: `wkb_export`,
   `triangulation` (both currently covered only indirectly).
 
+## What this pass added
+
+| Area | Added |
+|---|---|
+| Inner shells (Gap 1) | `test/cpp/test_inner_shell.cpp` (hollow cube, vol 56 / area 120; shell-grouping invariance; §9.3 gap pin) + `test/sql/st_3d_hollow_solid.test` via new `ST_AsWKBHollowCube()` helper. **Done.** |
+| Multi-solid (Gap 3) | `ST_AsWKBMultiCube()` + `test/sql/st_3d_multisolid.test` (ungated); real `msol`/`csol` datasets + `test/sql/cityjson_multisolid.test` (gated, verified against live cityjson). **Done.** |
+| Transform oracle (part of Gap 2) | `test/sql/metamorphic_transforms.test` — dependency-free invariance (translation/rotation preserve volume+area; scaling laws) over controlled fixtures **and** real 3DBAG golden solids. Covers the transform family the PostGIS oracle structurally cannot. **Done.** |
+| C++ units (Gap 4) | `test/cpp/test_wkb_export.cpp` (round-trip) and `test/cpp/test_triangulation.cpp` (quad, n-gon, concave L-face, tilted face). **Done.** |
+| Docs | This file; `DESIGN_DOC §10.2.1` corrected (Finding B); `FUTURE_WORK §4` (cross-shell orientation check). |
+
+C++ suite 153/153; SQL suite green (cityjson + oracle-container tests skip locally).
+
 ## Gap 1 — Inner-shell (hollow solid) end-to-end test is missing
 
 The most material gap. The signed-volume subtraction for a solid with an interior shell
@@ -66,17 +78,33 @@ the maintainer's provisioned `pg_oracle` container. Concrete turnkey plan for wh
 
 ## Gap 3 — Real multisolid / compositesolid datasets
 
-The CityJSON example datasets (`msol`, `csol`, etc. from
-<https://www.cityjson.org/datasets/#simple-geometries>) are not yet used. Note the current
-limitation: metadata-aware import **raises** for `MultiSolid`/`CompositeSolid`
-(`model_builder.cpp`), so their interior-shell grouping cannot be recovered today (tracked in
-[FUTURE_WORK §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells)).
-Plan finalised with advisor input — see the remediation section once implemented.
+**Done.** The CityJSON `msol` (MultiSolid) and `csol` (CompositeSolid) example datasets from
+<https://www.cityjson.org/datasets/#simple-geometries> are committed as
+`test/data/multisolid.city.json` / `compositesolid.city.json` and exercised by
+`test/sql/cityjson_multisolid.test` (gated `require cityjson`). Because metadata-aware import
+**raises** for `MultiSolid`/`CompositeSolid` (`model_builder.cpp`; interior-shell grouping is
+deferred, [FUTURE_WORK §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells)),
+the test pins both the supported fallback (plain path → 2 solids, volume 2.0, area 12.0,
+closed) and the documented boundary (metadata import raises; TRY → NULL). An ungated
+`ST_AsWKBMultiCube()` covers the collection-of-solids maths in every CI run.
 
-## Gap 4 — C++ direct-test gaps
+## Gap 4 — C++ direct-test gaps — **Done**
 
-- `wkb_export` — round-trip export is covered at SQL level (`st_3d_as_wkb.test`) but has no
-  dedicated `test/cpp` unit test.
-- `triangulation` — covered indirectly through `test_measurements`; no dedicated unit test.
+- `wkb_export` — now `test/cpp/test_wkb_export.cpp` (model → WKB → model round-trip: counts,
+  bbox, volume; PolyhedralSurface type code).
+- `triangulation` — now `test/cpp/test_triangulation.cpp` (convex quad, n-gon count, concave
+  L-face area via ear-clipping, tilted-plane true area).
 
-Both are lower priority than Gaps 1–3 but worth closing for kernel-level regression safety.
+## Remaining deferrals (need maintainer action)
+
+1. **Oracle golden expansion (Gap 2 core).** Adding accessor / bounds / serialisation columns
+   to the PostGIS oracle requires editing `scripts/oracle/gen_golden.py` **and** regenerating
+   `golden.csv` on the provisioned PostGIS+SFCGAL container (`just oracle-regen`) to keep the
+   frozen provenance (`pg_version 3.4.3`, `sfcgal 1.3.8`) consistent. Not possible in this
+   environment (no Docker/PostGIS). Highest-value first addition: 3D bounds / Z-extent columns
+   (`ST_ZMin/ZMax/3DBounds`) — exact comparison, works on every row including SFCGAL-rejected
+   roofs. The transform family is already covered dependency-free by
+   `metamorphic_transforms.test`, so the oracle need not.
+2. **Cross-shell orientation check** ([FUTURE_WORK §4](./FUTURE_WORK.md#4-enforce-the-interior-opposite-exterior-orientation-invariant))
+   — a kernel behaviour change (validation), not just a test. The "same-wound interior shell"
+   case in `test_inner_shell.cpp` is pre-written to flip into its regression test.
