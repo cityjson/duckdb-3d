@@ -121,3 +121,34 @@ suitable metric CRS before those measurements.
    distributable `.duckdb_extension` (as `duckdb_spatial` does, via
    `proj_context_set_search_paths`) is still outstanding and is the main gap before shipping
    CRS support in a released binary.
+
+---
+
+## 4. Enforce the interior-opposite-exterior orientation invariant
+
+### The gap
+
+`DESIGN_DOC.md` §9.3 promises "interior shells, when present, are oriented opposite to the
+exterior shell", but `ValidateSolidModel` (`src/kernel/validation.cpp`) checks orientation
+*per shell* only (each shell's directed edges must cancel). It never cross-checks that a
+nested shell is wound opposite its enclosing shell.
+
+**Consequence:** a hollow solid whose interior shell is wound the *same* way as the exterior
+still reports `is_valid = true`, and `ComputeVolume` returns `V_outer + V_inner` (the cavity
+is *added*) instead of `V_outer − V_inner`. Correct volumes therefore depend entirely on the
+WKB producer winding cavities inward; the extension cannot detect a mis-wound cavity. This is
+pinned as current behaviour by `test/cpp/test_inner_shell.cpp` ("same-wound interior shell is
+NOT subtracted").
+
+### What "done" requires
+
+1. After per-shell validation, determine shell nesting within each solid — bbox containment
+   (inner shell bbox ⊂ outer shell bbox) as a cheap first pass, or a point-in-solid test on
+   one vertex for robustness.
+2. Require that a nested shell's signed volume has the opposite sign of its enclosing shell;
+   otherwise increment `orientation_error_count` and clear `is_oriented` / `is_valid`.
+3. Flip the `test/cpp/test_inner_shell.cpp` "same-wound" case from documenting the gap to
+   asserting rejection (it is already structured to become that regression test).
+
+Low-to-moderate effort, no external backend. Highest-value correctness improvement for
+multi-shell solids.

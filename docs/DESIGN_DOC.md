@@ -540,15 +540,26 @@ oppositely-wound nested shell subtracts. This mirrors how PostGIS/SFCGAL determi
 inner/outer for a solid — also by orientation and signed volume — because standard WKB
 `PolyhedralSurface` carries no shell-grouping token (see §8, §12).
 
-**Hard precondition — interior shells must have been *grouped* at import.** An interior shell
-only exists in the model if import placed multiple shells inside one solid. Per §5.1.3 and §8:
+**Volume is shell-grouping *invariant* for a disjoint cavity.** `ComputeVolume` sums signed
+triangle volumes over *all* faces of the solid, so the subtraction is driven entirely by the
+interior shell's inward **winding**, not by whether import grouped the faces into separate
+shells. A plain WKB `PolyhedralSurface Z` import (which collapses everything into **one shell
+per solid**, §5.1.3) of a correctly-wound cavity still produces the *same, correct* volume —
+and, because the exterior and cavity surfaces share no edges, still passes the per-edge
+closed/manifold checks (they are **not** rejected as non-manifold; each closed component
+cancels its own edges independently). What `geometry_properties` metadata (`shellCount` +
+`shellFaceCounts`, §8.2.1; single `PolyhedralSurface` only, `MultiSolid`/`CompositeSolid`
+deferred — [FUTURE_WORK.md §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells))
+actually buys is correct **introspection**: `ST_3DNumShells` reports 2 rather than 1.
 
-- plain WKB `PolyhedralSurface Z` → **one shell per solid** (a cavity is invisible; the inner
-  faces are lumped into the single shell and the result is typically rejected as non-manifold)
-- multiple shells in one solid are recovered **only** from `geometry_properties` metadata
-  (`shellCount` + `shellFaceCounts`), and today only for a **single** `PolyhedralSurface`
-  input (§8.2.1). `MultiSolid` / `CompositeSolid` with interior shells is **not** yet
-  supported — see the future-work note in [FUTURE_WORK.md](./FUTURE_WORK.md).
+**Known gap — the interior-opposite-exterior invariant is not enforced.** §9.3 promises interior
+shells are oriented opposite the exterior, but `ValidateSolidModel` checks orientation
+*per shell* only; it does not cross-check that a nested shell is wound opposite its enclosing
+shell. Consequently an interior shell wound the *same* way as the exterior still validates as
+`is_valid` and its volume **adds** (`V_outer + V_inner`) instead of subtracting. Correct results
+therefore depend on the WKB producer winding cavities inward. Adding the cross-shell check is
+tracked in [FUTURE_WORK.md](./FUTURE_WORK.md); the behaviour is pinned by
+`test/cpp/test_inner_shell.cpp`.
 
 **Surface area and footprint are not shell-aware.** `ST_3DSurfaceArea` / `ST_3DArea`
 (`ComputeSurfaceArea`) and `ST_Area` (`ComputeFootprintArea`) sum over *all* faces without any
