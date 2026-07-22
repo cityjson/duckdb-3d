@@ -11,7 +11,7 @@ This document provides repository-specific guidance for coding agents and contri
 
 ## Required Reading
 
-You should read [docs/DESIGN_DOC.md](/private/tmp/duckdb-3d/docs/DESIGN_DOC.md) before changing:
+You should read [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md) before changing:
 
 - public SQL APIs
 - the `SOLID_3D` binary payload format
@@ -103,6 +103,6 @@ red-green-refactor discipline for every addition.
 
 ## References
 
-- [docs/DESIGN_DOC.md](/private/tmp/duckdb-3d/docs/DESIGN_DOC.md)
+- [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md)
 - DuckDB extension development docs
 - DuckDB `v1.5.x` APIs and type registration behavior
