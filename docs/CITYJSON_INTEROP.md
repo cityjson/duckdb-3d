@@ -180,6 +180,13 @@ by exporting `HOME=$(mktemp -d)` for the test invocation.
   non-string value from a pre-spec producer is tolerated, so plain-path interop
   with older `cityjson` builds still works (it just imports one shell per WKB
   member).
+- A CityParquet `geometry_properties_lod*` column (cityparquet-rs's M4 STRUCT)
+  nests `shells` as `List<List<Int32>>` unconditionally, so a plain `Solid`
+  serializes with one extra wrapping level (`[[12]]`, `[[12,4]]`) rather than
+  duckdb-cityjson's flat form. `ST_3DFromWKB`/`ST_3DTryFromWKB` accept both —
+  confirmed in `test/sql/st_3d_hollow_solid.test` and
+  `test/cpp/test_metadata.cpp` — so reading a `geometry_properties_lod*`
+  STRUCT converted to text (e.g. via `to_json(...)`) needs no translation.
 - Filter `WHERE geometry IS NOT NULL` upstream — objects without the
   requested LOD have a NULL geometry and would propagate NULL through
   the constructor.

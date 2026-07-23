@@ -53,3 +53,19 @@ FROM (
 ) q;
 ----
 2	56.0
+
+# cityparquet-rs's geometry_properties_lod* STRUCT always nests `shells` as
+# List<List<Int32>> (one entry per solid), so a single Solid serializes (e.g.
+# via to_json() on the Arrow STRUCT, as a CityParquet reader would) as
+# [[6, 6]], not the flat [6, 6] duckdb-cityjson emits. Both forms must be
+# equivalent (M8 spec-alignment: confirm duckdb-3d reads the M4 STRUCT shape).
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'));
+----
+56.0
+
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}') AS s) q;
+----
+1	2	12

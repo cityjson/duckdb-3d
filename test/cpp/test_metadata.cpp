@@ -94,8 +94,8 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 TEST_CASE("ParseGeometryProperties: Solid with flat shells", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [12]})");
 	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1);       // one solid
-	REQUIRE(meta.shells[0].size() == 1);    // one shell
+	REQUIRE(meta.shells.size() == 1);    // one solid
+	REQUIRE(meta.shells[0].size() == 1); // one shell
 	REQUIRE(meta.shells[0][0] == 12);
 }
 
@@ -106,10 +106,21 @@ TEST_CASE("ParseGeometryProperties: Solid with two shells (flat)", "[metadata]")
 	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
 }
 
+TEST_CASE("ParseGeometryProperties: Solid with singly-nested shells (cityparquet-rs STRUCT shape)", "[metadata]") {
+	// cityparquet-rs's geometry_properties_lod* STRUCT always nests `shells` as
+	// List<List<Int32>> — even a single Solid serializes (e.g. via to_json() on
+	// the Arrow STRUCT) as [[4, 4]], not the flat [4, 4] duckdb-cityjson emits.
+	// Both forms must parse to the identical GeometryMetadata.
+	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[4, 4]]})");
+	REQUIRE(meta.type == "Solid");
+	REQUIRE(meta.shells.size() == 1); // one solid
+	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
+}
+
 TEST_CASE("ParseGeometryProperties: CompositeSolid with nested shells", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "CompositeSolid", "shells": [[12], [8, 4]]})");
 	REQUIRE(meta.type == "CompositeSolid");
-	REQUIRE(meta.shells.size() == 2);       // two solids
+	REQUIRE(meta.shells.size() == 2); // two solids
 	REQUIRE(meta.shells[0] == std::vector<uint32_t>({12}));
 	REQUIRE(meta.shells[1] == std::vector<uint32_t>({8, 4}));
 }
