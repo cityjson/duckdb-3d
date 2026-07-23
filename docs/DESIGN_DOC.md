@@ -403,15 +403,22 @@ For v1, the parser does not attempt to ingest general simple-features geometry i
 When `geometry_properties` is provided, the import layer may use it to recover structure unavailable in plain WKB.
 
 The second argument is JSON text stored in a `VARCHAR`, in the CityParquet
-**spec §8** `geometry_properties` form emitted by `duckdb-cityjson`.
+**spec §8** `geometry_properties` form emitted by `duckdb-cityjson`. The same
+shape also covers a `geometry_properties_lod*` STRUCT column read directly out
+of a CityParquet file and converted to JSON text (e.g. `to_json(...)`):
+cityparquet-rs's STRUCT nests `shells` as `List<List<Int32>>` unconditionally
+(one entry per solid, even for a single `Solid`), which the parser accepts as
+equivalent to the flat form (see below).
 
 The only field the import layer consumes for shell grouping is:
 
 - **`shells`** — per-shell emitted-face counts. A flat array is one solid
   (`[12]`, `[12, 4]`); a nested array is one per-shell-count array per solid
-  (`[[12], [8, 4]]`) for a `MultiSolid`/`CompositeSolid`. This recovers the
-  shell partition the WKB `PolyhedralSurface Z` flattens away. A `0` entry is a
-  fully-dropped shell (spec §8) and creates no shell.
+  — either a single-solid `Solid` wrapped once (`[[12]]`, `[[12, 4]]`, as a
+  CityParquet `geometry_properties_lod*` STRUCT serializes it) or one array
+  per solid for a `MultiSolid`/`CompositeSolid` (`[[12], [8, 4]]`). This
+  recovers the shell partition the WKB `PolyhedralSurface Z` flattens away. A
+  `0` entry is a fully-dropped shell (spec §8) and creates no shell.
 
 `type` (a CityJSON string) is read but informational; all other keys
 (`surfaces`, `face_semantics`, `lod`, …) are ignored for grouping. A non-string
