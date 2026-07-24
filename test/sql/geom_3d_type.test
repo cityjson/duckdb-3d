@@ -10,14 +10,14 @@ SELECT NULL::GEOM_3D IS NULL;
 ----
 true
 
-# ST_Geom3DFromWKB imports a Point Z; ST_GeometryType identifies the class
+# ST_Geom3DFromWKB imports a Point Z; ST_3DGeometryType identifies the class
 query I
-SELECT ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
+SELECT ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
 ----
 ST_Point
 
 # NULL propagation through the constructor and accessor
 query I
-SELECT ST_GeometryType(ST_Geom3DFromWKB(NULL)) IS NULL;
+SELECT ST_3DGeometryType(ST_Geom3DFromWKB(NULL)) IS NULL;
 ----
 true

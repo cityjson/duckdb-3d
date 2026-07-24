@@ -1,20 +1,20 @@
-# Design: `ST_Transform` (2D CRS reprojection)
+# Design: `ST_3DTransform` (2D CRS reprojection)
 
 **Status:** approved, in implementation
 **Date:** 2026-07-18
-**Related:** [FUTURE_WORK.md §3](../../FUTURE_WORK.md#3-coordinate-reference-system-support-st_transform-srid),
+**Related:** [FUTURE_WORK.md §3](../../FUTURE_WORK.md#3-coordinate-reference-system-support-st_3dtransform-srid),
 [DESIGN_DOC.md §6.3 (coordinate semantics)](../../DESIGN_DOC.md)
 
 ## Goal
 
-Add `ST_Transform` to reproject geometry between coordinate reference systems, matching
+Add `ST_3DTransform` to reproject geometry between coordinate reference systems, matching
 PostGIS's **horizontal-only** default: X/Y are reprojected, **Z is passed through unchanged**
 (no vertical datum / geoid transformation). This lifts the "Cartesian, no CRS" limitation
 documented in FUTURE_WORK §3, option 2.
 
 ## Scope
 
-- **In:** `ST_Transform` on `SOLID_3D` and `GEOM_3D`; EPSG-integer and CRS-string signatures;
+- **In:** `ST_3DTransform` on `SOLID_3D` and `GEOM_3D`; EPSG-integer and CRS-string signatures;
   XY reprojection via PROJ; Z preserved; bbox recomputed; solids re-validated.
 - **Out (deliberately):** vertical datum transforms; storing an SRID in the payload
   (CRS is always explicit in the call); a `TRY` variant; single-file distribution bundling
@@ -34,8 +34,8 @@ documented in FUTURE_WORK §3, option 2.
 ## Signatures
 
 ```
-ST_Transform(geom, source_srid INTEGER, target_srid INTEGER) → same type
-ST_Transform(geom, source_crs VARCHAR, target_crs VARCHAR)   → same type
+ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER) → same type
+ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)   → same type
 ```
 
 The integer form formats `EPSG:<n>` (rejecting `srid <= 0`) and delegates to the string

@@ -8,60 +8,60 @@ statement ok
 CREATE TABLE solids AS
 SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;
 
-# ST_Translate shifts the bounding box by the given offsets
+# ST_3DTranslate shifts the bounding box by the given offsets
 query IIIIII
 SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
-FROM (SELECT ST_3DBounds(ST_Translate(solid, 10.0, 20.0, 30.0)) AS b FROM solids);
+FROM (SELECT ST_3DBounds(ST_3DTranslate(solid, 10.0, 20.0, 30.0)) AS b FROM solids);
 ----
 10.0	20.0	30.0	11.0	21.0	31.0
 
-# ST_Translate preserves volume (rigid motion)
+# ST_3DTranslate preserves volume (rigid motion)
 query I
-SELECT ST_3DVolume(ST_Translate(solid, 10.0, 20.0, 30.0)) = ST_3DVolume(solid) FROM solids;
+SELECT ST_3DVolume(ST_3DTranslate(solid, 10.0, 20.0, 30.0)) = ST_3DVolume(solid) FROM solids;
 ----
 true
 
-# ST_Translate preserves validity (rigid motion)
+# ST_3DTranslate preserves validity (rigid motion)
 query I
-SELECT ST_3DIsClosed(ST_Translate(solid, 5.0, -5.0, 1.5)) FROM solids;
+SELECT ST_3DIsClosed(ST_3DTranslate(solid, 5.0, -5.0, 1.5)) FROM solids;
 ----
 true
 
 # Translate then inverse-translate round-trips the bounds
 query IIIIII
 SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
-FROM (SELECT ST_3DBounds(ST_Translate(ST_Translate(solid, 7.0, 8.0, 9.0), -7.0, -8.0, -9.0)) AS b FROM solids);
+FROM (SELECT ST_3DBounds(ST_3DTranslate(ST_3DTranslate(solid, 7.0, 8.0, 9.0), -7.0, -8.0, -9.0)) AS b FROM solids);
 ----
 0.0	0.0	0.0	1.0	1.0	1.0
 
 # NULL propagates
 query I
-SELECT ST_Translate(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_3DTranslate(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
-# ST_Scale scales the bounding box about the origin
+# ST_3DScale scales the bounding box about the origin
 query IIIIII
 SELECT b.min_x, b.min_y, b.min_z, b.max_x, b.max_y, b.max_z
-FROM (SELECT ST_3DBounds(ST_Scale(solid, 2.0, 3.0, 4.0)) AS b FROM solids);
+FROM (SELECT ST_3DBounds(ST_3DScale(solid, 2.0, 3.0, 4.0)) AS b FROM solids);
 ----
 0.0	0.0	0.0	2.0	3.0	4.0
 
-# ST_Scale multiplies volume by sx*sy*sz (here 2*3*4 = 24 → 1/6 * 24 = 4)
+# ST_3DScale multiplies volume by sx*sy*sz (here 2*3*4 = 24 → 1/6 * 24 = 4)
 query I
-SELECT ROUND(ST_3DVolume(ST_Scale(solid, 2.0, 3.0, 4.0)), 5) FROM solids;
+SELECT ROUND(ST_3DVolume(ST_3DScale(solid, 2.0, 3.0, 4.0)), 5) FROM solids;
 ----
 4.0
 
-# ST_Scale preserves validity for non-degenerate factors
+# ST_3DScale preserves validity for non-degenerate factors
 query I
-SELECT ST_3DIsClosed(ST_Scale(solid, 2.0, 2.0, 2.0)) FROM solids;
+SELECT ST_3DIsClosed(ST_3DScale(solid, 2.0, 2.0, 2.0)) FROM solids;
 ----
 true
 
 # NULL propagates
 query I
-SELECT ST_Scale(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_3DScale(NULL::SOLID_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
@@ -70,7 +70,7 @@ true
 # invalid with degenerate faces rather than falsely claiming validity.
 query II
 SELECT r.is_valid, r.degenerate_face_count > 0
-FROM (SELECT ST_3DValidationReport(ST_Scale(solid, 0.0, 1.0, 1.0)) AS r FROM solids);
+FROM (SELECT ST_3DValidationReport(ST_3DScale(solid, 0.0, 1.0, 1.0)) AS r FROM solids);
 ----
 false	true
 
@@ -78,43 +78,43 @@ false	true
 # as degenerate, so ST_3DVolume refuses it rather than silently returning 0 on a
 # geometry that falsely claimed to be valid.
 statement error
-SELECT ST_3DVolume(ST_Scale(solid, 0.0, 1.0, 1.0)) FROM solids;
+SELECT ST_3DVolume(ST_3DScale(solid, 0.0, 1.0, 1.0)) FROM solids;
 ----
 degenerate
 
 # A non-degenerate scale stays valid after recomputation.
 query I
-SELECT ST_3DValidationReport(ST_Scale(solid, 2.0, 2.0, 2.0)).is_valid FROM solids;
+SELECT ST_3DValidationReport(ST_3DScale(solid, 2.0, 2.0, 2.0)).is_valid FROM solids;
 ----
 true
 
-# ST_RotateX / ST_RotateY / ST_RotateZ are rigid rotations: volume is preserved
+# ST_3DRotateX / ST_3DRotateY / ST_3DRotateZ are rigid rotations: volume is preserved
 query III
-SELECT ROUND(ST_3DVolume(ST_RotateX(solid, radians(90))), 5),
-       ROUND(ST_3DVolume(ST_RotateY(solid, radians(37))), 5),
-       ROUND(ST_3DVolume(ST_RotateZ(solid, radians(90))), 5)
+SELECT ROUND(ST_3DVolume(ST_3DRotateX(solid, radians(90))), 5),
+       ROUND(ST_3DVolume(ST_3DRotateY(solid, radians(37))), 5),
+       ROUND(ST_3DVolume(ST_3DRotateZ(solid, radians(90))), 5)
 FROM solids;
 ----
 0.16667	0.16667	0.16667
 
-# ST_RotateZ by 90 deg maps (x,y) -> (-y,x): X extent becomes [-1, 0]
+# ST_3DRotateZ by 90 deg maps (x,y) -> (-y,x): X extent becomes [-1, 0]
 query II
 SELECT ROUND(b.min_x, 5), ROUND(b.max_x, 5)
-FROM (SELECT ST_3DBounds(ST_RotateZ(solid, radians(90))) AS b FROM solids);
+FROM (SELECT ST_3DBounds(ST_3DRotateZ(solid, radians(90))) AS b FROM solids);
 ----
 -1.0	0.0
 
 # Rotations preserve validity
 query I
-SELECT ST_3DIsClosed(ST_RotateX(solid, radians(45))) FROM solids;
+SELECT ST_3DIsClosed(ST_3DRotateX(solid, radians(45))) FROM solids;
 ----
 true
 
 # NULL propagates for each axis
 query III
-SELECT ST_RotateX(NULL::SOLID_3D, 1.0) IS NULL,
-       ST_RotateY(NULL::SOLID_3D, 1.0) IS NULL,
-       ST_RotateZ(NULL::SOLID_3D, 1.0) IS NULL;
+SELECT ST_3DRotateX(NULL::SOLID_3D, 1.0) IS NULL,
+       ST_3DRotateY(NULL::SOLID_3D, 1.0) IS NULL,
+       ST_3DRotateZ(NULL::SOLID_3D, 1.0) IS NULL;
 ----
 true	true	true
 

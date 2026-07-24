@@ -31,18 +31,18 @@ NULL
 # ST_3DCentroid: point returns itself
 query III
 SELECT
-    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
-    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
-    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+    ST_3DX(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_3DY(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_3DZ(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
 ----
 1.0	2.0	3.0
 
 # ST_3DCentroid: square footprint centroid
 query III
 SELECT
-    ST_X(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Y(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Z(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+    ST_3DX(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DY(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DZ(ST_3DCentroid(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
 2.0	1.5	5.0
 
@@ -55,9 +55,9 @@ NULL
 # ST_Force3D: identity on an already-3D point
 query III
 SELECT
-    ST_X(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
-    ST_Y(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
-    ST_Z(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
+    ST_3DX(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_3DY(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))),
+    ST_3DZ(ST_Force3D(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))));
 ----
 1.0	2.0	3.0
 
@@ -67,38 +67,38 @@ SELECT ST_Force3D(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_ConvexHull: polygon footprint -> same polygon hull at min Z
+# ST_3DConvexHull: polygon footprint -> same polygon hull at min Z
 query IIII
 SELECT
-    ST_GeometryType(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_NumGeometries(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_ZMin(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_ZMax(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+    ST_3DGeometryType(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DNumGeometries(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DZMin(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DZMax(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
 ST_Polygon	1	5.0	5.0
 
-# ST_ConvexHull: NULL propagation
+# ST_3DConvexHull: NULL propagation
 query I
-SELECT ST_ConvexHull(NULL::GEOM_3D);
+SELECT ST_3DConvexHull(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_Area on a GEOM_3D polygon: the XY-footprint area of the 4x3 rectangle = 12.
+# ST_3DFootprintArea on a GEOM_3D polygon: the XY-footprint area of the 4x3 rectangle = 12.
 query I
-SELECT ST_Area(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+SELECT ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 12.0
 
-# ST_Area composed with ST_ConvexHull: the hull of the 4x3 rectangle is the
+# ST_3DFootprintArea composed with ST_3DConvexHull: the hull of the 4x3 rectangle is the
 # rectangle itself, so its footprint area is also 12 (this is the metric the
-# PostGIS differential harness uses for ST_ConvexHull).
+# PostGIS differential harness uses for ST_3DConvexHull).
 query I
-SELECT ST_Area(ST_ConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+SELECT ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
 12.0
 
-# ST_Area(GEOM_3D): NULL propagation.
+# ST_3DFootprintArea(GEOM_3D): NULL propagation.
 query I
-SELECT ST_Area(NULL::GEOM_3D);
+SELECT ST_3DFootprintArea(NULL::GEOM_3D);
 ----
 NULL

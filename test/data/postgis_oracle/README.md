@@ -25,7 +25,7 @@ One row per geometry fed to the oracle. Columns:
 
 `pg_hull_area` feeds `ST_Points` to GEOS's `ST_ConvexHull` because GEOS rejects a
 `PolyhedralSurface` directly; this hulls the vertex set, matching the extension's
-`ST_Area(ST_ConvexHull(g))`. GEOS has no planarity requirement, so it is always
+`ST_3DFootprintArea(ST_3DConvexHull(g))`. GEOS has no planarity requirement, so it is always
 `ok` (no status column).
 
 `rejected` = SFCGAL raised. SFCGAL requires exactly-coplanar faces and rejects

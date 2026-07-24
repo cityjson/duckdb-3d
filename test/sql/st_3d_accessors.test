@@ -20,33 +20,33 @@ SELECT ST_NDims(NULL::SOLID_3D);
 ----
 NULL
 
-# ST_HasZ: a 3D solid carries a Z ordinate
+# ST_3DHasZ: a 3D solid carries a Z ordinate
 query I
-SELECT ST_HasZ(solid) FROM solids;
+SELECT ST_3DHasZ(solid) FROM solids;
 ----
 true
 
-# ST_HasZ: NULL propagates
+# ST_3DHasZ: NULL propagates
 query I
-SELECT ST_HasZ(NULL::SOLID_3D);
+SELECT ST_3DHasZ(NULL::SOLID_3D);
 ----
 NULL
 
-# ST_ZMin / ST_ZMax: tetrahedron spans Z in [0, 1]
+# ST_3DZMin / ST_3DZMax: tetrahedron spans Z in [0, 1]
 query II
-SELECT ST_ZMin(solid), ST_ZMax(solid) FROM solids;
+SELECT ST_3DZMin(solid), ST_3DZMax(solid) FROM solids;
 ----
 0.0	1.0
 
-# ST_ZMax - ST_ZMin is the building height
+# ST_3DZMax - ST_3DZMin is the building height
 query I
-SELECT ST_ZMax(solid) - ST_ZMin(solid) FROM solids;
+SELECT ST_3DZMax(solid) - ST_3DZMin(solid) FROM solids;
 ----
 1.0
 
-# ST_ZMin / ST_ZMax: NULL propagates
+# ST_3DZMin / ST_3DZMax: NULL propagates
 query II
-SELECT ST_ZMin(NULL::SOLID_3D), ST_ZMax(NULL::SOLID_3D);
+SELECT ST_3DZMin(NULL::SOLID_3D), ST_3DZMax(NULL::SOLID_3D);
 ----
 NULL	NULL
 
