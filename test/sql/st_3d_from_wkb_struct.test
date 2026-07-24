@@ -1,0 +1,137 @@
+# name: test/sql/st_3d_from_wkb_struct.test
+# description: ST_3DFromWKB / ST_3DTryFromWKB accept CityParquet geometry_properties as a native STRUCT (no to_json)
+# group: [sql]
+
+require three_d
+
+# A CityParquet package stores geometry_properties_lod* as a native STRUCT
+# (spec §8: STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[],
+# shells INTEGER[][])), with `shells` nested one array per solid ([[6, 6]]).
+# ST_3DFromWKB consumes that struct directly — no to_json() round-trip.
+
+# Full CityParquet-shaped struct: hollow cube = one solid, two shells → volume 56.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL::VARCHAR, 'face_semantics': NULL::INTEGER[], 'shells': [[6, 6]]}
+      ::STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+));
+----
+56.0
+
+# Introspection through the struct overload: one solid, two shells, twelve faces.
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (SELECT ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL::VARCHAR, 'face_semantics': NULL::INTEGER[], 'shells': [[6, 6]]}
+      ::STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+) AS s) q;
+----
+1	2	12
+
+# The TRY variant accepts the struct too.
+query I
+SELECT ST_3DVolume(ST_3DTryFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL::VARCHAR, 'face_semantics': NULL::INTEGER[], 'shells': [[6, 6]]}
+      ::STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+));
+----
+56.0
+
+# Robustness: a struct carrying only the fields three_d needs (type + shells), in
+# a different field order and without surfaces/face_semantics, still binds & works.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'shells': [[6, 6]], 'type': 'Solid'}
+));
+----
+56.0
+
+# A NULL `shells` value for the row → no shell metadata; plain (winding-driven)
+# path still yields one solid, volume 56.
+query II
+SELECT ST_3DNumShells(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'shells': NULL::INTEGER[][]}
+) AS s) q;
+----
+1	56.0
+
+# A wholly NULL struct behaves like no metadata (matches the VARCHAR overload's
+# NULL handling).
+query I
+SELECT ST_3DNumShells(ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    NULL::STRUCT("type" VARCHAR, shells INTEGER[][])
+));
+----
+1
+
+# BIGINT shells (a producer that widened the integer type) normalise to INTEGER
+# via the bind-time struct cast and still work.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'shells': [[6, 6]]::BIGINT[][]}
+));
+----
+56.0
+
+# A struct with no `shells` field at all is not a geometry_properties struct —
+# fail clearly at bind time, naming the missing field.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid'});
+----
+shells
+
+# Conflicting shell metadata still raises (the struct path shares the builder's
+# validation with the JSON path).
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': [[3, 3]]});
+----
+face count mismatch
+
+# Multi-row (non-constant) path: a table forces flat/dictionary struct vectors
+# (the real CityParquet read shape), with a valid row, a wholly NULL struct row,
+# and a NULL-shells row interleaved. Each must resolve independently.
+statement ok
+CREATE TEMP TABLE m ("wkb" BLOB, gp STRUCT("type" VARCHAR, shells INTEGER[][]));
+
+statement ok
+INSERT INTO m VALUES
+    (ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': [[6, 6]]}),
+    (ST_AsWKBHollowCube(), NULL),
+    (ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': NULL});
+
+query I
+SELECT ST_3DNumShells(ST_3DFromWKB("wkb", gp)) AS shells FROM m ORDER BY shells;
+----
+1
+1
+2
+
+# TRY contract holds through the bind-time integer widening: an out-of-range face
+# count (> uint32) returns NULL rather than raising.
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': [[5000000000, 6]]}) IS NULL;
+----
+true
+
+# …and the strict variant raises on the same out-of-range count.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': [[5000000000, 6]]});
+----
+out of range
+
+# A UBIGINT producer value above INT64_MAX is still caught in the executor (the
+# HUGEINT normalisation means the pre-executor cast never overflows), so TRY
+# returns NULL rather than raising.
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(),
+                       {'type': 'Solid', 'shells': [[18446744073709551615, 6]]::UBIGINT[][]}) IS NULL;
+----
+true

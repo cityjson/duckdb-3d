@@ -127,8 +127,10 @@ All public scalar functions follow DuckDB’s standard null propagation rules:
 | --- | --- | --- |
 | `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB)` | Import a supported WKB solid using only WKB topology. |
 | `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB, geometry_properties VARCHAR)` | Import a supported WKB solid and use JSON text metadata when provided to recover CityJSON-specific structure. |
+| `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB, geometry_properties STRUCT)` | As above, but accepts a CityParquet `geometry_properties_lod*` STRUCT (spec §8) directly — no `to_json(...)` round-trip. |
 | `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB)` | Same as `ST_3DFromWKB`, but returns `NULL` on failure. |
 | `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB, geometry_properties VARCHAR)` | Same as above with metadata-aware import. |
+| `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB, geometry_properties STRUCT)` | STRUCT-metadata import, returning `NULL` on failure. |
 | `ST_3DAsWKB` | `ST_3DAsWKB(solid SOLID_3D)` | Export the canonicalized solid to supported WKB. |
 
 ### 5.1.1 Constructor Rules
@@ -402,13 +404,28 @@ For v1, the parser does not attempt to ingest general simple-features geometry i
 
 When `geometry_properties` is provided, the import layer may use it to recover structure unavailable in plain WKB.
 
-The second argument is JSON text stored in a `VARCHAR`, in the CityParquet
-**spec §8** `geometry_properties` form emitted by `duckdb-cityjson`. The same
-shape also covers a `geometry_properties_lod*` STRUCT column read directly out
-of a CityParquet file and converted to JSON text (e.g. `to_json(...)`):
+The second argument may be given two ways, and they are equivalent:
+
+- **JSON text** in a `VARCHAR`, in the CityParquet **spec §8** `geometry_properties`
+  form emitted by `duckdb-cityjson`.
+- A **`STRUCT`**, read directly out of a CityParquet `geometry_properties_lod*`
+  column (spec §8: `STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics
+  INTEGER[], shells INTEGER[][])`) — no `to_json(...)` round-trip. The overload is
+  registered as `(BLOB, ANY)`; its bind requires the argument to be a `STRUCT`
+  carrying a `shells` field (a struct without one raises a `BinderException`
+  naming the field), locates `shells` / `type` by name (case-insensitive,
+  tolerating field order and extra fields), and normalises their element types
+  (`type` → `VARCHAR`, `shells` → `HUGEINT[][]`) via a bind-time struct cast so
+  any standard integer producer type is accepted. Each face count is then
+  range-checked (it must fit in `uint32`) in the executor rather than in the
+  cast, so `ST_3DTryFromWKB` returns `NULL` on an out-of-range count instead of
+  raising. A `VARCHAR`, JSON-alias, or `NULL` metadata argument is routed back to
+  the JSON path unchanged, so the STRUCT overload is a strict superset of the
+  `VARCHAR` one.
+
 cityparquet-rs's STRUCT nests `shells` as `List<List<Int32>>` unconditionally
-(one entry per solid, even for a single `Solid`), which the parser accepts as
-equivalent to the flat form (see below).
+(one entry per solid, even for a single `Solid`), which the import layer accepts
+as equivalent to the flat JSON form (see below).
 
 The only field the import layer consumes for shell grouping is:
 

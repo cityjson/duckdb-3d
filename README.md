@@ -44,6 +44,17 @@ SELECT ST_3DVolume(solid)          AS volume_m3,
 FROM (SELECT ST_3DFromWKB(geometry, geometry_properties) AS solid FROM my_buildings);
 ```
 
+`geometry_properties` may be JSON text (as `cityjson` emits it) **or** a CityParquet
+`geometry_properties_lod*` STRUCT read straight from a Parquet file — the STRUCT is
+accepted directly, with no `to_json(...)` round-trip:
+
+```sql
+-- geometry_lod2_2 (BLOB) + geometry_properties_lod2_2 (STRUCT) from a CityParquet file
+SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
+FROM read_parquet('building.parquet')
+WHERE geometry_lod2_2 IS NOT NULL;
+```
+
 Reading real 3D buildings straight from a remote CityJSONSeq server, with the `cityjson`
 extension:
 
