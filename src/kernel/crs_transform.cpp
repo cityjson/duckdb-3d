@@ -9,7 +9,7 @@ namespace duckdb_3d {
 
 std::string EpsgToAuthString(int32_t srid) {
 	if (srid <= 0) {
-		throw std::runtime_error("ST_Transform: invalid SRID " + std::to_string(srid));
+		throw std::runtime_error("ST_3DTransform: invalid SRID " + std::to_string(srid));
 	}
 	return "EPSG:" + std::to_string(srid);
 }
@@ -17,12 +17,12 @@ std::string EpsgToAuthString(int32_t srid) {
 CrsTransform::CrsTransform(const std::string &source_crs, const std::string &target_crs) {
 	PJ_CONTEXT *ctx = proj_context_create();
 	if (ctx == nullptr) {
-		throw std::runtime_error("ST_Transform: failed to create PROJ context");
+		throw std::runtime_error("ST_3DTransform: failed to create PROJ context");
 	}
 
 	PJ *pj = proj_create_crs_to_crs(ctx, source_crs.c_str(), target_crs.c_str(), nullptr);
 	if (pj == nullptr) {
-		std::string msg = "ST_Transform: cannot build transform from '" + source_crs + "' to '" + target_crs + "'";
+		std::string msg = "ST_3DTransform: cannot build transform from '" + source_crs + "' to '" + target_crs + "'";
 		proj_context_destroy(ctx);
 		throw std::runtime_error(msg);
 	}
@@ -33,7 +33,7 @@ CrsTransform::CrsTransform(const std::string &source_crs, const std::string &tar
 	proj_destroy(pj);
 	if (pj_norm == nullptr) {
 		proj_context_destroy(ctx);
-		throw std::runtime_error("ST_Transform: failed to normalise axis order for '" + source_crs + "' -> '" +
+		throw std::runtime_error("ST_3DTransform: failed to normalise axis order for '" + source_crs + "' -> '" +
 		                         target_crs + "'");
 	}
 
@@ -63,7 +63,7 @@ void CrsTransform::ReprojectXY(std::vector<Vertex3D> &vertices) const {
 
 		int err = proj_errno(pj);
 		if (err != 0) {
-			throw std::runtime_error(std::string("ST_Transform: PROJ transform failed: ") +
+			throw std::runtime_error(std::string("ST_3DTransform: PROJ transform failed: ") +
 			                         proj_context_errno_string(ctx, err));
 		}
 

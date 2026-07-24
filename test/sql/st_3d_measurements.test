@@ -23,10 +23,10 @@ SELECT ROUND(ST_3DVolume(solid), 5) FROM solids;
 ----
 0.16667
 
-# Test: ST_Area returns the XY footprint area.
+# Test: ST_3DFootprintArea returns the XY footprint area.
 # For the tetrahedron the footprint is the base triangle (0,0),(0,1),(1,0) = 0.5
 query I
-SELECT ROUND(ST_Area(solid), 5) FROM solids;
+SELECT ROUND(ST_3DFootprintArea(solid), 5) FROM solids;
 ----
 0.5
 
@@ -48,10 +48,10 @@ SELECT ST_3DPerimeter(NULL);
 ----
 NULL
 
-# Test: NULL propagation. ST_Area is overloaded over SOLID_3D / GEOM_3D / BLOB
-# (like ST_ZMin/ST_ZMax), so an untyped NULL is ambiguous and must be cast.
+# Test: NULL propagation. ST_3DFootprintArea is overloaded over SOLID_3D / GEOM_3D / BLOB
+# (like ST_3DZMin/ST_3DZMax), so an untyped NULL is ambiguous and must be cast.
 query III
-SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_Area(NULL::SOLID_3D);
+SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_3DFootprintArea(NULL::SOLID_3D);
 ----
 NULL	NULL	NULL
 

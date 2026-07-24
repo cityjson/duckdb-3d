@@ -43,7 +43,7 @@ extensions to build alongside it there (for example `duckdb_extension_load(json)
 ```
 
 ```sql
-D SELECT ST_GeometryType(ST_Geom3DFromWKB(wkb)) FROM …;
+D SELECT ST_3DGeometryType(ST_Geom3DFromWKB(wkb)) FROM …;
 ```
 
 To load a distributed binary into a stock DuckDB, start it with unsigned extensions allowed

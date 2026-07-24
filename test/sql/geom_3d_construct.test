@@ -17,8 +17,8 @@ SELECT
 # The extruded box spans z in [5, 7].
 query II
 SELECT
-    ST_ZMin(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
-    ST_ZMax(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
+    ST_3DZMin(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
+    ST_3DZMax(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
 ----
 5.0	7.0
 

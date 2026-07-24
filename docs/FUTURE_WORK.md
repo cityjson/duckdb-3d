@@ -69,20 +69,20 @@ concern producing neutral grouping counts, not a CityJSON special case inside th
 
 ---
 
-## 3. Coordinate Reference System Support (`ST_Transform`, SRID)
+## 3. Coordinate Reference System Support (`ST_3DTransform`, SRID)
 
 ### Status
 
-**`ST_Transform` (horizontal / 2D) is implemented** — PROJ-backed reprojection of X/Y with Z
+**`ST_3DTransform` (horizontal / 2D) is implemented** — PROJ-backed reprojection of X/Y with Z
 preserved unchanged (no vertical datum), matching PostGIS's default. Signatures:
-`ST_Transform(geom, source_srid INTEGER, target_srid INTEGER)` and
-`ST_Transform(geom, source_crs VARCHAR, target_crs VARCHAR)`, on `SOLID_3D` and `GEOM_3D`.
+`ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER)` and
+`ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)`, on `SOLID_3D` and `GEOM_3D`.
 PROJ is confined to `src/kernel/crs_transform.cpp`. See the design at
 [docs/superpowers/specs/2026-07-18-st-transform-design.md](./superpowers/specs/2026-07-18-st-transform-design.md).
 
 The base limitation still holds: coordinates remain raw `DOUBLE` XYZ with **no stored SRID**,
 so the CRS must be given explicitly on every call, and all *measurement* math (volume, area,
-distance) is still Cartesian in the input units. `ST_Transform` lets callers reproject into a
+distance) is still Cartesian in the input units. `ST_3DTransform` lets callers reproject into a
 suitable metric CRS before those measurements.
 
 ### Remaining work
@@ -92,7 +92,7 @@ suitable metric CRS before those measurements.
    the city-model workflows here. Revisit only on demand.
 2. **Stored SRID + `ST_SRID` / `ST_SetSRID`.** Add an SRID field to the `D3DS`/`D3DG` payload
    headers (a versioned change under DESIGN_DOC §7.5). This would enable the single-argument
-   `ST_Transform(geom, target_srid)` form (reading the stored source SRID, like PostGIS) and
+   `ST_3DTransform(geom, target_srid)` form (reading the stored source SRID, like PostGIS) and
    cross-CRS mismatch detection (e.g. refuse `ST_3DDistance` across differing SRIDs). Lowest
    cost, high safety value — the natural next step.
 3. **`proj.db` distribution bundling.** Reprojection depends on PROJ's datum database at

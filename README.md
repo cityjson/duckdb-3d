@@ -25,8 +25,10 @@ geometry backend.
   surfaces) for the class-generic accessor, distance, and serialization functions.
 - **Validation, not repair** — `duckdb-3d` reports closedness, manifoldness, orientation, and
   degeneracy; it never silently "fixes" geometry.
-- **Familiar SQL** — PostGIS-style `ST_*` / `ST_3D*` names (a curated 3D subset, not full
-  PostGIS parity).
+- **`ST_3D*` namespace, coexists with `spatial`** — 3D operations use `ST_3D*` names
+  (PostGIS's convention for 3D variants), so `three_d` and DuckDB's `spatial` extension load
+  together in one session, in any order: `spatial` owns the generic 2D `ST_*` vocabulary,
+  `three_d` owns `ST_3D*`. A curated 3D subset, not full PostGIS parity.
 - **Self-contained kernel** — no CGAL/SFCGAL dependency; the current function set runs on a
   pure C++ geometry kernel.
 
@@ -39,9 +41,20 @@ LOAD three_d;
 
 -- Build a solid from WKB (e.g. produced by the cityjson extension), then measure it.
 SELECT ST_3DVolume(solid)          AS volume_m3,
-       ST_ZMax(solid) - ST_ZMin(solid) AS height_m,
+       ST_3DZMax(solid) - ST_3DZMin(solid) AS height_m,
        ST_3DIsClosed(solid)        AS closed
 FROM (SELECT ST_3DFromWKB(geometry, geometry_properties) AS solid FROM my_buildings);
+```
+
+`geometry_properties` may be JSON text (as `cityjson` emits it) **or** a CityParquet
+`geometry_properties_lod*` STRUCT read straight from a Parquet file — the STRUCT is
+accepted directly, with no `to_json(...)` round-trip:
+
+```sql
+-- geometry_lod2_2 (BLOB) + geometry_properties_lod2_2 (STRUCT) from a CityParquet file
+SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
+FROM read_parquet('building.parquet')
+WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
 Reading real 3D buildings straight from a remote CityJSONSeq server, with the `cityjson`
@@ -74,15 +87,33 @@ class-generic ones also accept `GEOM_3D` (built with `ST_Geom3DFromWKB`).
 
 | Category | Functions |
 | --- | --- |
-| **Import / export** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_3DAsWKB`, `ST_Geom3DFromWKB`, `ST_AsText`, `ST_AsGeoJSON`, `ST_AsBinary` |
-| **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_GeometryType`, `ST_NDims`, `ST_HasZ`, `ST_CoordDim`, `ST_Dimension`, `ST_NumGeometries`, `ST_X`, `ST_Y`, `ST_Z`, `ST_ZMin`, `ST_ZMax` |
+| **Import / export** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_3DAsWKB`, `ST_Geom3DFromWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
+| **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DGeometryType`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_3DZMin`, `ST_3DZMax` |
 | **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport`, `ST_IsPlanar` |
-| **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea` / `ST_3DArea`, `ST_Area` (footprint), `ST_3DPerimeter`, `ST_3DLength` |
+| **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea` / `ST_3DArea`, `ST_3DFootprintArea` (footprint), `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DDWithin`, `ST_3DMaxDistance`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
-| **Transform / construct** | `ST_Translate`, `ST_Scale`, `ST_RotateX`, `ST_RotateY`, `ST_RotateZ`, `ST_Force3D`, `ST_ConvexHull`, `ST_3DCentroid`, `ST_3DExtrude`, `ST_MakeSolid` |
+| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_Force3D`, `ST_3DConvexHull`, `ST_3DCentroid`, `ST_3DExtrude`, `ST_MakeSolid` |
 
 Signatures, preconditions, and the binary payload format are specified in
 [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md).
+
+## Using with DuckDB `spatial`
+
+Because 3D operations live under `ST_3D*` — every name that would otherwise collide with
+`spatial` is prefixed (a few genuinely 3D-only names like `ST_MakeSolid` / `ST_Force3D`
+stay bare) — `three_d` never clashes with the
+[`spatial`](https://duckdb.org/docs/extensions/spatial) extension. Load both in one
+session, in any order. `spatial` handles the generic 2D `GEOMETRY` vocabulary; `three_d`
+handles the 3D solids:
+
+```sql
+LOAD spatial;
+LOAD three_d;
+
+SELECT ST_Area(footprint)                             AS ground_area_m2,   -- spatial, 2D
+       ST_3DVolume(ST_3DFromWKB(solid_wkb, solid_props)) AS volume_m3       -- three_d, 3D
+FROM buildings;
+```
 
 ## Building
 

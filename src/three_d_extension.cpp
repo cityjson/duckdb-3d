@@ -22,8 +22,12 @@
 #include "kernel/geom_serialize.hpp"
 #include "kernel/crs_transform.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -391,6 +395,265 @@ static void ST_3DTryFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, 
 }
 
 // ──────────────────────────────────────────────────────────────
+// ST_3DFromWKB(wkb BLOB, geometry_properties STRUCT) → SOLID_3D
+//
+// A CityParquet package stores geometry_properties_lod* as a native STRUCT
+// (spec §8), so we accept it directly rather than forcing a to_json() round-trip.
+// Only `type` and `shells` are consumed (the same fields the JSON path reads);
+// `surfaces` / `face_semantics` and any producer extras are ignored. The struct
+// overload is registered as (BLOB, ANY) with a bind that normalises the struct
+// and routes plain VARCHAR / JSON / SQLNULL metadata back to the JSON executor,
+// so it is a strict superset of the VARCHAR overload.
+// ──────────────────────────────────────────────────────────────
+struct FromWkbStructBindData : public FunctionData {
+	idx_t shells_index;
+	bool has_type;
+	idx_t type_index;
+
+	FromWkbStructBindData(idx_t shells_index_p, bool has_type_p, idx_t type_index_p)
+	    : shells_index(shells_index_p), has_type(has_type_p), type_index(type_index_p) {
+	}
+
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<FromWkbStructBindData>(shells_index, has_type, type_index);
+	}
+	bool Equals(const FunctionData &other_p) const override {
+		auto &o = other_p.Cast<FromWkbStructBindData>();
+		return shells_index == o.shells_index && has_type == o.has_type && type_index == o.type_index;
+	}
+};
+
+// Extract GeometryMetadata (type + shells) from row `row` of the flattened
+// struct children. `shells_vec` is a normalised LIST(LIST(INTEGER)); `type_vec`
+// (when present) is a normalised VARCHAR.
+static duckdb_3d::GeometryMetadata ReadStructRowMetadata(Vector *type_vec, Vector *shells_vec, idx_t row,
+                                                         bool has_type) {
+	duckdb_3d::GeometryMetadata md;
+	if (has_type && type_vec) {
+		auto &type_validity = FlatVector::Validity(*type_vec);
+		if (type_validity.RowIsValid(row)) {
+			auto s = FlatVector::GetData<string_t>(*type_vec)[row];
+			md.type = std::string(s.GetData(), s.GetSize());
+		}
+	}
+	auto &shells_validity = FlatVector::Validity(*shells_vec);
+	if (shells_validity.RowIsValid(row)) {
+		auto outer = ListVector::GetData(*shells_vec)[row];
+		auto &inner_list = ListVector::GetEntry(*shells_vec); // LIST(HUGEINT)
+		auto inner_data = ListVector::GetData(inner_list);
+		auto &int_vec = ListVector::GetEntry(inner_list); // HUGEINT
+		auto int_data = FlatVector::GetData<hugeint_t>(int_vec);
+		auto &int_validity = FlatVector::Validity(int_vec);
+		std::vector<std::vector<uint32_t>> shells;
+		shells.reserve(outer.length);
+		for (idx_t j = 0; j < outer.length; j++) {
+			auto ie = inner_data[outer.offset + j];
+			std::vector<uint32_t> shell;
+			shell.reserve(ie.length);
+			for (idx_t k = 0; k < ie.length; k++) {
+				idx_t pos = ie.offset + k;
+				if (!int_validity.RowIsValid(pos)) {
+					throw InvalidInputException("geometry_properties: shells contains a NULL face count");
+				}
+				// shells is normalised to HUGEINT[][] by the bind (so any standard
+				// integer producer type is accepted without a pre-executor cast
+				// failure); the fits-in-uint32 check runs here — inside the TRY
+				// variant's catch — so an out-of-range count fails cleanly. TryCast
+				// also rejects negatives.
+				uint32_t face_count;
+				if (!Hugeint::TryCast<uint32_t>(int_data[pos], face_count)) {
+					throw InvalidInputException("geometry_properties: shells face count out of range");
+				}
+				shell.push_back(face_count);
+			}
+			shells.push_back(std::move(shell));
+		}
+		md.shells = std::move(shells);
+	}
+	return md;
+}
+
+static void ST_3DFromWKBWithStructFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
+	auto count = args.size();
+	// Capture constness before Flatten mutates args.data[1]: a constant-folded
+	// call must return a constant result (DuckDB asserts this in debug builds).
+	bool all_constant = args.AllConstant();
+	auto &wkb_vec = args.data[0];
+	auto &meta_vec = args.data[1];
+
+	UnifiedVectorFormat wkb_data;
+	wkb_vec.ToUnifiedFormat(count, wkb_data);
+	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
+
+	meta_vec.Flatten(count);
+	auto &meta_validity = FlatVector::Validity(meta_vec);
+	auto &children = StructVector::GetEntries(meta_vec);
+	Vector *shells_vec = children[info.shells_index].get();
+	shells_vec->Flatten(count);
+	Vector *type_vec = nullptr;
+	if (info.has_type) {
+		type_vec = children[info.type_index].get();
+		type_vec->Flatten(count);
+	}
+
+	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetData<string_t>(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto wkb_idx = wkb_data.sel->get_index(i);
+		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
+			result_validity.SetInvalid(i);
+			result_data[i] = string_t();
+			continue;
+		}
+		using namespace duckdb_3d;
+		auto &wkb = wkb_strings[wkb_idx];
+		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+
+		SolidModel model;
+		if (meta_validity.RowIsValid(i)) {
+			auto md = ReadStructRowMetadata(type_vec, shells_vec, i, info.has_type);
+			model = BuildSolidModel(surfaces, md);
+		} else {
+			model = BuildSolidModel(surfaces);
+		}
+		auto payload = SerializePayload(model);
+		result_data[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+static void ST_3DTryFromWKBWithStructFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
+	auto count = args.size();
+	// Capture constness before Flatten mutates args.data[1]: a constant-folded
+	// call must return a constant result (DuckDB asserts this in debug builds).
+	bool all_constant = args.AllConstant();
+	auto &wkb_vec = args.data[0];
+	auto &meta_vec = args.data[1];
+
+	UnifiedVectorFormat wkb_data;
+	wkb_vec.ToUnifiedFormat(count, wkb_data);
+	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
+
+	meta_vec.Flatten(count);
+	auto &meta_validity = FlatVector::Validity(meta_vec);
+	auto &children = StructVector::GetEntries(meta_vec);
+	Vector *shells_vec = children[info.shells_index].get();
+	shells_vec->Flatten(count);
+	Vector *type_vec = nullptr;
+	if (info.has_type) {
+		type_vec = children[info.type_index].get();
+		type_vec->Flatten(count);
+	}
+
+	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetData<string_t>(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto wkb_idx = wkb_data.sel->get_index(i);
+		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
+			result_validity.SetInvalid(i);
+			result_data[i] = string_t();
+			continue;
+		}
+		try {
+			using namespace duckdb_3d;
+			auto &wkb = wkb_strings[wkb_idx];
+			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+
+			SolidModel model;
+			if (meta_validity.RowIsValid(i)) {
+				auto md = ReadStructRowMetadata(type_vec, shells_vec, i, info.has_type);
+				model = BuildSolidModel(surfaces, md);
+			} else {
+				model = BuildSolidModel(surfaces);
+			}
+			auto payload = SerializePayload(model);
+			result_data[i] = StringVector::AddStringOrBlob(
+			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		} catch (...) {
+			result_validity.SetInvalid(i);
+			result_data[i] = string_t();
+		}
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// Bind for the (BLOB, ANY) metadata overload. Routes SQLNULL / VARCHAR / JSON
+// metadata to the JSON executor (`varchar_fn`) and a STRUCT to `struct_fn` after
+// normalising the struct's `type` → VARCHAR and `shells` → LIST(LIST(INTEGER)).
+static unique_ptr<FunctionData> BindWkbMetaAny(ScalarFunction &bound_function,
+                                               vector<unique_ptr<Expression>> &arguments, scalar_function_t varchar_fn,
+                                               scalar_function_t struct_fn) {
+	auto &meta_type = arguments[1]->return_type;
+	switch (meta_type.id()) {
+	case LogicalTypeId::UNKNOWN:
+		// A prepared-statement '?' parameter: defer to a later re-bind.
+		throw ParameterNotResolvedException();
+	case LogicalTypeId::SQLNULL:
+	case LogicalTypeId::VARCHAR:
+		// Plain / JSON-alias / NULL metadata: reuse the JSON executor unchanged.
+		bound_function.arguments[1] = LogicalType::VARCHAR;
+		bound_function.function = varchar_fn;
+		return nullptr;
+	case LogicalTypeId::STRUCT: {
+		auto &child_types = StructType::GetChildTypes(meta_type);
+		idx_t shells_index = DConstants::INVALID_INDEX;
+		idx_t type_index = DConstants::INVALID_INDEX;
+		bool has_type = false;
+		child_list_t<LogicalType> normalized;
+		normalized.reserve(child_types.size());
+		for (idx_t i = 0; i < child_types.size(); i++) {
+			auto &name = child_types[i].first;
+			auto normalized_type = child_types[i].second;
+			if (StringUtil::CIEquals(name, "shells")) {
+				shells_index = i;
+				// HUGEINT so every standard integer producer type (through UBIGINT)
+				// widens without a bind-time cast failure; the executor range-checks
+				// each value, so ST_3DTryFromWKB can turn an out-of-range count into
+				// NULL instead of raising during the (pre-executor) struct cast.
+				normalized_type = LogicalType::LIST(LogicalType::LIST(LogicalType::HUGEINT));
+			} else if (StringUtil::CIEquals(name, "type")) {
+				type_index = i;
+				has_type = true;
+				normalized_type = LogicalType::VARCHAR;
+			}
+			normalized.emplace_back(name, std::move(normalized_type));
+		}
+		if (shells_index == DConstants::INVALID_INDEX) {
+			throw BinderException("ST_3DFromWKB: geometry_properties metadata STRUCT must contain a `shells` "
+			                      "field; pass the metadata as a JSON VARCHAR otherwise");
+		}
+		bound_function.arguments[1] = LogicalType::STRUCT(std::move(normalized));
+		bound_function.function = struct_fn;
+		return make_uniq<FromWkbStructBindData>(shells_index, has_type, type_index);
+	}
+	default:
+		throw BinderException("ST_3DFromWKB: metadata must be a geometry_properties STRUCT or a JSON VARCHAR, got " +
+		                      meta_type.ToString());
+	}
+}
+
+static unique_ptr<FunctionData> FromWkbAnyBind(ClientContext &, ScalarFunction &bound_function,
+                                               vector<unique_ptr<Expression>> &arguments) {
+	return BindWkbMetaAny(bound_function, arguments, ST_3DFromWKBWithMetaFun, ST_3DFromWKBWithStructFun);
+}
+
+static unique_ptr<FunctionData> TryFromWkbAnyBind(ClientContext &, ScalarFunction &bound_function,
+                                                  vector<unique_ptr<Expression>> &arguments) {
+	return BindWkbMetaAny(bound_function, arguments, ST_3DTryFromWKBWithMetaFun, ST_3DTryFromWKBWithStructFun);
+}
+
+// ──────────────────────────────────────────────────────────────
 // ST_3DAsWKB(solid SOLID_3D) → BLOB
 // ──────────────────────────────────────────────────────────────
 static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -670,7 +933,7 @@ static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		case PayloadKind::Geom:
 			return ReadGeomPayloadHeader(data, size).bbox.min_z;
 		default:
-			throw InvalidInputException("ST_ZMin: argument is not a SOLID_3D or GEOM_3D value");
+			throw InvalidInputException("ST_3DZMin: argument is not a SOLID_3D or GEOM_3D value");
 		}
 	});
 }
@@ -686,12 +949,12 @@ static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		case PayloadKind::Geom:
 			return ReadGeomPayloadHeader(data, size).bbox.max_z;
 		default:
-			throw InvalidInputException("ST_ZMax: argument is not a SOLID_3D or GEOM_3D value");
+			throw InvalidInputException("ST_3DZMax: argument is not a SOLID_3D or GEOM_3D value");
 		}
 	});
 }
 
-// ST_Area accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
+// ST_3DFootprintArea accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
 static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
@@ -704,13 +967,13 @@ static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		case PayloadKind::Geom:
 			return Geom3DFootprintArea(DeserializeGeomPayload(data, size));
 		default:
-			throw InvalidInputException("ST_Area: argument is not a SOLID_3D or GEOM_3D value");
+			throw InvalidInputException("ST_3DFootprintArea: argument is not a SOLID_3D or GEOM_3D value");
 		}
 	});
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_Translate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
+// Transforms: ST_3DTranslate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
@@ -770,7 +1033,7 @@ static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_Translate(geom GEOM_3D, dx, dy, dz DOUBLE) → GEOM_3D
+// Transforms: ST_3DTranslate(geom GEOM_3D, dx, dy, dz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
@@ -828,7 +1091,7 @@ static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector 
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_Scale(geom GEOM_3D, sx, sy, sz DOUBLE) → GEOM_3D
+// Transforms: ST_3DScale(geom GEOM_3D, sx, sy, sz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_ScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
@@ -881,7 +1144,7 @@ static void ST_ScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_Scale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
+// Transforms: ST_3DScale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
@@ -940,7 +1203,7 @@ static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result)
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_RotateX / ST_RotateY / ST_RotateZ(solid, radians) → SOLID_3D
+// Transforms: ST_3DRotateX / ST_3DRotateY / ST_3DRotateZ(solid, radians) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 enum class RotationAxis { X, Y, Z };
 
@@ -996,7 +1259,7 @@ static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_RotateX / ST_RotateY / ST_RotateZ(geom, radians) → GEOM_3D
+// Transforms: ST_3DRotateX / ST_3DRotateY / ST_3DRotateZ(geom, radians) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, RotationAxis axis) {
 	using namespace duckdb_3d;
@@ -1322,7 +1585,7 @@ static const char *GeomTypeName(duckdb_3d::GeomType type) {
 	}
 }
 
-// ST_GeometryType(geom GEOM_3D) → VARCHAR
+// ST_3DGeometryType(geom GEOM_3D) → VARCHAR
 static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
@@ -1331,17 +1594,17 @@ static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &
 	});
 }
 
-// Point ordinate accessors: ST_X / ST_Y / ST_Z(point GEOM_3D) → DOUBLE.
+// Point ordinate accessors: ST_3DX / ST_3DY / ST_3DZ(point GEOM_3D) → DOUBLE.
 enum class Ordinate { X, Y, Z };
 
 static double PointOrdinate(string_t geom, Ordinate ord) {
 	using namespace duckdb_3d;
 	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 	if (model.type != GeomType::Point) {
-		throw InvalidInputException("ST_X/ST_Y/ST_Z: argument is not a Point");
+		throw InvalidInputException("ST_3DX/ST_3DY/ST_3DZ: argument is not a Point");
 	}
 	if (model.vertices.empty()) {
-		throw InvalidInputException("ST_X/ST_Y/ST_Z: empty point");
+		throw InvalidInputException("ST_3DX/ST_3DY/ST_3DZ: empty point");
 	}
 	const auto &v = model.vertices[0];
 	switch (ord) {
@@ -1535,7 +1798,7 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 	    });
 }
 
-// ST_AsText(geom GEOM_3D) → VARCHAR
+// ST_3DAsText(geom GEOM_3D) → VARCHAR
 static void ST_AsTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
@@ -1545,7 +1808,7 @@ static void ST_AsTextFun(DataChunk &args, ExpressionState &state, Vector &result
 	});
 }
 
-// ST_AsGeoJSON(geom GEOM_3D) → VARCHAR
+// ST_3DAsGeoJSON(geom GEOM_3D) → VARCHAR
 static void ST_AsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
@@ -1555,7 +1818,7 @@ static void ST_AsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &res
 	});
 }
 
-// ST_AsBinary(geom GEOM_3D) → BLOB
+// ST_3DAsBinary(geom GEOM_3D) → BLOB
 static void ST_AsBinaryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
@@ -1604,7 +1867,7 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 	});
 }
 
-// ST_ConvexHull(geom GEOM_3D) → GEOM_3D
+// ST_3DConvexHull(geom GEOM_3D) → GEOM_3D
 // 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
 static void ST_ConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
@@ -1617,7 +1880,7 @@ static void ST_ConvexHullFun(DataChunk &args, ExpressionState &state, Vector &re
 	});
 }
 
-// ST_Dimension(geom GEOM_3D) → INTEGER
+// ST_3DDimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
 	switch (type) {
@@ -1645,7 +1908,7 @@ static void ST_DimensionFun(DataChunk &args, ExpressionState &state, Vector &res
 	});
 }
 
-// ST_NumGeometries(geom GEOM_3D) → INTEGER
+// ST_3DNumGeometries(geom GEOM_3D) → INTEGER
 static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 	using namespace duckdb_3d;
 	switch (model.type) {
@@ -1668,7 +1931,7 @@ static void ST_NumGeometriesFun(DataChunk &args, ExpressionState &state, Vector 
 }
 
 // ──────────────────────────────────────────────────────────────
-// Transforms: ST_Transform — 2D CRS reprojection (X/Y only, Z preserved).
+// Transforms: ST_3DTransform — 2D CRS reprojection (X/Y only, Z preserved).
 // Accepts SOLID_3D or GEOM_3D (dispatched by payload magic); output type
 // equals input type. PROJ is confined to kernel/crs_transform.
 // ──────────────────────────────────────────────────────────────
@@ -1692,7 +1955,7 @@ static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t siz
 		return SerializeGeomPayload(model);
 	}
 	default:
-		throw InvalidInputException("ST_Transform: argument is not a SOLID_3D or GEOM_3D value");
+		throw InvalidInputException("ST_3DTransform: argument is not a SOLID_3D or GEOM_3D value");
 	}
 }
 
@@ -1742,7 +2005,7 @@ static void TransformChunk(DataChunk &args, Vector &result, GetCrs get_crs) {
 	}
 }
 
-// ST_Transform(geom, source_crs VARCHAR, target_crs VARCHAR)
+// ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)
 static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 	UnifiedVectorFormat src_data, tgt_data;
@@ -1764,7 +2027,7 @@ static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &
 	});
 }
 
-// ST_Transform(geom, source_srid INTEGER, target_srid INTEGER)
+// ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER)
 static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	using namespace duckdb_3d;
 	auto count = args.size();
@@ -1821,14 +2084,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
 	loader.RegisterFunction(
-	    ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
-	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
-	loader.RegisterFunction(ScalarFunction("st_y", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
-	loader.RegisterFunction(ScalarFunction("st_z", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
+	    ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
+	loader.RegisterFunction(ScalarFunction("st_3dx", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
+	loader.RegisterFunction(ScalarFunction("st_3dy", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
+	loader.RegisterFunction(ScalarFunction("st_3dz", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
 	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
-	loader.RegisterFunction(ScalarFunction("st_dimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
+	loader.RegisterFunction(ScalarFunction("st_3ddimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
 	loader.RegisterFunction(
-	    ScalarFunction("st_numgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
+	    ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
 	loader.RegisterFunction(
 	    ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
@@ -1844,13 +2107,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun));
 	loader.RegisterFunction(
 	    ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun));
-	loader.RegisterFunction(ScalarFunction("st_astext", {geom_3d_type}, LogicalType::VARCHAR, ST_AsTextFun));
-	loader.RegisterFunction(ScalarFunction("st_asgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_AsGeoJSONFun));
-	loader.RegisterFunction(ScalarFunction("st_asbinary", {geom_3d_type}, LogicalType::BLOB, ST_AsBinaryFun));
+	loader.RegisterFunction(ScalarFunction("st_3dastext", {geom_3d_type}, LogicalType::VARCHAR, ST_AsTextFun));
+	loader.RegisterFunction(ScalarFunction("st_3dasgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_AsGeoJSONFun));
+	loader.RegisterFunction(ScalarFunction("st_3dasbinary", {geom_3d_type}, LogicalType::BLOB, ST_AsBinaryFun));
 	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
 	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));
-	loader.RegisterFunction(ScalarFunction("st_convexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
+	loader.RegisterFunction(ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
 	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
 	// functions, which bind on BLOB, compose directly on the result.
 	loader.RegisterFunction(
@@ -1864,6 +2127,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DFromWKBWithMetaFun);
 	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_2arg);
+	// (BLOB, ANY): accept CityParquet's geometry_properties STRUCT directly; the
+	// bind routes VARCHAR/JSON/SQLNULL back to the JSON executor.
+	auto from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
+	                                   ST_3DFromWKBWithStructFun, FromWkbAnyBind);
+	from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	from_wkb_set.AddFunction(from_wkb_any);
 	loader.RegisterFunction(from_wkb_set);
 
 	// ST_3DTryFromWKB: 1-arg and 2-arg overloads
@@ -1873,6 +2142,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DTryFromWKBWithMetaFun);
 	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg);
+	auto try_from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
+	                                       ST_3DTryFromWKBWithStructFun, TryFromWkbAnyBind);
+	try_from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	try_from_wkb_set.AddFunction(try_from_wkb_any);
 	loader.RegisterFunction(try_from_wkb_set);
 
 	// ST_3DAsWKB(solid SOLID_3D) -> BLOB
@@ -1930,9 +2203,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
 	loader.RegisterFunction(ScalarFunction("st_3darea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
-	// ST_Area dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
-	// raw BLOB) — same pattern as ST_ZMin/ST_ZMax.
-	ScalarFunctionSet area_set("st_area");
+	// ST_3DFootprintArea dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
+	// raw BLOB) — same pattern as ST_3DZMin/ST_3DZMax.
+	ScalarFunctionSet area_set("st_3dfootprintarea");
 	area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
 	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
 	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
@@ -1947,29 +2220,29 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ndims_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::INTEGER, ST_NDimsFun));
 	loader.RegisterFunction(ndims_set);
 
-	ScalarFunctionSet hasz_set("st_hasz");
+	ScalarFunctionSet hasz_set("st_3dhasz");
 	hasz_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
 	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
 	hasz_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
 	loader.RegisterFunction(hasz_set);
 
-	// ST_ZMin / ST_ZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
+	// ST_3DZMin / ST_3DZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
 	// and plain BLOB values. Multiple overloads are needed because DuckDB treats
 	// named type aliases as distinct for function resolution.
-	ScalarFunctionSet zmin_set("st_zmin");
+	ScalarFunctionSet zmin_set("st_3dzmin");
 	zmin_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
 	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
 	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
 	loader.RegisterFunction(zmin_set);
 
-	ScalarFunctionSet zmax_set("st_zmax");
+	ScalarFunctionSet zmax_set("st_3dzmax");
 	zmax_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
 	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
 	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
 	loader.RegisterFunction(zmax_set);
 
 	// Transform functions
-	ScalarFunctionSet translate_set("st_translate");
+	ScalarFunctionSet translate_set("st_3dtranslate");
 	translate_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                   LogicalType::BLOB, ST_TranslateFun));
@@ -1980,7 +2253,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, geom_3d_type,
 	                   ST_TranslateGeomFun));
 	loader.RegisterFunction(translate_set);
-	ScalarFunctionSet scale_set("st_scale");
+	ScalarFunctionSet scale_set("st_3dscale");
 	scale_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                   LogicalType::BLOB, ST_ScaleFun));
@@ -1989,27 +2262,27 @@ static void LoadInternal(ExtensionLoader &loader) {
 	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                     geom_3d_type, ST_ScaleGeomFun));
 	loader.RegisterFunction(scale_set);
-	ScalarFunctionSet rotatex_set("st_rotatex");
+	ScalarFunctionSet rotatex_set("st_3drotatex");
 	rotatex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateXFun));
 	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateXFun));
 	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateXGeomFun));
 	loader.RegisterFunction(rotatex_set);
 
-	ScalarFunctionSet rotatey_set("st_rotatey");
+	ScalarFunctionSet rotatey_set("st_3drotatey");
 	rotatey_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateYFun));
 	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateYFun));
 	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateYGeomFun));
 	loader.RegisterFunction(rotatey_set);
 
-	ScalarFunctionSet rotatez_set("st_rotatez");
+	ScalarFunctionSet rotatez_set("st_3drotatez");
 	rotatez_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateZFun));
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateZFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateZGeomFun));
 	loader.RegisterFunction(rotatez_set);
 
-	// ST_Transform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
+	// ST_3DTransform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
 	// on SOLID_3D and GEOM_3D. Output type equals input type.
-	ScalarFunctionSet transform_set("st_transform");
+	ScalarFunctionSet transform_set("st_3dtransform");
 	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER},
 	                                         LogicalType::BLOB, ST_TransformIntFun));
 	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR},

@@ -2,7 +2,7 @@
 # description: metamorphic invariance coverage for the transform family (dependency-free)
 # group: [sql]
 
-# A dependency-free oracle for ST_Translate / ST_RotateZ / ST_Scale.
+# A dependency-free oracle for ST_3DTranslate / ST_3DRotateZ / ST_3DScale.
 # The PostGIS differential oracle cannot cover the affine transforms (it would
 # require round-tripping geometry, which the harness forbids). Metamorphic
 # relations are the dependency-free substitute and, run over the frozen 3DBAG
@@ -16,11 +16,11 @@ require three_d
 # ── Controlled fixtures: exact to machine precision (small integer coords) ─────
 
 # Unit tetrahedron, volume 1/6: invariant under translation & rotation; volume
-# scales by 2·3·4 = 24 under ST_Scale.
+# scales by 2·3·4 = 24 under ST_3DScale.
 query I
-SELECT abs(ST_3DVolume(ST_Translate(t, 10, 20, 30)) - ST_3DVolume(t)) < 1e-12
-   AND abs(ST_3DVolume(ST_RotateZ(t, 0.5)) - ST_3DVolume(t)) < 1e-12
-   AND abs(ST_3DVolume(ST_Scale(t, 2, 3, 4)) - 24 * ST_3DVolume(t)) < 1e-12
+SELECT abs(ST_3DVolume(ST_3DTranslate(t, 10, 20, 30)) - ST_3DVolume(t)) < 1e-12
+   AND abs(ST_3DVolume(ST_3DRotateZ(t, 0.5)) - ST_3DVolume(t)) < 1e-12
+   AND abs(ST_3DVolume(ST_3DScale(t, 2, 3, 4)) - 24 * ST_3DVolume(t)) < 1e-12
 FROM (SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS t) q;
 ----
 true
@@ -28,16 +28,16 @@ true
 # Hollow cube (volume 56): the interior-shell subtraction survives rigid motions,
 # and scales with the solid.
 query I
-SELECT abs(ST_3DVolume(ST_Translate(h, 5, 5, 5)) - 56.0) < 1e-9
-   AND abs(ST_3DVolume(ST_Scale(h, 2, 2, 2)) - 8 * 56.0) < 1e-9
+SELECT abs(ST_3DVolume(ST_3DTranslate(h, 5, 5, 5)) - 56.0) < 1e-9
+   AND abs(ST_3DVolume(ST_3DScale(h, 2, 2, 2)) - 8 * 56.0) < 1e-9
 FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS h) q;
 ----
 true
 
 # Surface area is a rigid-motion invariant (unit tetra area = 3·0.5 + √3/2).
 query I
-SELECT abs(ST_3DSurfaceArea(ST_RotateZ(t, 1.3)) - ST_3DSurfaceArea(t)) < 1e-12
-   AND abs(ST_3DSurfaceArea(ST_Translate(t, 9, 9, 9)) - ST_3DSurfaceArea(t)) < 1e-12
+SELECT abs(ST_3DSurfaceArea(ST_3DRotateZ(t, 1.3)) - ST_3DSurfaceArea(t)) < 1e-12
+   AND abs(ST_3DSurfaceArea(ST_3DTranslate(t, 9, 9, 9)) - ST_3DSurfaceArea(t)) < 1e-12
 FROM (SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS t) q;
 ----
 true
@@ -66,25 +66,25 @@ true
 
 # Rotation about Z preserves volume (relative tol 1e-5).
 query I
-SELECT bool_and(abs(ST_3DVolume(ST_RotateZ(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
+SELECT bool_and(abs(ST_3DVolume(ST_3DRotateZ(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
 ----
 true
 
 # Metamorphic scaling: volume scales by |2·3·4| = 24 (relative tol 1e-5).
 query I
-SELECT bool_and(abs(ST_3DVolume(ST_Scale(s, 2, 3, 4)) - 24 * ST_3DVolume(s)) <= 1e-5 * 24 * ST_3DVolume(s)) FROM _golden;
+SELECT bool_and(abs(ST_3DVolume(ST_3DScale(s, 2, 3, 4)) - 24 * ST_3DVolume(s)) <= 1e-5 * 24 * ST_3DVolume(s)) FROM _golden;
 ----
 true
 
 # Translation preserves volume (loose relative tol 1e-3 for RD-magnitude cancellation).
 query I
-SELECT bool_and(abs(ST_3DVolume(ST_Translate(s, 1000, 2000, 500)) - ST_3DVolume(s)) <= 1e-3 * ST_3DVolume(s)) FROM _golden;
+SELECT bool_and(abs(ST_3DVolume(ST_3DTranslate(s, 1000, 2000, 500)) - ST_3DVolume(s)) <= 1e-3 * ST_3DVolume(s)) FROM _golden;
 ----
 true
 
 # Surface area is invariant under rotation (relative tol 1e-5).
 query I
-SELECT bool_and(abs(ST_3DSurfaceArea(ST_RotateZ(s, 0.7)) - ST_3DSurfaceArea(s)) <= 1e-5 * ST_3DSurfaceArea(s)) FROM _golden;
+SELECT bool_and(abs(ST_3DSurfaceArea(ST_3DRotateZ(s, 0.7)) - ST_3DSurfaceArea(s)) <= 1e-5 * ST_3DSurfaceArea(s)) FROM _golden;
 ----
 true
 

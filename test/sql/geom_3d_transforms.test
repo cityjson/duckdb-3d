@@ -1,74 +1,74 @@
 # name: test/sql/geom_3d_transforms.test
-# description: GEOM_3D transform functions (ST_Translate)
+# description: GEOM_3D transform functions (ST_3DTranslate)
 # group: [sql]
 
 require three_d
 
-# ST_Translate shifts a Point Z by (dx, dy, dz)
+# ST_3DTranslate shifts a Point Z by (dx, dy, dz)
 query III
-SELECT ST_X(t), ST_Y(t), ST_Z(t)
-FROM (SELECT ST_Translate(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS t) q;
+SELECT ST_3DX(t), ST_3DY(t), ST_3DZ(t)
+FROM (SELECT ST_3DTranslate(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS t) q;
 ----
 11.0	22.0	33.0
 
-# ST_Translate shifts the bounding box of a LineString Z
+# ST_3DTranslate shifts the bounding box of a LineString Z
 query II
-SELECT ST_ZMin(t), ST_ZMax(t)
-FROM (SELECT ST_Translate(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 0.0, 0.0, 5.0) AS t) q;
+SELECT ST_3DZMin(t), ST_3DZMax(t)
+FROM (SELECT ST_3DTranslate(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 0.0, 0.0, 5.0) AS t) q;
 ----
 5.0	17.0
 
-# ST_Translate: NULL propagates
+# ST_3DTranslate: NULL propagates
 query I
-SELECT ST_Translate(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_3DTranslate(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
-# ST_Scale scales a Point Z about the origin
+# ST_3DScale scales a Point Z about the origin
 query III
-SELECT ST_X(s), ST_Y(s), ST_Z(s)
-FROM (SELECT ST_Scale(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS s) q;
+SELECT ST_3DX(s), ST_3DY(s), ST_3DZ(s)
+FROM (SELECT ST_3DScale(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)), 10.0, 20.0, 30.0) AS s) q;
 ----
 10.0	40.0	90.0
 
-# ST_Scale scales the bounding box of a LineString Z
+# ST_3DScale scales the bounding box of a LineString Z
 query II
-SELECT ST_ZMin(s), ST_ZMax(s)
-FROM (SELECT ST_Scale(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 1.0, 1.0, 2.0) AS s) q;
+SELECT ST_3DZMin(s), ST_3DZMax(s)
+FROM (SELECT ST_3DScale(ST_Geom3DFromWKB(ST_AsWKBLineZ()), 1.0, 1.0, 2.0) AS s) q;
 ----
 0.0	24.0
 
-# ST_Scale: NULL propagates
+# ST_3DScale: NULL propagates
 query I
-SELECT ST_Scale(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
+SELECT ST_3DScale(NULL::GEOM_3D, 1.0, 2.0, 3.0) IS NULL;
 ----
 true
 
-# ST_RotateZ rotates (1,0,0) by 90 deg to (0,1,0)
+# ST_3DRotateZ rotates (1,0,0) by 90 deg to (0,1,0)
 query III
-SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
-FROM (SELECT ST_RotateZ(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
+SELECT ROUND(ST_3DX(r), 5), ROUND(ST_3DY(r), 5), ROUND(ST_3DZ(r), 5)
+FROM (SELECT ST_3DRotateZ(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
 ----
 0.0	1.0	0.0
 
-# ST_RotateX rotates (0,1,0) by 90 deg to (0,0,1)
+# ST_3DRotateX rotates (0,1,0) by 90 deg to (0,0,1)
 query III
-SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
-FROM (SELECT ST_RotateX(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 1.0, 0.0)), radians(90)) AS r) q;
+SELECT ROUND(ST_3DX(r), 5), ROUND(ST_3DY(r), 5), ROUND(ST_3DZ(r), 5)
+FROM (SELECT ST_3DRotateX(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 1.0, 0.0)), radians(90)) AS r) q;
 ----
 0.0	0.0	1.0
 
-# ST_RotateY rotates (1,0,0) by 90 deg to (0,0,-1)
+# ST_3DRotateY rotates (1,0,0) by 90 deg to (0,0,-1)
 query III
-SELECT ROUND(ST_X(r), 5), ROUND(ST_Y(r), 5), ROUND(ST_Z(r), 5)
-FROM (SELECT ST_RotateY(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
+SELECT ROUND(ST_3DX(r), 5), ROUND(ST_3DY(r), 5), ROUND(ST_3DZ(r), 5)
+FROM (SELECT ST_3DRotateY(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 0.0, 0.0)), radians(90)) AS r) q;
 ----
 0.0	0.0	-1.0
 
-# ST_RotateZ: NULL propagates
+# ST_3DRotateZ: NULL propagates
 query III
-SELECT ST_RotateX(NULL::GEOM_3D, 1.0) IS NULL,
-       ST_RotateY(NULL::GEOM_3D, 1.0) IS NULL,
-       ST_RotateZ(NULL::GEOM_3D, 1.0) IS NULL;
+SELECT ST_3DRotateX(NULL::GEOM_3D, 1.0) IS NULL,
+       ST_3DRotateY(NULL::GEOM_3D, 1.0) IS NULL,
+       ST_3DRotateZ(NULL::GEOM_3D, 1.0) IS NULL;
 ----
 true	true	true

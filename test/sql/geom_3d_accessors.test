@@ -1,5 +1,5 @@
 # name: test/sql/geom_3d_accessors.test
-# description: GEOM_3D point accessors (ST_X, ST_Y, ST_Z)
+# description: GEOM_3D point accessors (ST_3DX, ST_3DY, ST_3DZ)
 # group: [sql]
 
 require three_d
@@ -8,15 +8,15 @@ statement ok
 CREATE TABLE pts AS
 SELECT ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)) AS p;
 
-# ST_X / ST_Y / ST_Z return the point's ordinates
+# ST_3DX / ST_3DY / ST_3DZ return the point's ordinates
 query III
-SELECT ST_X(p), ST_Y(p), ST_Z(p) FROM pts;
+SELECT ST_3DX(p), ST_3DY(p), ST_3DZ(p) FROM pts;
 ----
 1.0	2.0	3.0
 
 # NULL propagation
 query III
-SELECT ST_X(NULL::GEOM_3D), ST_Y(NULL::GEOM_3D), ST_Z(NULL::GEOM_3D);
+SELECT ST_3DX(NULL::GEOM_3D), ST_3DY(NULL::GEOM_3D), ST_3DZ(NULL::GEOM_3D);
 ----
 NULL	NULL	NULL
 
@@ -35,22 +35,22 @@ SELECT ST_CoordDim(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_ZMin / ST_ZMax: read the cached bounding box of a GEOM_3D value
+# ST_3DZMin / ST_3DZMax: read the cached bounding box of a GEOM_3D value
 query II
-SELECT ST_ZMin(p), ST_ZMax(p) FROM pts;
+SELECT ST_3DZMin(p), ST_3DZMax(p) FROM pts;
 ----
 3.0	3.0
 
-# ST_ZMin / ST_ZMax: linestring spans Z in [0, 12]
+# ST_3DZMin / ST_3DZMax: linestring spans Z in [0, 12]
 query II
-SELECT ST_ZMin(ST_Geom3DFromWKB(ST_AsWKBLineZ())),
-       ST_ZMax(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+SELECT ST_3DZMin(ST_Geom3DFromWKB(ST_AsWKBLineZ())),
+       ST_3DZMax(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
 ----
 0.0	12.0
 
-# ST_ZMin / ST_ZMax: NULL propagates
+# ST_3DZMin / ST_3DZMax: NULL propagates
 query II
-SELECT ST_ZMin(NULL::GEOM_3D), ST_ZMax(NULL::GEOM_3D);
+SELECT ST_3DZMin(NULL::GEOM_3D), ST_3DZMax(NULL::GEOM_3D);
 ----
 NULL	NULL
 
@@ -66,51 +66,51 @@ SELECT ST_NDims(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_HasZ: a GEOM_3D value carries a Z ordinate
+# ST_3DHasZ: a GEOM_3D value carries a Z ordinate
 query I
-SELECT ST_HasZ(p) FROM pts;
+SELECT ST_3DHasZ(p) FROM pts;
 ----
 true
 
-# ST_HasZ: NULL propagates
+# ST_3DHasZ: NULL propagates
 query I
-SELECT ST_HasZ(NULL::GEOM_3D);
+SELECT ST_3DHasZ(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_Dimension: topological dimension of a Point is 0
+# ST_3DDimension: topological dimension of a Point is 0
 query I
-SELECT ST_Dimension(p) FROM pts;
+SELECT ST_3DDimension(p) FROM pts;
 ----
 0
 
-# ST_Dimension: topological dimension of a LineString is 1
+# ST_3DDimension: topological dimension of a LineString is 1
 query I
-SELECT ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+SELECT ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
 ----
 1
 
-# ST_Dimension: NULL propagates
+# ST_3DDimension: NULL propagates
 query I
-SELECT ST_Dimension(NULL::GEOM_3D);
+SELECT ST_3DDimension(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_NumGeometries: a single Point has one geometry
+# ST_3DNumGeometries: a single Point has one geometry
 query I
-SELECT ST_NumGeometries(p) FROM pts;
+SELECT ST_3DNumGeometries(p) FROM pts;
 ----
 1
 
-# ST_NumGeometries: a MultiLineString has two parts
+# ST_3DNumGeometries: a MultiLineString has two parts
 query I
-SELECT ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
+SELECT ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
 ----
 2
 
-# ST_NumGeometries: NULL propagates
+# ST_3DNumGeometries: NULL propagates
 query I
-SELECT ST_NumGeometries(NULL::GEOM_3D);
+SELECT ST_3DNumGeometries(NULL::GEOM_3D);
 ----
 NULL
 

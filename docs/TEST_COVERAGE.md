@@ -56,11 +56,11 @@ Functions **not** in the oracle, split by whether PostGIS is a *valid* oracle fo
 
 | Not oracled | PostGIS a valid oracle? | Note |
 |---|---|---|
-| `ST_X/Y/Z`, `ST_ZMin/ZMax`, `ST_NDims`, `ST_CoordDim`, `ST_Dimension`, `ST_NumGeometries` | **Yes** | Direct PostGIS analogues; add to generator. |
-| `ST_Translate`, `ST_Scale`, `ST_RotateX/Y/Z` | **Yes** | PostGIS computes identical affine maps. |
-| `ST_Transform` | **Yes** (with PROJ) | PostGIS `ST_Transform`; 2D only here. |
+| `ST_3DX/Y/Z`, `ST_3DZMin/ZMax`, `ST_NDims`, `ST_CoordDim`, `ST_3DDimension`, `ST_3DNumGeometries` | **Yes** | Direct PostGIS analogues; add to generator. |
+| `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX/Y/Z` | **Yes** | PostGIS computes identical affine maps. |
+| `ST_3DTransform` | **Yes** (with PROJ) | PostGIS `ST_Transform`; 2D only here. |
 | `ST_3DPerimeter`, `ST_3DCentroid` | Partly | Analogues exist; centroid definition must match. |
-| `ST_AsText`, `ST_AsBinary`, `ST_AsGeoJSON` | **Yes** | WKT/WKB/GeoJSON serialisation. |
+| `ST_3DAsText`, `ST_3DAsBinary`, `ST_3DAsGeoJSON` | **Yes** | WKT/WKB/GeoJSON serialisation. |
 | `ST_3DNumSolids/Shells/Faces`, `ST_3DBounds` | Weak | Shell/patch counting differs; PostGIS not a clean oracle. |
 | `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | **No** | three_d-specific "fail clearly, no repair" semantics; PostGIS repairs/rejects (design doc §9.5.1). three_d's own report is the oracle of record. |
 
@@ -102,7 +102,7 @@ closed) and the documented boundary (metadata import raises; TRY → NULL). An u
    `golden.csv` on the provisioned PostGIS+SFCGAL container (`just oracle-regen`) to keep the
    frozen provenance (`pg_version 3.4.3`, `sfcgal 1.3.8`) consistent. Not possible in this
    environment (no Docker/PostGIS). Highest-value first addition: 3D bounds / Z-extent columns
-   (`ST_ZMin/ZMax/3DBounds`) — exact comparison, works on every row including SFCGAL-rejected
+   (`ST_3DZMin/ZMax/3DBounds`) — exact comparison, works on every row including SFCGAL-rejected
    roofs. The transform family is already covered dependency-free by
    `metamorphic_transforms.test`, so the oracle need not.
 2. **Cross-shell orientation check** ([FUTURE_WORK §4](./FUTURE_WORK.md#4-enforce-the-interior-opposite-exterior-orientation-invariant))

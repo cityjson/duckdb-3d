@@ -35,7 +35,7 @@ set(EXTENSION_SOURCES
     src/kernel/geom_serialize.cpp
     src/kernel/crs_transform.cpp)
 
-# PROJ backs ST_Transform (kernel/crs_transform.cpp). Under the vcpkg toolchain
+# PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain
 # the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.
 if(APPLE)
   list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew" "/usr/local")

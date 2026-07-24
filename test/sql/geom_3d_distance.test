@@ -119,13 +119,13 @@ NULL
 # ST_3DClosestPoint: point above polygon returns the point itself
 query III
 SELECT
-    ST_X(ST_3DClosestPoint(
+    ST_3DX(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Y(ST_3DClosestPoint(
+    ST_3DY(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Z(ST_3DClosestPoint(
+    ST_3DZ(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
@@ -134,7 +134,7 @@ SELECT
 # ST_3DShortestLine: point above polygon is a LineString of length 5
 query II
 SELECT
-    ST_GeometryType(ST_3DShortestLine(
+    ST_3DGeometryType(ST_3DShortestLine(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
     ST_3DLength(ST_3DShortestLine(
