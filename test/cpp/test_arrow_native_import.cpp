@@ -1,5 +1,13 @@
 #include "catch.hpp"
 #include "kernel/arrow_native_import.hpp"
+#include "kernel/measurements.hpp"
+#include "kernel/metadata_parser.hpp"
+#include "kernel/model_builder.hpp"
+#include "kernel/triangulation.hpp"
+#include "kernel/validation.hpp"
+#include "kernel/wkb_parser.hpp"
+#include <algorithm>
+#include <cstring>
 
 using namespace duckdb_3d;
 
@@ -143,4 +151,163 @@ TEST_CASE("BuildGeomModelFromArrowNative rejects an out-of-range vertex-pool ind
 	std::vector<Vertex3D> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
 
 	REQUIRE_THROWS_WITH(BuildGeomModelFromArrowNative(boundaries, vertices), Catch::Contains("out of range"));
+}
+
+namespace {
+
+// Cross-encoding parity fixture: the same hollow-cube topology
+// test_inner_shell.cpp's WKB-path tests already pin (outer cube [0,4]^3,
+// inner cube [1,3]^3, 6 quad faces per shell, inner wound opposite the
+// outer), built two ways — once as WKB bytes (this repo's existing ground
+// truth: volume 56, surface area 120) and once as already-flattened
+// arrow-native boundaries/vertices sharing one 16-vertex pool (indices 0-7
+// outer corners, 8-15 inner corners) — to prove the two ingestion paths
+// agree on identical input geometry, not just each in isolation.
+
+class WKBBuilder {
+public:
+	std::vector<uint8_t> buffer;
+	void u8(uint8_t v) {
+		buffer.push_back(v);
+	}
+	void u32(uint32_t v) {
+		buffer.push_back(v & 0xFF);
+		buffer.push_back((v >> 8) & 0xFF);
+		buffer.push_back((v >> 16) & 0xFF);
+		buffer.push_back((v >> 24) & 0xFF);
+	}
+	void f64(double v) {
+		uint8_t b[8];
+		std::memcpy(b, &v, 8);
+		buffer.insert(buffer.end(), b, b + 8);
+	}
+	void byteOrder() {
+		u8(1);
+	}
+	void geomType(WKBGeometryType t) {
+		u32(static_cast<uint32_t>(t));
+	}
+	void polyHeader(uint32_t num_rings) {
+		byteOrder();
+		geomType(WKBGeometryType::PolygonZ);
+		u32(num_rings);
+	}
+	void ring(const std::vector<Vertex3D> &pts) {
+		u32(static_cast<uint32_t>(pts.size()) + 1);
+		for (auto &p : pts) {
+			f64(p.x);
+			f64(p.y);
+			f64(p.z);
+		}
+		f64(pts[0].x);
+		f64(pts[0].y);
+		f64(pts[0].z);
+	}
+};
+
+//! Append the six faces of an axis-aligned cube [lo,hi]^3 — identical corner
+//! ordering to three_d_extension.cpp's WkbCubeFaces() and
+//! test_inner_shell.cpp's AppendCubeFaces().
+void AppendCubeFaces(WKBBuilder &b, double lo, double hi, bool reversed) {
+	Vertex3D v000 = {lo, lo, lo}, v100 = {hi, lo, lo}, v110 = {hi, hi, lo}, v010 = {lo, hi, lo};
+	Vertex3D v001 = {lo, lo, hi}, v101 = {hi, lo, hi}, v111 = {hi, hi, hi}, v011 = {lo, hi, hi};
+	auto face = [&](std::vector<Vertex3D> r) {
+		if (reversed) {
+			std::reverse(r.begin(), r.end());
+		}
+		b.polyHeader(1);
+		b.ring(r);
+	};
+	face({v000, v010, v110, v100});
+	face({v001, v101, v111, v011});
+	face({v000, v100, v101, v001});
+	face({v010, v011, v111, v110});
+	face({v000, v001, v011, v010});
+	face({v100, v110, v111, v101});
+}
+
+SolidModel BuildHollowCubeFromWKB() {
+	WKBBuilder b;
+	b.byteOrder();
+	b.geomType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.u32(12);
+	AppendCubeFaces(b, 0.0, 4.0, /*reversed=*/false); // outer shell, faces 0..5
+	AppendCubeFaces(b, 1.0, 3.0, /*reversed=*/true);  // inner shell, faces 6..11 (opposite winding)
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+	GeometryMetadata meta;
+	meta.type = "Solid";
+	meta.shells = {{6, 6}};
+	auto model = BuildSolidModel(surfaces, meta);
+	TriangulateSolidModel(model);
+	ValidateSolidModel(model);
+	return model;
+}
+
+SolidModel BuildHollowCubeFromArrowNative() {
+	// Shared 16-vertex pool: outer corners at indices 0-7, inner at 8-15 —
+	// same corner-to-coordinate assignment AppendCubeFaces()/WkbCubeFaces()
+	// use (v000,v100,v110,v010,v001,v101,v111,v011 in that order).
+	std::vector<Vertex3D> vertices = {
+	    {0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0}, {0, 0, 4}, {4, 0, 4}, {4, 4, 4}, {0, 4, 4},
+	    {1, 1, 1}, {3, 1, 1}, {3, 3, 1}, {1, 3, 1}, {1, 1, 3}, {3, 1, 3}, {3, 3, 3}, {1, 3, 3},
+	};
+
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 2};    // 1 solid: 2 shells
+	boundaries.shell_face_offsets = {0, 6, 12}; // 6 faces per shell
+	boundaries.face_ring_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.face_ring_offsets[i] = static_cast<uint32_t>(i); // 1 ring per face
+	}
+	boundaries.ring_vertex_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.ring_vertex_offsets[i] = static_cast<uint32_t>(i * 4); // 4 indices per ring
+	}
+
+	// Outer shell (outward winding, matching AppendCubeFaces(reversed=false)):
+	// bottom, top, front, back, left, right — corners v000=0,v100=1,v110=2,
+	// v010=3,v001=4,v101=5,v111=6,v011=7.
+	std::vector<uint32_t> outer = {
+	    0, 3, 2, 1, // bottom: v000,v010,v110,v100
+	    4, 5, 6, 7, // top: v001,v101,v111,v011
+	    0, 1, 5, 4, // front: v000,v100,v101,v001
+	    3, 7, 6, 2, // back: v010,v011,v111,v110
+	    0, 4, 7, 3, // left: v000,v001,v011,v010
+	    1, 2, 6, 5, // right: v100,v110,v111,v101
+	};
+	// Inner shell: same face order, indices offset by 8, each ring reversed
+	// (opposite winding, matching AppendCubeFaces(reversed=true)).
+	std::vector<uint32_t> inner = {
+	    9,  10, 11, 8,  // bottom reversed
+	    15, 14, 13, 12, // top reversed
+	    12, 13, 9,  8,  // front reversed
+	    10, 14, 15, 11, // back reversed
+	    11, 15, 12, 8,  // left reversed
+	    13, 14, 10, 9,  // right reversed
+	};
+
+	boundaries.ring_vertex_indices.reserve(96);
+	boundaries.ring_vertex_indices.insert(boundaries.ring_vertex_indices.end(), outer.begin(), outer.end());
+	boundaries.ring_vertex_indices.insert(boundaries.ring_vertex_indices.end(), inner.begin(), inner.end());
+
+	return BuildSolidModelFromArrowNative(boundaries, vertices);
+}
+
+} // namespace
+
+TEST_CASE("Arrow-native and WKB ingestion agree on the hollow-cube fixture", "[arrow_native_import][parity]") {
+	auto wkb_model = BuildHollowCubeFromWKB();
+	auto arrow_model = BuildHollowCubeFromArrowNative();
+
+	REQUIRE(arrow_model.SolidCount() == wkb_model.SolidCount());
+	REQUIRE(arrow_model.ShellCount() == wkb_model.ShellCount());
+	REQUIRE(arrow_model.FaceCount() == wkb_model.FaceCount());
+	REQUIRE(arrow_model.validation.is_closed == wkb_model.validation.is_closed);
+	REQUIRE(arrow_model.validation.is_manifold == wkb_model.validation.is_manifold);
+	REQUIRE(arrow_model.validation.is_oriented == wkb_model.validation.is_oriented);
+	REQUIRE(ComputeVolume(arrow_model) == Approx(ComputeVolume(wkb_model)).epsilon(1e-12));
+	REQUIRE(ComputeSurfaceArea(arrow_model) == Approx(ComputeSurfaceArea(wkb_model)).epsilon(1e-12));
+	REQUIRE(ComputeVolume(arrow_model) == Approx(56.0).epsilon(1e-12));
+	REQUIRE(ComputeSurfaceArea(arrow_model) == Approx(120.0).epsilon(1e-12));
 }
