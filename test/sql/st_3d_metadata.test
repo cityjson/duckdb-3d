@@ -56,3 +56,49 @@ query I
 SELECT ST_3DTryFromWKB(NULL, '{}') IS NULL;
 ----
 true
+
+# ──────────────────────────────────────────────────────────────
+# STRUCT geometry_properties overload (Task 1, arrow-native-type):
+# duckdb-cityjson's arrow-native-type branch (commit d334b26) types
+# geometry_properties_lod* as STRUCT("type" VARCHAR, surfaces JSON,
+# face_semantics INTEGER[], shells INTEGER[][]), not VARCHAR JSON text.
+# ST_3DFromWKB/ST_3DTryFromWKB must bind directly against that STRUCT
+# shape without requiring an explicit to_json() cast.
+# ──────────────────────────────────────────────────────────────
+
+# Test: STRUCT overload produces the same volume as the JSON-text path,
+# for the same hollow-cube fixture and shell grouping (56 = 64 - 8).
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]}));
+----
+56.0
+
+# Test: STRUCT overload agrees with the equivalent to_json()-cast workaround
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]}))
+    = ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
+----
+true
+
+# Test: STRUCT overload with NULL metadata behaves like 1-arg
+query I
+SELECT ST_3DNumShells(ST_3DFromWKB(ST_AsWKBPolyhedralTetra(),
+    NULL::STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])));
+----
+1
+
+# Test: STRUCT overload with conflicting shells metadata raises
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, 3]]});
+----
+face count mismatch
+
+# Test: STRUCT overload with conflicting shells metadata returns NULL in TRY mode
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, 3]]}) IS NULL;
+----
+true
