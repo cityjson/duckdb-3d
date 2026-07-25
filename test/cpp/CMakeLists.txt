@@ -27,7 +27,8 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/geom_construct.cpp
     ${REPO_ROOT}/src/kernel/geom_analysis.cpp
     ${REPO_ROOT}/src/kernel/geom_serialize.cpp
-    ${REPO_ROOT}/src/kernel/crs_transform.cpp)
+    ${REPO_ROOT}/src/kernel/crs_transform.cpp
+    ${REPO_ROOT}/src/kernel/arrow_native_import.cpp)
 
 # Test sources
 set(TEST_SOURCES
@@ -46,7 +47,8 @@ set(TEST_SOURCES
     test_crs_transform.cpp
     test_wkb_export.cpp
     test_inner_shell.cpp
-    test_triangulation.cpp)
+    test_triangulation.cpp
+    test_arrow_native_import.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 
