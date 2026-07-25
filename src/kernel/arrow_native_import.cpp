@@ -74,4 +74,57 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
 	return model;
 }
 
+GeomModel BuildGeomModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
+                                        const std::vector<Vertex3D> &vertices) {
+	// Padding-dimension invariant (design doc): a surface value is a Solid
+	// value with solid-count and shell-count both padded to 1 — asserted, not
+	// branched on, per this plan's dispatch-by-caller-choice architecture
+	// note (a caller that reaches this function has already committed to the
+	// surface family by calling ST_Geom3DFromArrowNative, not
+	// ST_3DFromArrowNative).
+	if (boundaries.solid_shell_offsets.size() != 2) {
+		throw std::runtime_error("arrow-native geometry: expected a padded (solid-count 1) surface-type value — "
+		                         "if this is a real multi-solid value, call BuildSolidModelFromArrowNative instead");
+	}
+	if (boundaries.shell_face_offsets.size() != 2) {
+		throw std::runtime_error("arrow-native geometry: expected shell-count 1 (padding dimension)");
+	}
+
+	GeomModel model;
+	model.type = GeomType::MultiPolygon;
+
+	uint32_t face_start = boundaries.shell_face_offsets[0];
+	uint32_t face_end = boundaries.shell_face_offsets[1];
+
+	model.part_offsets.push_back(0);
+	uint32_t total_rings = 0;
+
+	// GeomModel is NOT index-based (unlike SolidModel above) — ring indices
+	// are dereferenced and expanded into inline coordinates here, not copied.
+	for (uint32_t face_idx = face_start; face_idx < face_end; face_idx++) {
+		uint32_t ring_start = boundaries.face_ring_offsets[face_idx];
+		uint32_t ring_end = boundaries.face_ring_offsets[face_idx + 1];
+
+		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+			uint32_t idx_start = boundaries.ring_vertex_offsets[ring_idx];
+			uint32_t idx_end = boundaries.ring_vertex_offsets[ring_idx + 1];
+
+			model.ring_offsets.push_back(static_cast<uint32_t>(model.vertices.size()));
+			for (uint32_t k = idx_start; k < idx_end; k++) {
+				uint32_t raw = boundaries.ring_vertex_indices[k];
+				if (raw >= vertices.size()) {
+					throw std::runtime_error("arrow-native geometry: vertex-pool index out of range");
+				}
+				model.vertices.push_back(vertices[raw]);
+			}
+			total_rings++;
+		}
+		model.part_offsets.push_back(total_rings);
+	}
+	model.ring_offsets.push_back(static_cast<uint32_t>(model.vertices.size()));
+
+	model.ComputeBBox();
+	return model;
+}
+
 } // namespace duckdb_3d

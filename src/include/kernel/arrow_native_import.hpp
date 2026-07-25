@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kernel/solid_model.hpp"
+#include "kernel/geom_model.hpp"
 #include <cstdint>
 #include <vector>
 
@@ -37,5 +38,15 @@ struct ArrowNativeBoundaries {
 //! still runs in full: ComputeBBox, TriangulateSolidModel, ValidateSolidModel.
 SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
                                           const std::vector<Vertex3D> &vertices);
+
+//! Builds a GeomModel (MultiPolygon Z family) from a padded (solid-count 1,
+//! shell-count 1) ArrowNativeBoundaries + a vertex pool. Unlike
+//! BuildSolidModelFromArrowNative, GeomModel is not index-based — ring
+//! indices are dereferenced and expanded into inline coordinates, not copied.
+//! Throws if the padding-dimension invariant doesn't hold (a real
+//! multi-shell/multi-solid value was passed where a surface value was
+//! expected — call BuildSolidModelFromArrowNative for that) or if an index
+//! is out of range.
+GeomModel BuildGeomModelFromArrowNative(const ArrowNativeBoundaries &boundaries, const std::vector<Vertex3D> &vertices);
 
 } // namespace duckdb_3d

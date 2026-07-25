@@ -94,3 +94,53 @@ TEST_CASE("BuildSolidModelFromArrowNative flags a degenerate (zero-length) ring,
 	REQUIRE(model.FaceCount() == 1);
 	REQUIRE(model.validation.degenerate_face_count >= 1);
 }
+
+TEST_CASE("BuildGeomModelFromArrowNative strips padding and dereferences into inline coordinates",
+          "[arrow_native_import]") {
+	// Same physical shape as a Solid with 1 shell, 1 face, but semantically a
+	// MultiSurface (single triangular surface) — the padding dimensions
+	// (solid-count 1, shell-count 1) carry no meaning here (design doc).
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1}; // padding: exactly 1 solid
+	boundaries.shell_face_offsets = {0, 1};  // padding: exactly 1 shell
+	boundaries.face_ring_offsets = {0, 1};   // 1 face: 1 ring
+	boundaries.ring_vertex_offsets = {0, 3}; // 1 ring: 3 indices
+	boundaries.ring_vertex_indices = {0, 1, 2};
+
+	std::vector<Vertex3D> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+
+	auto model = BuildGeomModelFromArrowNative(boundaries, vertices);
+	REQUIRE(model.type == GeomType::MultiPolygon);
+	REQUIRE(model.vertices.size() == 3);     // GeomModel is NOT index-based — inline coordinates
+	REQUIRE(model.part_offsets.size() == 2); // 1 part (this face) -> part_offsets = [0, 1]
+	REQUIRE(model.ring_offsets.size() == 2); // 1 ring -> ring_offsets = [0, 3]
+	REQUIRE(model.vertices[0] == Vertex3D {0, 0, 0});
+	REQUIRE(model.vertices[1] == Vertex3D {1, 0, 0});
+	REQUIRE(model.vertices[2] == Vertex3D {0, 1, 0});
+}
+
+TEST_CASE("BuildGeomModelFromArrowNative rejects a non-padded (real multi-shell) value", "[arrow_native_import]") {
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 2}; // 2 shells -> not a padded surface value
+	boundaries.shell_face_offsets = {0, 1, 2};
+	boundaries.face_ring_offsets = {0, 1, 2};
+	boundaries.ring_vertex_offsets = {0, 3, 6};
+	boundaries.ring_vertex_indices = {0, 1, 2, 0, 1, 2};
+
+	std::vector<Vertex3D> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+
+	REQUIRE_THROWS_WITH(BuildGeomModelFromArrowNative(boundaries, vertices), Catch::Contains("padding"));
+}
+
+TEST_CASE("BuildGeomModelFromArrowNative rejects an out-of-range vertex-pool index", "[arrow_native_import]") {
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1};
+	boundaries.shell_face_offsets = {0, 1};
+	boundaries.face_ring_offsets = {0, 1};
+	boundaries.ring_vertex_offsets = {0, 3};
+	boundaries.ring_vertex_indices = {0, 1, 3}; // only 3 vertices (indices 0..2) exist
+
+	std::vector<Vertex3D> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+
+	REQUIRE_THROWS_WITH(BuildGeomModelFromArrowNative(boundaries, vertices), Catch::Contains("out of range"));
+}
