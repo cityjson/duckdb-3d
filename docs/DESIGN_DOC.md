@@ -111,6 +111,12 @@ Rationale:
 - A versioned opaque payload gives strong control over topology preservation and forward compatibility.
 - The type remains efficient for vectorized execution and cached materialization.
 
+**Experimental (`arrow-native-type` branch):** `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`
+([§8.3](#83-arrow-native-import)) ingest nested `LIST`/`STRUCT` columns directly, bypassing WKB
+entirely — but they still produce exactly this same `SOLID_3D` binary payload. The payload format
+itself, `PayloadHeader`, and the version are unchanged; only a second *import* path exists
+alongside WKB, not a second storage representation.
+
 ### 4.2 Null Semantics
 
 All public scalar functions follow DuckDB’s standard null propagation rules:
@@ -127,9 +133,27 @@ All public scalar functions follow DuckDB’s standard null propagation rules:
 | --- | --- | --- |
 | `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB)` | Import a supported WKB solid using only WKB topology. |
 | `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB, geometry_properties VARCHAR)` | Import a supported WKB solid and use JSON text metadata when provided to recover CityJSON-specific structure. |
+| `ST_3DFromWKB` | `ST_3DFromWKB(wkb BLOB, geometry_properties STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][]))` | Same as above, binding directly against a native `geometry_properties_lod*` STRUCT column (`duckdb-cityjson`'s `arrow-native-type` branch output) without an explicit `to_json()` cast. |
 | `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB)` | Same as `ST_3DFromWKB`, but returns `NULL` on failure. |
 | `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB, geometry_properties VARCHAR)` | Same as above with metadata-aware import. |
+| `ST_3DTryFromWKB` | `ST_3DTryFromWKB(wkb BLOB, geometry_properties STRUCT(...))` | Same STRUCT overload as `ST_3DFromWKB` above, returning `NULL` on failure. |
 | `ST_3DAsWKB` | `ST_3DAsWKB(solid SOLID_3D)` | Export the canonicalized solid to supported WKB. |
+
+**Experimental (`arrow-native-type` branch), [§8.3](#83-arrow-native-import):**
+
+| Function | Signature | Behavior |
+| --- | --- | --- |
+| `ST_3DFromArrowNative` | `ST_3DFromArrowNative(boundaries, vertices) → SOLID_3D` | Ingest nested `LIST`/`STRUCT` boundaries + a vertex pool directly for `Solid`/`MultiSolid`/`CompositeSolid` — no WKB, no `geometry_properties`. |
+| `ST_3DTryFromArrowNative` | `ST_3DTryFromArrowNative(boundaries, vertices) → SOLID_3D` or `NULL` | Same as above, returning `NULL` on failure. |
+| `ST_Geom3DFromArrowNative` | `ST_Geom3DFromArrowNative(boundaries, vertices) → GEOM_3D` | Same ingestion for `MultiSurface`/`CompositeSurface`, where `boundaries` is padded to solid-count 1 / shell-count 1. |
+| `ST_Geom3DTryFromArrowNative` | `ST_Geom3DTryFromArrowNative(boundaries, vertices) → GEOM_3D` or `NULL` | Same as above, returning `NULL` on failure (including on a non-padded input). |
+
+Unlike the WKB constructors, these four take exactly `(boundaries, vertices)` — no
+`geometry_properties` argument. The dispatch on geometry type that a `geometry_properties.type`
+field would otherwise provide already happens one level up: by *which* of these functions (or
+`ST_3DFromWKB` vs `ST_Geom3DFromWKB`) a query calls. Once a caller has committed to the
+arrow-native solid family, the physical shape is self-sufficient — shells are never flattened away
+the way WKB flattens them, so there is nothing left for `geometry_properties` to recover.
 
 ### 5.1.1 Constructor Rules
 
@@ -444,6 +468,54 @@ Driven by the spec §8 `shells` key, shell grouping is supported uniformly:
 
 This limitation is explicit and must not be hidden behind silent inference.
 
+### 8.3 Arrow-Native Import
+
+**Experimental (`arrow-native-type` branch)** — see the design doc in the parent workspace repo
+(`documents/docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`) for the
+cross-repo-agreed shape this must match exactly.
+
+`ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`/`ST_Geom3DFromArrowNative`/
+`ST_Geom3DTryFromArrowNative` consume the nested `LIST`/`STRUCT` columns
+`cityparquet-rs`/`duckdb-cityjson` write directly, bypassing WKB entirely:
+
+- **`boundaries`** — a 5-level nested `LIST`: `solid -> shell -> face -> ring -> index`
+  (`LIST<LIST<LIST<LIST<LIST<INTEGER>>>>>>`). Every level is a real list, even where WKB would
+  flatten it away — this is the entire point of the encoding: shells are never lost.
+- **`vertices`** — a flat pool, `LIST<STRUCT<x, y, z DOUBLE>>`, referenced by index from the
+  boundaries' innermost ring-index lists.
+
+**Distinct-index compaction is the producer's responsibility, not this extension's.** The writer
+(`cityparquet-rs`/`duckdb-cityjson`) is expected to emit a vertex pool with duplicate coordinates
+already compacted to a single index — that compaction is what makes the encoding worth using over
+WKB in the first place. `duckdb-3d` only *consumes* this column shape; it does not perform that
+compaction itself. It does, however, defensively re-deduplicate by coordinate equality on the
+`SOLID_3D` path (not the `GEOM_3D` path — see below) before running `ValidateSolidModel`, because
+this is a public SQL-callable ingestion boundary: a writer bug that leaves geometrically-identical
+vertices at distinct pool indices must not silently misreport an open/non-manifold edge (edges are
+matched by vertex *index*, not by coordinate, downstream).
+
+**Padding-dimension convention.** `MultiSurface`/`CompositeSurface` values share the exact same
+physical `boundaries`/`vertices` shape as a `Solid` — encoded as a solid-count-1, shell-count-1
+"padded" value. `ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative` assert this padding
+explicitly (raising / returning `NULL` if it does not hold) rather than branching on it silently;
+a real multi-shell value must go through `ST_3DFromArrowNative` instead.
+
+**No `geometry_properties` argument.** Unlike the WKB constructors, these four functions take
+exactly `(boundaries, vertices)`. The dispatch on geometry type that a `geometry_properties.type`
+field would otherwise provide already happens one level up, by *which* function a query calls — a
+SQL author already knows whether a column is `Solid`-family or surface-family before writing the
+query, exactly as they already do today choosing between `ST_3DFromWKB` and `ST_Geom3DFromWKB`.
+
+**Kernel stays format-agnostic.** The nested-`Vector` traversal is entirely a SQL-layer concern
+(`three_d_extension.cpp`'s `ExtractArrowNativeBoundaries`/`ExtractArrowNativeVertices`), which
+flattens the DuckDB column data into a plain-C++ CSR form (`ArrowNativeBoundaries`,
+`src/include/kernel/arrow_native_import.hpp`) before handing off to
+`BuildSolidModelFromArrowNative`/`BuildGeomModelFromArrowNative` — functions that never see a
+DuckDB `Vector`, keeping `src/kernel/` DuckDB-free exactly as `ParseWKB` does for the WKB path.
+`GeomModel`'s asymmetry from `SolidModel` (§6) carries through here too: `SolidModel` stays
+index-based (indices copied/remapped, not dereferenced), while `GeomModel` dereferences and
+expands indices into inline coordinates, since `GeomModel` is never index-based to begin with.
+
 ## 9. Validation Rules
 
 Validation is part of import and report generation.
@@ -653,10 +725,32 @@ WHERE geometry IS NOT NULL;
 Contract assumptions:
 
 - `cityjson` supplies WKB as a `BLOB`
-- `cityjson` supplies sidecar `geometry_properties` JSON text in a `VARCHAR`
+- `cityjson` supplies sidecar `geometry_properties`, either as JSON text in a `VARCHAR`, or — on
+  `duckdb-cityjson`'s experimental `arrow-native-type` branch (commit `d334b26`) — as a native
+  `STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])`. The query
+  above is unchanged either way: `ST_3DFromWKB`'s three overloads ([§5.1](#51-constructor-and-export-functions))
+  resolve on the column's actual runtime type, so no `to_json()` cast is needed for the STRUCT case.
 - `duckdb-3d` does not need to know about CityJSON files or tables directly
 
 Future integration work may improve metadata richness, but v1 keeps the extensions decoupled.
+
+**Experimental (`arrow-native-type` branch) — arrow-native equivalent, [§8.3](#83-arrow-native-import):**
+when `read_cityjson`/`cityparquet-rs` expose `boundaries`/`vertices` columns directly (rather than
+WKB + `geometry_properties`), the WKB step and its shell-recovery metadata drop out entirely:
+
+```sql
+LOAD three_d;
+
+WITH objects AS (
+    SELECT id, boundaries, vertices
+    FROM read_cityjson_arrow_native('buildings.city.json', lod => '2.2') -- illustrative; not yet implemented upstream
+)
+SELECT
+    id,
+    ST_3DVolume(ST_3DFromArrowNative(boundaries, vertices)) AS volume
+FROM objects
+WHERE boundaries IS NOT NULL;
+```
 
 ## 13. Development Workflow
 
@@ -729,6 +823,16 @@ serialization surface (§16) are implemented. What remains open is tracked in tw
 
 The CGAL/SFCGAL-gated function cluster is specified in
 [§16.8](#168-cgal--sfcgal-backend-cluster-all-want-flagged).
+
+### 14.3 Experimental: Arrow-Native Ingestion (`arrow-native-type` branch)
+
+[§8.3](#83-arrow-native-import)'s `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`/
+`ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative` are the third leg of a 3-repo experiment
+(alongside `cityparquet-rs` and `duckdb-cityjson`), not yet part of the decided v1 surface this
+document otherwise describes. Status, the cross-repo schema-parity requirement, and the overall
+testing plan live in the parent workspace repo's own design doc:
+`documents/docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` (draft, under
+evaluation — its own status is the authoritative source, not a copy of it here).
 
 ## 15. Contribution Invariants
 
