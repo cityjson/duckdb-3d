@@ -2156,6 +2156,83 @@ static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, 
 }
 
 // ──────────────────────────────────────────────────────────────
+// ST_Geom3DFromArrowNative(boundaries, vertices) → GEOM_3D
+// (boundaries padded to solid-count 1 / shell-count 1 — the design doc's
+// surface-type convention; see BuildGeomModelFromArrowNative.)
+// ──────────────────────────────────────────────────────────────
+static void ST_Geom3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &boundaries_vec = args.data[0];
+	auto &vertices_vec = args.data[1];
+	auto count = args.size();
+	bool all_constant = args.AllConstant();
+
+	boundaries_vec.Flatten(count);
+	vertices_vec.Flatten(count);
+	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
+	auto &vertices_validity = FlatVector::Validity(vertices_vec);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+		using namespace duckdb_3d;
+		auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
+		auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
+		auto model = BuildGeomModelFromArrowNative(boundaries, vertices);
+		auto payload = SerializeGeomPayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_Geom3DTryFromArrowNative(boundaries, vertices) → GEOM_3D or NULL
+// ──────────────────────────────────────────────────────────────
+static void ST_Geom3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &boundaries_vec = args.data[0];
+	auto &vertices_vec = args.data[1];
+	auto count = args.size();
+	bool all_constant = args.AllConstant();
+
+	boundaries_vec.Flatten(count);
+	vertices_vec.Flatten(count);
+	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
+	auto &vertices_validity = FlatVector::Validity(vertices_vec);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+		try {
+			using namespace duckdb_3d;
+			auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
+			auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
+			auto model = BuildGeomModelFromArrowNative(boundaries, vertices);
+			auto payload = SerializeGeomPayload(model);
+			FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		} catch (...) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+		}
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -2188,6 +2265,19 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
+
+	auto geom3d_from_arrow_native =
+	    ScalarFunction("st_geom3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()}, geom_3d_type,
+	                   ST_Geom3DFromArrowNativeFun);
+	geom3d_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	loader.RegisterFunction(geom3d_from_arrow_native);
+
+	auto geom3d_try_from_arrow_native =
+	    ScalarFunction("st_geom3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
+	                   geom_3d_type, ST_Geom3DTryFromArrowNativeFun);
+	geom3d_try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	loader.RegisterFunction(geom3d_try_from_arrow_native);
+
 	loader.RegisterFunction(
 	    ScalarFunction("st_geometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
 	loader.RegisterFunction(ScalarFunction("st_x", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
