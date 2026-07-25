@@ -21,6 +21,7 @@
 #include "kernel/geom_analysis.hpp"
 #include "kernel/geom_serialize.hpp"
 #include "kernel/crs_transform.hpp"
+#include "kernel/arrow_native_import.hpp"
 #include "duckdb/function/function_set.hpp"
 
 #include <cmath>
@@ -1952,6 +1953,209 @@ static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &
 }
 
 // ──────────────────────────────────────────────────────────────
+// Arrow-native ingestion (arrow-native-type branch): ST_3DFromArrowNative /
+// ST_3DTryFromArrowNative consume the nested LIST<...<LIST<INTEGER>>>
+// boundaries + LIST<STRUCT<x,y,z DOUBLE>> vertices columns cityparquet-rs /
+// duckdb-cityjson write directly — no WKB bytes, no geometry_properties.
+// ──────────────────────────────────────────────────────────────
+
+//! boundaries: solid -> shell -> face -> ring -> index, 5 levels of LIST<INTEGER>.
+LogicalType ArrowNativeGeometryType() {
+	auto ring = LogicalType::LIST(LogicalType::INTEGER);
+	auto face = LogicalType::LIST(ring);
+	auto shell = LogicalType::LIST(face);
+	auto solid = LogicalType::LIST(shell);
+	return LogicalType::LIST(solid);
+}
+
+//! vertices: a flat pool, LIST<STRUCT<x,y,z DOUBLE>>, referenced by index
+//! from the boundaries' innermost ring-index lists.
+LogicalType ArrowNativeVerticesType() {
+	child_list_t<LogicalType> fields;
+	fields.push_back(make_pair("x", LogicalType::DOUBLE));
+	fields.push_back(make_pair("y", LogicalType::DOUBLE));
+	fields.push_back(make_pair("z", LogicalType::DOUBLE));
+	return LogicalType::LIST(LogicalType::STRUCT(std::move(fields)));
+}
+
+//! A literal or constant-folded expression (as in a simple `SELECT ...` test
+//! query, or Task 1's STRUCT overload before this fix) can produce a
+//! non-FLAT_VECTOR at any nesting depth, not only the top level —
+//! FlatVector::GetData/IsNull assert genuine flat vectors. `count` is this
+//! level's own cardinality (its list's total element count across every row,
+//! not the outer chunk's row count — list children are a single vector
+//! shared/concatenated across all rows' entries).
+static void FlattenIfNeeded(Vector &vec, idx_t count) {
+	if (vec.GetVectorType() != VectorType::FLAT_VECTOR) {
+		vec.Flatten(count);
+	}
+}
+
+//! Walks one row of the boundaries Vector, flattening each nested level as it
+//! descends, into the kernel's plain-C++ CSR form (real per-level traversal,
+//! not a raw buffer cast: DuckDB ListVectors are list_entry_t pairs into a
+//! shared child, with possible non-flat intermediate children).
+static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &boundaries_vec, idx_t row) {
+	using namespace duckdb_3d;
+	ArrowNativeBoundaries result;
+
+	// CSR construction mirrors model_builder.cpp exactly: push a leading 0 for
+	// each offset array once, then push the running cumulative count once
+	// per completed element (shell/face/ring) — offsets[i] is element i's
+	// start, offsets[i+1] its end, so pushing "the count so far" right after
+	// finishing element i is exactly offsets[i+1].
+	result.solid_shell_offsets.push_back(0);
+	result.shell_face_offsets.push_back(0);
+	result.face_ring_offsets.push_back(0);
+	result.ring_vertex_offsets.push_back(0);
+
+	uint32_t total_shells = 0, total_faces = 0, total_rings = 0;
+
+	auto solid_entry = FlatVector::GetData<list_entry_t>(boundaries_vec)[row];
+	auto &shell_vec = ListVector::GetEntry(boundaries_vec);
+	FlattenIfNeeded(shell_vec, ListVector::GetListSize(boundaries_vec));
+
+	for (idx_t solid_idx = solid_entry.offset; solid_idx < solid_entry.offset + solid_entry.length; solid_idx++) {
+		auto shell_entry = FlatVector::GetData<list_entry_t>(shell_vec)[solid_idx];
+		auto &face_vec = ListVector::GetEntry(shell_vec);
+		FlattenIfNeeded(face_vec, ListVector::GetListSize(shell_vec));
+
+		for (idx_t shell_idx = shell_entry.offset; shell_idx < shell_entry.offset + shell_entry.length; shell_idx++) {
+			auto face_entry = FlatVector::GetData<list_entry_t>(face_vec)[shell_idx];
+			auto &ring_vec = ListVector::GetEntry(face_vec);
+			FlattenIfNeeded(ring_vec, ListVector::GetListSize(face_vec));
+
+			for (idx_t face_idx = face_entry.offset; face_idx < face_entry.offset + face_entry.length; face_idx++) {
+				auto ring_entry = FlatVector::GetData<list_entry_t>(ring_vec)[face_idx];
+				auto &index_vec = ListVector::GetEntry(ring_vec);
+				FlattenIfNeeded(index_vec, ListVector::GetListSize(ring_vec));
+
+				for (idx_t r = ring_entry.offset; r < ring_entry.offset + ring_entry.length; r++) {
+					auto idx_ring_entry = FlatVector::GetData<list_entry_t>(index_vec)[r];
+					auto &leaf_vec = ListVector::GetEntry(index_vec);
+					FlattenIfNeeded(leaf_vec, ListVector::GetListSize(index_vec));
+					auto leaf_data = FlatVector::GetData<int32_t>(leaf_vec);
+
+					for (idx_t k = idx_ring_entry.offset; k < idx_ring_entry.offset + idx_ring_entry.length; k++) {
+						int32_t raw = leaf_data[k];
+						if (raw < 0) {
+							throw std::runtime_error("arrow-native geometry: negative vertex-pool index");
+						}
+						result.ring_vertex_indices.push_back(static_cast<uint32_t>(raw));
+					}
+					total_rings++;
+					result.ring_vertex_offsets.push_back(static_cast<uint32_t>(result.ring_vertex_indices.size()));
+				}
+				total_faces++;
+				result.face_ring_offsets.push_back(total_rings);
+			}
+			total_shells++;
+			result.shell_face_offsets.push_back(total_faces);
+		}
+		result.solid_shell_offsets.push_back(total_shells);
+	}
+
+	return result;
+}
+
+//! Walks one row of the vertices Vector into a plain vertex pool.
+static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &vertices_vec, idx_t row) {
+	using namespace duckdb_3d;
+	auto vert_entry = FlatVector::GetData<list_entry_t>(vertices_vec)[row];
+	auto &struct_vec = ListVector::GetEntry(vertices_vec);
+	auto &children = StructVector::GetEntries(struct_vec);
+	auto list_size = ListVector::GetListSize(vertices_vec);
+	FlattenIfNeeded(*children[0], list_size);
+	FlattenIfNeeded(*children[1], list_size);
+	FlattenIfNeeded(*children[2], list_size);
+	auto x_data = FlatVector::GetData<double>(*children[0]);
+	auto y_data = FlatVector::GetData<double>(*children[1]);
+	auto z_data = FlatVector::GetData<double>(*children[2]);
+
+	std::vector<Vertex3D> vertices;
+	vertices.reserve(vert_entry.length);
+	for (idx_t i = vert_entry.offset; i < vert_entry.offset + vert_entry.length; i++) {
+		vertices.push_back(Vertex3D {x_data[i], y_data[i], z_data[i]});
+	}
+	return vertices;
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DFromArrowNative(boundaries, vertices) → SOLID_3D
+// ──────────────────────────────────────────────────────────────
+static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &boundaries_vec = args.data[0];
+	auto &vertices_vec = args.data[1];
+	auto count = args.size();
+	bool all_constant = args.AllConstant();
+
+	boundaries_vec.Flatten(count);
+	vertices_vec.Flatten(count);
+	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
+	auto &vertices_validity = FlatVector::Validity(vertices_vec);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+		using namespace duckdb_3d;
+		auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
+		auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
+		auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
+		auto payload = SerializePayload(model);
+		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DTryFromArrowNative(boundaries, vertices) → SOLID_3D or NULL
+// ──────────────────────────────────────────────────────────────
+static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &boundaries_vec = args.data[0];
+	auto &vertices_vec = args.data[1];
+	auto count = args.size();
+	bool all_constant = args.AllConstant();
+
+	boundaries_vec.Flatten(count);
+	vertices_vec.Flatten(count);
+	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
+	auto &vertices_validity = FlatVector::Validity(vertices_vec);
+	auto &result_validity = FlatVector::Validity(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+			continue;
+		}
+		try {
+			using namespace duckdb_3d;
+			auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
+			auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
+			auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
+			auto payload = SerializePayload(model);
+			FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
+			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		} catch (...) {
+			result_validity.SetInvalid(i);
+			FlatVector::GetData<string_t>(result)[i] = string_t();
+		}
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Extension registration
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
@@ -2057,6 +2261,19 @@ static void LoadInternal(ExtensionLoader &loader) {
 	try_from_wkb_2arg_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg_struct);
 	loader.RegisterFunction(try_from_wkb_set);
+
+	// ST_3DFromArrowNative / ST_3DTryFromArrowNative(boundaries, vertices) -> SOLID_3D
+	auto from_arrow_native =
+	    ScalarFunction("st_3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
+	                   LogicalType::BLOB, ST_3DFromArrowNativeFun);
+	from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	loader.RegisterFunction(from_arrow_native);
+
+	auto try_from_arrow_native =
+	    ScalarFunction("st_3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
+	                   LogicalType::BLOB, ST_3DTryFromArrowNativeFun);
+	try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	loader.RegisterFunction(try_from_arrow_native);
 
 	// ST_3DAsWKB(solid SOLID_3D) -> BLOB
 	loader.RegisterFunction(ScalarFunction("st_3daswkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
