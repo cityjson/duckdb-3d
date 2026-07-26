@@ -1,5 +1,5 @@
 # name: test/sql/st_geom3d_from_arrow_native.test
-# description: ST_Geom3DFromArrowNative / ST_Geom3DTryFromArrowNative ingest a padded (surface-family) nested-List/Struct value
+# description: ST_Geom3DFromArrowNative / ST_Geom3DTryFromArrowNative ingest a surface-family nested-List/Struct value, dispatching per-row on geometry_properties.type
 # group: [sql]
 
 require three_d
@@ -12,7 +12,8 @@ SELECT ST_GeometryType(g), ST_NumGeometries(g)
 FROM (
     SELECT ST_Geom3DFromArrowNative(
         [[ [ [[0,1,2]] ] ]],
-        [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}]
+        [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+        '{"type": "MultiSurface"}'
     ) AS g
 ) q;
 ----
@@ -22,29 +23,48 @@ ST_MultiPolygon	1
 query I
 SELECT ST_Area(ST_Geom3DFromArrowNative(
     [[ [ [[0,1,2]] ] ]],
-    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}]
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "MultiSurface"}'
 ));
 ----
 0.5
 
+# CompositeSurface is also accepted (surface-family, not just "MultiSurface").
+query I
+SELECT ST_Geom3DTryFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "CompositeSurface"}'
+) IS NOT NULL;
+----
+true
+
 # NULL propagation.
 query I
-SELECT ST_Geom3DFromArrowNative(NULL, [{'x':0.0,'y':0.0,'z':0.0}]) IS NULL;
+SELECT ST_Geom3DFromArrowNative(NULL, [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "MultiSurface"}') IS NULL;
 ----
 true
 
 query I
-SELECT ST_Geom3DFromArrowNative([[[[[0,1,2]]]]], NULL) IS NULL;
+SELECT ST_Geom3DFromArrowNative([[[[[0,1,2]]]]], NULL, '{"type": "MultiSurface"}') IS NULL;
 ----
 true
 
-# ST_Geom3DTryFromArrowNative: a non-padded (real 2-shell) value returns NULL
-# rather than raising (only ST_3DFromArrowNative accepts multi-shell values).
+query I
+SELECT ST_Geom3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], NULL) IS NULL;
+----
+true
+
+# ST_Geom3DTryFromArrowNative: a non-padded (real 2-shell) value mistakenly
+# typed as MultiSurface returns NULL rather than raising (the kernel's own
+# padding-dimension assertion catches a producer inconsistency defensively,
+# behind the type check).
 query I
 SELECT ST_Geom3DTryFromArrowNative(
     [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
     [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
-     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}]
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSurface"}'
 ) IS NULL;
 ----
 true
@@ -54,7 +74,51 @@ statement error
 SELECT ST_Geom3DFromArrowNative(
     [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
     [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
-     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}]
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSurface"}'
 );
 ----
 padding
+
+# ──────────────────────────────────────────────────────────────
+# Per-row type dispatch (design doc "critical invariant"): a Solid-typed row
+# is rejected by ST_Geom3DFromArrowNative even though its padded shape is
+# physically identical to a valid MultiSurface — mirrors
+# st_3d_from_arrow_native.test's symmetric case.
+# ──────────────────────────────────────────────────────────────
+
+query I
+SELECT ST_Geom3DTryFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_Geom3DFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+);
+----
+not a surface-family type
+
+# The mixed-column proof, mirrored: same physical shape, ST_Geom3DFromArrowNative
+# ingests the MultiSurface row and rejects the Solid row, in the same SELECT.
+query II
+SELECT id, ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties) IS NOT NULL AS ingested
+FROM (
+    VALUES
+        (1, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "MultiSurface"}'),
+        (2, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "Solid"}')
+) t(id, boundaries, vertices, geometry_properties)
+ORDER BY id;
+----
+1	true
+2	false

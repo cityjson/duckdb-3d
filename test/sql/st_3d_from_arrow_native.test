@@ -1,5 +1,5 @@
 # name: test/sql/st_3d_from_arrow_native.test
-# description: ST_3DFromArrowNative / ST_3DTryFromArrowNative ingest nested-List/Struct solids
+# description: ST_3DFromArrowNative / ST_3DTryFromArrowNative ingest nested-List/Struct solids, dispatching per-row on geometry_properties.type
 # group: [sql]
 
 require three_d
@@ -14,7 +14,8 @@ FROM (
     SELECT ST_3DFromArrowNative(
         [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
-         {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}]
+         {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+        '{"type": "Solid"}'
     ) AS s
 ) q;
 ----
@@ -38,32 +39,98 @@ FROM (
         [{'x':0,'y':0,'z':0}, {'x':0,'y':4,'z':0}, {'x':4,'y':4,'z':0}, {'x':4,'y':0,'z':0},
          {'x':0,'y':0,'z':4}, {'x':4,'y':0,'z':4}, {'x':4,'y':4,'z':4}, {'x':0,'y':4,'z':4},
          {'x':1,'y':1,'z':1}, {'x':1,'y':3,'z':1}, {'x':3,'y':3,'z':1}, {'x':3,'y':1,'z':1},
-         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}]
+         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}],
+        '{"type": "Solid"}'
     ) AS s
 ) q;
 ----
 56.0	120.0
 
-# NULL propagation: NULL boundaries or vertices -> NULL result.
+# NULL propagation: NULL boundaries, vertices, or geometry_properties -> NULL result.
 query I
-SELECT ST_3DFromArrowNative(NULL, [{'x':0.0,'y':0.0,'z':0.0}]) IS NULL;
+SELECT ST_3DFromArrowNative(NULL, [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}') IS NULL;
 ----
 true
 
 query I
-SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], NULL) IS NULL;
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], NULL, '{"type": "Solid"}') IS NULL;
+----
+true
+
+query I
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], NULL) IS NULL;
 ----
 true
 
 # ST_3DTryFromArrowNative: out-of-range vertex-pool index returns NULL rather
 # than raising (only 1 vertex provided, index 2 is out of range).
 query I
-SELECT ST_3DTryFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}]) IS NULL;
+SELECT ST_3DTryFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}') IS NULL;
 ----
 true
 
 # ST_3DFromArrowNative: the same out-of-range case raises in non-TRY mode.
 statement error
-SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}]);
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}');
 ----
 out of range
+
+# ──────────────────────────────────────────────────────────────
+# Per-row type dispatch (design doc "critical invariant": dispatch on
+# geometry_properties.type, never on physical shape — a single column may
+# mix Solid-family and surface-family rows sharing the identical padded
+# shape). ST_3DFromArrowNative must reject a surface-family row even though
+# its physical shape (solid-count 1, shell-count 1) looks like a valid
+# degenerate solid.
+# ──────────────────────────────────────────────────────────────
+
+# A MultiSurface-typed row rejected by ST_3DTryFromArrowNative (NULL), even
+# though the padded shape is physically identical to a valid single-shell Solid.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "MultiSurface"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "MultiSurface"}'
+);
+----
+not a solid-family type
+
+# MultiSolid/CompositeSolid are also accepted (solid-family, not just "Solid").
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+) IS NOT NULL;
+----
+true
+
+# The actual mixed-column proof: one query, two rows sharing the identical
+# padded (solid-count 1, shell-count 1) physical shape, differing only in
+# geometry_properties.type — ST_3DFromArrowNative must ingest the Solid row
+# and reject the MultiSurface row, in the same SELECT.
+query II
+SELECT id, ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties) IS NOT NULL AS ingested
+FROM (
+    VALUES
+        (1, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "Solid"}'),
+        (2, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "MultiSurface"}')
+) t(id, boundaries, vertices, geometry_properties)
+ORDER BY id;
+----
+1	true
+2	false

@@ -2080,12 +2080,33 @@ static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &verti
 	return vertices;
 }
 
+//! Design doc "critical invariant": the physical boundaries/vertices shape is
+//! uniform across Solid-family and (padded) surface-family rows, so a single
+//! column may legitimately mix them. Consumers MUST dispatch on
+//! geometry_properties.type per row, never on physical shape — checking
+//! shell-count/solid-count alone cannot distinguish a real single-shell
+//! Solid from a padded MultiSurface (they are, by design, shape-identical).
+static bool IsSolidFamilyType(const std::string &type) {
+	return type == "Solid" || type == "MultiSolid" || type == "CompositeSolid";
+}
+
+static bool IsSurfaceFamilyType(const std::string &type) {
+	return type == "MultiSurface" || type == "CompositeSurface";
+}
+
 // ──────────────────────────────────────────────────────────────
-// ST_3DFromArrowNative(boundaries, vertices) → SOLID_3D
+// ST_3DFromArrowNative(boundaries, vertices, geometry_properties) → SOLID_3D
+// geometry_properties is JSON text (VARCHAR), parsed via the same
+// ParseGeometryProperties the WKB path uses — per the design doc, arrow-native
+// keeps geometry_properties as VARCHAR-JSON on both paths precisely so this
+// parsing step is identical, not something the new path gets to skip. Here
+// `.type` is load-bearing (dispatch), not merely informational as on the WKB
+// path.
 // ──────────────────────────────────────────────────────────────
 static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &boundaries_vec = args.data[0];
 	auto &vertices_vec = args.data[1];
+	auto &meta_vec = args.data[2];
 	auto count = args.size();
 	bool all_constant = args.AllConstant();
 
@@ -2095,13 +2116,26 @@ static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vec
 	auto &vertices_validity = FlatVector::Validity(vertices_vec);
 	auto &result_validity = FlatVector::Validity(result);
 
+	UnifiedVectorFormat meta_data;
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+
 	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+		auto meta_idx = meta_data.sel->get_index(i);
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
+		    !meta_data.validity.RowIsValid(meta_idx)) {
 			result_validity.SetInvalid(i);
 			FlatVector::GetData<string_t>(result)[i] = string_t();
 			continue;
 		}
 		using namespace duckdb_3d;
+		auto &meta_str = meta_strings[meta_idx];
+		auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+		if (!IsSolidFamilyType(metadata.type)) {
+			throw std::runtime_error("ST_3DFromArrowNative: geometry_properties.type '" + metadata.type +
+			                         "' is not a solid-family type (Solid/MultiSolid/CompositeSolid) — "
+			                         "call ST_Geom3DFromArrowNative for surface types");
+		}
 		auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
 		auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
 		auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
@@ -2116,11 +2150,12 @@ static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vec
 }
 
 // ──────────────────────────────────────────────────────────────
-// ST_3DTryFromArrowNative(boundaries, vertices) → SOLID_3D or NULL
+// ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties) → SOLID_3D or NULL
 // ──────────────────────────────────────────────────────────────
 static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &boundaries_vec = args.data[0];
 	auto &vertices_vec = args.data[1];
+	auto &meta_vec = args.data[2];
 	auto count = args.size();
 	bool all_constant = args.AllConstant();
 
@@ -2130,14 +2165,25 @@ static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, 
 	auto &vertices_validity = FlatVector::Validity(vertices_vec);
 	auto &result_validity = FlatVector::Validity(result);
 
+	UnifiedVectorFormat meta_data;
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+
 	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+		auto meta_idx = meta_data.sel->get_index(i);
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
+		    !meta_data.validity.RowIsValid(meta_idx)) {
 			result_validity.SetInvalid(i);
 			FlatVector::GetData<string_t>(result)[i] = string_t();
 			continue;
 		}
 		try {
 			using namespace duckdb_3d;
+			auto &meta_str = meta_strings[meta_idx];
+			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+			if (!IsSolidFamilyType(metadata.type)) {
+				throw std::runtime_error("not a solid-family type");
+			}
 			auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
 			auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
 			auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
@@ -2156,13 +2202,15 @@ static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, 
 }
 
 // ──────────────────────────────────────────────────────────────
-// ST_Geom3DFromArrowNative(boundaries, vertices) → GEOM_3D
-// (boundaries padded to solid-count 1 / shell-count 1 — the design doc's
-// surface-type convention; see BuildGeomModelFromArrowNative.)
+// ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties) → GEOM_3D
+// (boundaries padded to solid-count 1 / shell-count 1 for surface-family
+// types — see BuildGeomModelFromArrowNative. That padding-shape assertion is
+// a defensive secondary check; the primary dispatch is geometry_properties.type.)
 // ──────────────────────────────────────────────────────────────
 static void ST_Geom3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &boundaries_vec = args.data[0];
 	auto &vertices_vec = args.data[1];
+	auto &meta_vec = args.data[2];
 	auto count = args.size();
 	bool all_constant = args.AllConstant();
 
@@ -2172,13 +2220,26 @@ static void ST_Geom3DFromArrowNativeFun(DataChunk &args, ExpressionState &state,
 	auto &vertices_validity = FlatVector::Validity(vertices_vec);
 	auto &result_validity = FlatVector::Validity(result);
 
+	UnifiedVectorFormat meta_data;
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+
 	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+		auto meta_idx = meta_data.sel->get_index(i);
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
+		    !meta_data.validity.RowIsValid(meta_idx)) {
 			result_validity.SetInvalid(i);
 			FlatVector::GetData<string_t>(result)[i] = string_t();
 			continue;
 		}
 		using namespace duckdb_3d;
+		auto &meta_str = meta_strings[meta_idx];
+		auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+		if (!IsSurfaceFamilyType(metadata.type)) {
+			throw std::runtime_error("ST_Geom3DFromArrowNative: geometry_properties.type '" + metadata.type +
+			                         "' is not a surface-family type (MultiSurface/CompositeSurface) — "
+			                         "call ST_3DFromArrowNative for solid types");
+		}
 		auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
 		auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
 		auto model = BuildGeomModelFromArrowNative(boundaries, vertices);
@@ -2193,11 +2254,12 @@ static void ST_Geom3DFromArrowNativeFun(DataChunk &args, ExpressionState &state,
 }
 
 // ──────────────────────────────────────────────────────────────
-// ST_Geom3DTryFromArrowNative(boundaries, vertices) → GEOM_3D or NULL
+// ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties) → GEOM_3D or NULL
 // ──────────────────────────────────────────────────────────────
 static void ST_Geom3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &boundaries_vec = args.data[0];
 	auto &vertices_vec = args.data[1];
+	auto &meta_vec = args.data[2];
 	auto count = args.size();
 	bool all_constant = args.AllConstant();
 
@@ -2207,14 +2269,25 @@ static void ST_Geom3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &sta
 	auto &vertices_validity = FlatVector::Validity(vertices_vec);
 	auto &result_validity = FlatVector::Validity(result);
 
+	UnifiedVectorFormat meta_data;
+	meta_vec.ToUnifiedFormat(count, meta_data);
+	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+
 	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i)) {
+		auto meta_idx = meta_data.sel->get_index(i);
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
+		    !meta_data.validity.RowIsValid(meta_idx)) {
 			result_validity.SetInvalid(i);
 			FlatVector::GetData<string_t>(result)[i] = string_t();
 			continue;
 		}
 		try {
 			using namespace duckdb_3d;
+			auto &meta_str = meta_strings[meta_idx];
+			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+			if (!IsSurfaceFamilyType(metadata.type)) {
+				throw std::runtime_error("not a surface-family type");
+			}
 			auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, i);
 			auto vertices = ExtractArrowNativeVertices(vertices_vec, i);
 			auto model = BuildGeomModelFromArrowNative(boundaries, vertices);
@@ -2266,15 +2339,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// GEOM_3D construction and accessors
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
 
-	auto geom3d_from_arrow_native =
-	    ScalarFunction("st_geom3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()}, geom_3d_type,
-	                   ST_Geom3DFromArrowNativeFun);
+	auto geom3d_from_arrow_native = ScalarFunction(
+	    "st_geom3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR},
+	    geom_3d_type, ST_Geom3DFromArrowNativeFun);
 	geom3d_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(geom3d_from_arrow_native);
 
-	auto geom3d_try_from_arrow_native =
-	    ScalarFunction("st_geom3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
-	                   geom_3d_type, ST_Geom3DTryFromArrowNativeFun);
+	auto geom3d_try_from_arrow_native = ScalarFunction(
+	    "st_geom3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR},
+	    geom_3d_type, ST_Geom3DTryFromArrowNativeFun);
 	geom3d_try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(geom3d_try_from_arrow_native);
 
@@ -2352,16 +2425,16 @@ static void LoadInternal(ExtensionLoader &loader) {
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg_struct);
 	loader.RegisterFunction(try_from_wkb_set);
 
-	// ST_3DFromArrowNative / ST_3DTryFromArrowNative(boundaries, vertices) -> SOLID_3D
-	auto from_arrow_native =
-	    ScalarFunction("st_3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
-	                   LogicalType::BLOB, ST_3DFromArrowNativeFun);
+	// ST_3DFromArrowNative / ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties) -> SOLID_3D
+	auto from_arrow_native = ScalarFunction(
+	    "st_3dfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR},
+	    LogicalType::BLOB, ST_3DFromArrowNativeFun);
 	from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(from_arrow_native);
 
-	auto try_from_arrow_native =
-	    ScalarFunction("st_3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType()},
-	                   LogicalType::BLOB, ST_3DTryFromArrowNativeFun);
+	auto try_from_arrow_native = ScalarFunction(
+	    "st_3dtryfromarrownative", {ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR},
+	    LogicalType::BLOB, ST_3DTryFromArrowNativeFun);
 	try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(try_from_arrow_native);
 
