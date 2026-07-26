@@ -143,10 +143,10 @@ All public scalar functions follow DuckDB’s standard null propagation rules:
 
 | Function | Signature | Behavior |
 | --- | --- | --- |
-| `ST_3DFromArrowNative` | `ST_3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D` | Ingest nested `LIST`/`STRUCT` boundaries + a vertex pool for `Solid`/`MultiSolid`/`CompositeSolid` rows (`geometry_properties.type` checked, not the physical shape — see below); raises if `.type` is not solid-family. |
-| `ST_3DTryFromArrowNative` | `ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D` or `NULL` | Same as above, returning `NULL` on failure (including a family mismatch). |
-| `ST_Geom3DFromArrowNative` | `ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D` | Same ingestion for `MultiSurface`/`CompositeSurface` rows (`boundaries` padded to solid-count 1 / shell-count 1); raises if `.type` is not surface-family. |
-| `ST_Geom3DTryFromArrowNative` | `ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D` or `NULL` | Same as above, returning `NULL` on failure (family mismatch or non-padded input). |
+| `ST_3DFromArrowNative` | `ST_3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR \| STRUCT(...)) → SOLID_3D` | Ingest nested `LIST`/`STRUCT` boundaries + a vertex pool for `Solid`/`MultiSolid`/`CompositeSolid` rows (`geometry_properties.type` checked, not the physical shape — see below); raises if `.type` is not solid-family. Two `geometry_properties` overloads, mirroring `ST_3DFromWKB`. |
+| `ST_3DTryFromArrowNative` | `ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR \| STRUCT(...)) → SOLID_3D` or `NULL` | Same as above, returning `NULL` on failure (including a family mismatch). |
+| `ST_Geom3DFromArrowNative` | `ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR \| STRUCT(...)) → GEOM_3D` | Same ingestion for `MultiSurface`/`CompositeSurface` rows (`boundaries` padded to solid-count 1 / shell-count 1); raises if `.type` is not surface-family. |
+| `ST_Geom3DTryFromArrowNative` | `ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR \| STRUCT(...)) → GEOM_3D` or `NULL` | Same as above, returning `NULL` on failure (family mismatch or non-padded input). |
 
 **`geometry_properties` is required, not optional, and its `.type` field is load-bearing —
 consumers dispatch on it, never on the physical shape.** A single `geometry_lod*` column may
@@ -485,10 +485,20 @@ shape this must match exactly.
 `cityparquet-rs`/`duckdb-cityjson` write directly, bypassing WKB entirely:
 
 - **`boundaries`** — a 5-level nested `LIST`: `solid -> shell -> face -> ring -> index`
-  (`LIST<LIST<LIST<LIST<LIST<INTEGER>>>>>>`). Every level is a real list, even where WKB would
-  flatten it away — this is the entire point of the encoding: shells are never lost.
+  (`LIST<LIST<LIST<LIST<LIST<INTEGER>>>>>>`).
 - **`vertices`** — a flat pool, `LIST<STRUCT<x, y, z DOUBLE>>`, referenced by index from the
   boundaries' innermost ring-index lists.
+
+**The "shell" nesting level does not carry real interior-shell structure — confirmed by reading
+the actual producer.** An earlier revision of this document claimed "every level is a real list,
+even where WKB would flatten it away... shells are never lost." That is false for the `Solid`
+family: `cityparquet-rs`'s `arrow_geom_write.rs` (`push_padded_solid`) always pads every solid to
+exactly **one** physical shell, flattening any real interior shells into a single face list —
+exactly as the WKB path flattens them into one `PolyhedralSurface`. The real per-solid shell
+partition lives only in `geometry_properties.shells`, recovered the same way the WKB path already
+recovers it ([§8.2.1](#821-cityjson-shell-grouping-support)). This is why `geometry_properties` is
+a *required* argument on all four functions, not an optional dispatch hint (next paragraphs) — see
+"Shells regrouping" below for the mechanism.
 
 **Distinct-index compaction is the producer's responsibility, not this extension's.** The writer
 (`cityparquet-rs`/`duckdb-cityjson`) is expected to emit a vertex pool with duplicate coordinates
@@ -507,17 +517,37 @@ shape cannot drive dispatch (next paragraph): a real single-shell `Solid` and a 
 `MultiSurface` are shape-identical by construction.
 
 **Dispatch on `geometry_properties.type`, never on physical shape — this is a hard invariant, not
-a convenience.** All four functions take `(boundaries, vertices, geometry_properties)`, where
-`geometry_properties` is required JSON text (`VARCHAR`), parsed via the same `ParseGeometryProperties`
-the WKB path already uses ([§8.2](#82-metadata-aware-import)) — kept identical to WKB rather than
-growing the [§5.1](#51-constructor-and-export-functions) STRUCT overload's shape. Each function
-checks `.type` per row before doing anything else: `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`
-accept `Solid`/`MultiSolid`/`CompositeSolid`; `ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative`
-accept `MultiSurface`/`CompositeSurface`. A family mismatch raises (or returns `NULL` in `TRY`
-mode) even when the physical shape alone would have parsed as a valid value of the *other* family
-— the [§8.3](#83-arrow-native-import) padding-dimension assertion inside `BuildGeomModelFromArrowNative`
-still runs too, as a defensive secondary check for a producer that mislabels `.type`, but the
-primary dispatch is always the metadata field.
+a convenience.** All four functions take `(boundaries, vertices, geometry_properties)`, with
+**two overloads for `geometry_properties`**, mirroring [§5.1](#51-constructor-and-export-functions)'s
+WKB overloads exactly: JSON text (`VARCHAR`), parsed via the same `ParseGeometryProperties` the WKB
+path already uses; and a native `STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[],
+shells INTEGER[][])`, binding directly against `cityparquet-rs`'s real `geometry_properties_lod*`
+column (confirmed: the same `STRUCT` type it already uses for WKB rows) without an explicit
+`to_json()` cast. Each function checks `.type` per row before doing anything else:
+`ST_3DFromArrowNative`/`ST_3DTryFromArrowNative` accept `Solid`/`MultiSolid`/`CompositeSolid`;
+`ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative` accept `MultiSurface`/`CompositeSurface`. A
+family mismatch raises (or returns `NULL` in `TRY` mode) even when the physical shape alone would
+have parsed as a valid value of the *other* family — the padding-dimension assertion inside
+`BuildGeomModelFromArrowNative` still runs too, as a defensive secondary check for a producer that
+mislabels `.type`, but the primary dispatch is always the metadata field.
+
+**Shells regrouping (`SolidModel` path only).** Because the physical "shell" level is always
+padded to one entry per solid (previous paragraph), `BuildSolidModelFromArrowNative` has a
+metadata-aware overload — `BuildSolidModelFromArrowNative(boundaries, vertices, metadata)` — that
+regroups the flattened per-solid face range into real shells using `metadata.shells`, mirroring
+`model_builder.cpp`'s `BuildSolidModel(surfaces, metadata)` exactly: a 64-bit running sum (so a
+crafted count near `UINT32_MAX` cannot wrap into a spurious match), a `0` entry is a fully-dropped
+shell contributing no shell entry, and at least one non-empty shell is required per solid. Only
+`shell_face_offsets`/`solid_shell_offsets` are rederived — `face_ring_offsets`/
+`ring_vertex_offsets`/`ring_vertex_indices` are copied through unchanged, since regrouping only
+reinterprets which shell boundary a face falls under, never reorders faces. Skipping this
+regrouping (an earlier revision of this branch did) silently merges every interior shell into the
+exterior, so `CheckInteriorShellWinding` ([§9.3](#93-orientation-consistency)) never runs and a
+same-wound (invalid) cavity is accepted with its volume wrongly added instead of subtracted. If
+`metadata.shells` is empty, this overload delegates unchanged to the 2-arg overload (matches
+`BuildSolidModel(surfaces)` with no metadata: whatever shell grouping the boundaries already have
+is used as-is). `GeomModel`/surface types have no shells concept, so no equivalent exists on that
+path.
 
 A single `geometry_lod*` column may legitimately mix `Solid`-family and (padded) surface-family
 rows sharing the identical physical shape — an earlier draft of this API dropped

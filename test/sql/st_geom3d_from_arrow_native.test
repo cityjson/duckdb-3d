@@ -122,3 +122,14 @@ ORDER BY id;
 ----
 1	true
 2	false
+
+# STRUCT geometry_properties overload (cityparquet-rs's real column type)
+# must bind directly, without an explicit to_json() cast.
+query I
+SELECT ST_Area(ST_Geom3DFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    {'type': 'MultiSurface', 'surfaces': NULL, 'face_semantics': NULL, 'shells': NULL}
+));
+----
+0.5

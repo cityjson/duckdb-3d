@@ -85,6 +85,87 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
 	return model;
 }
 
+SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
+                                          const std::vector<Vertex3D> &vertices, const GeometryMetadata &metadata) {
+	// No shells metadata: use the boundaries' own physical shell grouping
+	// as-is (matches model_builder.cpp's BuildSolidModel(surfaces) with no
+	// metadata).
+	if (metadata.shells.empty()) {
+		return BuildSolidModelFromArrowNative(boundaries, vertices);
+	}
+
+	uint32_t solid_count =
+	    boundaries.solid_shell_offsets.empty() ? 0 : static_cast<uint32_t>(boundaries.solid_shell_offsets.size() - 1);
+	if (metadata.shells.size() != solid_count) {
+		throw std::runtime_error("arrow-native geometry_properties: shells solid count (" +
+		                         std::to_string(metadata.shells.size()) + ") does not match boundaries solid count (" +
+		                         std::to_string(solid_count) + ")");
+	}
+
+	// Regroup: a real producer (confirmed: cityparquet-rs's arrow_geom_write.rs)
+	// always pads each solid to exactly one physical shell, flattening real
+	// interior shells into a single face list exactly like the WKB path
+	// flattens them into one PolyhedralSurface — the real per-solid shell
+	// partition lives only in geometry_properties.shells. face_ring_offsets/
+	// ring_vertex_offsets/ring_vertex_indices are untouched: regrouping only
+	// reinterprets which shell boundary markers apply to the SAME faces,
+	// never reorders them. Mirrors model_builder.cpp's BuildSolidModel(surfaces,
+	// metadata) exactly: 64-bit sum to avoid overflow tricks, a 0 entry is a
+	// fully-dropped shell creating no shell, at least one non-empty shell
+	// required per solid.
+	ArrowNativeBoundaries regrouped;
+	regrouped.face_ring_offsets = boundaries.face_ring_offsets;
+	regrouped.ring_vertex_offsets = boundaries.ring_vertex_offsets;
+	regrouped.ring_vertex_indices = boundaries.ring_vertex_indices;
+	regrouped.solid_shell_offsets.push_back(0);
+	regrouped.shell_face_offsets.push_back(0);
+
+	uint32_t total_shells = 0;
+	for (uint32_t solid_idx = 0; solid_idx < solid_count; solid_idx++) {
+		uint32_t padded_start = boundaries.solid_shell_offsets[solid_idx];
+		uint32_t padded_end = boundaries.solid_shell_offsets[solid_idx + 1];
+		if (padded_end - padded_start != 1) {
+			throw std::runtime_error(
+			    "arrow-native geometry: expected exactly one padded shell per solid when "
+			    "geometry_properties.shells is present (a real producer flattens interior shells into it)");
+		}
+		uint32_t face_start = boundaries.shell_face_offsets[padded_start];
+		uint32_t face_end = boundaries.shell_face_offsets[padded_start + 1];
+
+		const auto &shell_counts = metadata.shells[solid_idx];
+		uint64_t face_sum = 0;
+		uint32_t non_empty_shells = 0;
+		for (auto fc : shell_counts) {
+			face_sum += fc;
+			if (fc > 0) {
+				non_empty_shells++;
+			}
+		}
+		if (face_sum != face_end - face_start) {
+			throw std::runtime_error("arrow-native geometry_properties: shell face count mismatch for solid " +
+			                         std::to_string(solid_idx) + ": shells sum (" + std::to_string(face_sum) +
+			                         ") != boundaries face count (" + std::to_string(face_end - face_start) + ")");
+		}
+		if (non_empty_shells == 0) {
+			throw std::runtime_error("arrow-native geometry_properties: solid " + std::to_string(solid_idx) +
+			                         " has no non-empty shell");
+		}
+
+		uint32_t cursor = face_start;
+		for (auto count : shell_counts) {
+			if (count == 0) {
+				continue; // dropped shell — contributes no faces and no shell entry
+			}
+			cursor += count;
+			total_shells++;
+			regrouped.shell_face_offsets.push_back(cursor);
+		}
+		regrouped.solid_shell_offsets.push_back(total_shells);
+	}
+
+	return BuildSolidModelFromArrowNative(regrouped, vertices);
+}
+
 GeomModel BuildGeomModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
                                         const std::vector<Vertex3D> &vertices) {
 	// Padding-dimension invariant (design doc): a surface value is a Solid

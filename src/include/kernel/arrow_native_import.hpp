@@ -1,7 +1,8 @@
 #pragma once
 
-#include "kernel/solid_model.hpp"
 #include "kernel/geom_model.hpp"
+#include "kernel/metadata_parser.hpp"
+#include "kernel/solid_model.hpp"
 #include <cstdint>
 #include <vector>
 
@@ -38,6 +39,24 @@ struct ArrowNativeBoundaries {
 //! still runs in full: ComputeBBox, TriangulateSolidModel, ValidateSolidModel.
 SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
                                           const std::vector<Vertex3D> &vertices);
+
+//! Metadata-aware overload: regroups the physical boundaries' shells from
+//! `metadata.shells` before delegating to the 2-arg overload above, mirroring
+//! model_builder.cpp's BuildSolidModel(surfaces, metadata) exactly. Real
+//! arrow-native producers (confirmed: cityparquet-rs's arrow_geom_write.rs)
+//! always pad each solid to exactly one physical shell, flattening any real
+//! interior shells into a single face list exactly like the WKB path
+//! flattens them into one PolyhedralSurface — the real per-solid shell
+//! partition lives only in geometry_properties.shells, never in the
+//! boundaries' own "shell" nesting level for the Solid family. Skipping this
+//! regrouping would silently merge an exterior and interior shell into one,
+//! so CheckInteriorShellWinding never runs and a same-wound (invalid) cavity
+//! would be accepted with its volume wrongly added instead of subtracted.
+//! If `metadata.shells` is empty, delegates unchanged (matches
+//! BuildSolidModel(surfaces) with no metadata: whatever grouping the
+//! boundaries already have is used as-is).
+SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
+                                          const std::vector<Vertex3D> &vertices, const GeometryMetadata &metadata);
 
 //! Builds a GeomModel (MultiPolygon Z family) from a padded (solid-count 1,
 //! shell-count 1) ArrowNativeBoundaries + a vertex pool. Unlike

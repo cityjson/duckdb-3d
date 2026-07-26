@@ -185,3 +185,50 @@ SELECT ST_3DFromArrowNative(
 );
 ----
 null
+
+# ──────────────────────────────────────────────────────────────
+# STRUCT geometry_properties overload (cityparquet-rs's real
+# geometry_properties_lod* column type — confirmed STRUCT, same as its WKB
+# rows) must bind directly, without an explicit to_json() cast.
+# ──────────────────────────────────────────────────────────────
+
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
+        [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+         {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+        {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': NULL}
+    ) AS s
+) q;
+----
+1	2	2
+
+# ──────────────────────────────────────────────────────────────
+# Shells regrouping (design doc + confirmed cityparquet-rs behavior):
+# real producers pad a Solid's boundaries to exactly one physical shell,
+# flattening interior shells into geometry_properties.shells — the same
+# hollow-cube fixture as test/cpp's parity test, expressed in that padded
+# shape, must still recover 2 shells / volume 56 / area 120, and the winding
+# check must actually run (proven by st_3d_hollow_solid.test's WKB-side
+# sibling case, not re-litigated here — this only proves shell recovery).
+# ──────────────────────────────────────────────────────────────
+
+query III
+SELECT ST_3DNumShells(s), ROUND(ST_3DVolume(s), 6), ROUND(ST_3DSurfaceArea(s), 6)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[
+            [ [[0,1,2,3]], [[4,5,6,7]], [[0,3,5,4]], [[1,7,6,2]], [[0,4,7,1]], [[3,2,6,5]],
+              [[11,10,9,8]], [[15,14,13,12]], [[12,13,11,8]], [[10,14,15,9]], [[9,15,12,8]], [[13,14,10,11]] ]
+        ]],
+        [{'x':0,'y':0,'z':0}, {'x':0,'y':4,'z':0}, {'x':4,'y':4,'z':0}, {'x':4,'y':0,'z':0},
+         {'x':0,'y':0,'z':4}, {'x':4,'y':0,'z':4}, {'x':4,'y':4,'z':4}, {'x':0,'y':4,'z':4},
+         {'x':1,'y':1,'z':1}, {'x':1,'y':3,'z':1}, {'x':3,'y':3,'z':1}, {'x':3,'y':1,'z':1},
+         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}],
+        '{"type": "Solid", "shells": [[6, 6]]}'
+    ) AS s
+) q;
+----
+2	56.0	120.0

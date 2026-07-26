@@ -338,3 +338,100 @@ TEST_CASE("Arrow-native and WKB ingestion agree on the hollow-cube fixture", "[a
 	REQUIRE(ComputeVolume(arrow_model) == Approx(56.0).epsilon(1e-12));
 	REQUIRE(ComputeSurfaceArea(arrow_model) == Approx(120.0).epsilon(1e-12));
 }
+
+namespace {
+
+//! Same hollow-cube topology, but shaped exactly as a real producer
+//! (cityparquet-rs's arrow_geom_write.rs, confirmed by reading it) actually
+//! emits it: the solid padded to exactly ONE physical shell holding all 12
+//! faces flattened together, with the real 2-shell partition recoverable
+//! only from geometry_properties.shells — never from the boundaries' own
+//! "shell" nesting level.
+SolidModel BuildPaddedHollowCubeFromArrowNative() {
+	std::vector<Vertex3D> vertices = {
+	    {0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0}, {0, 0, 4}, {4, 0, 4}, {4, 4, 4}, {0, 4, 4},
+	    {1, 1, 1}, {3, 1, 1}, {3, 3, 1}, {1, 3, 1}, {1, 1, 3}, {3, 1, 3}, {3, 3, 3}, {1, 3, 3},
+	};
+
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1}; // padded: exactly 1 physical shell
+	boundaries.shell_face_offsets = {0, 12}; // all 12 faces flattened into it
+	boundaries.face_ring_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.face_ring_offsets[i] = static_cast<uint32_t>(i);
+	}
+	boundaries.ring_vertex_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.ring_vertex_offsets[i] = static_cast<uint32_t>(i * 4);
+	}
+
+	std::vector<uint32_t> outer = {
+	    0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5,
+	};
+	std::vector<uint32_t> inner = {
+	    9, 10, 11, 8, 15, 14, 13, 12, 12, 13, 9, 8, 10, 14, 15, 11, 11, 15, 12, 8, 13, 14, 10, 9,
+	};
+	boundaries.ring_vertex_indices.reserve(96);
+	boundaries.ring_vertex_indices.insert(boundaries.ring_vertex_indices.end(), outer.begin(), outer.end());
+	boundaries.ring_vertex_indices.insert(boundaries.ring_vertex_indices.end(), inner.begin(), inner.end());
+
+	GeometryMetadata metadata;
+	metadata.type = "Solid";
+	metadata.shells = {{6, 6}}; // the real per-solid shell partition
+
+	return BuildSolidModelFromArrowNative(boundaries, vertices, metadata);
+}
+
+} // namespace
+
+TEST_CASE("BuildSolidModelFromArrowNative regroups shells from geometry_properties.shells "
+          "when the boundaries are padded to one physical shell",
+          "[arrow_native_import]") {
+	auto model = BuildPaddedHollowCubeFromArrowNative();
+	REQUIRE(model.SolidCount() == 1);
+	REQUIRE(model.ShellCount() == 2); // recovered from metadata, not the padded boundaries
+	REQUIRE(model.FaceCount() == 12);
+	REQUIRE(model.validation.is_closed);
+	REQUIRE(model.validation.is_manifold);
+	REQUIRE(model.validation.is_oriented); // CheckInteriorShellWinding actually ran
+	REQUIRE(ComputeVolume(model) == Approx(56.0).epsilon(1e-12));
+	REQUIRE(ComputeSurfaceArea(model) == Approx(120.0).epsilon(1e-12));
+}
+
+TEST_CASE("BuildSolidModelFromArrowNative with empty shells metadata keeps the boundaries' own grouping",
+          "[arrow_native_import]") {
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 2};
+	boundaries.shell_face_offsets = {0, 1, 2};
+	boundaries.face_ring_offsets = {0, 1, 2};
+	boundaries.ring_vertex_offsets = {0, 3, 6};
+	boundaries.ring_vertex_indices = {0, 1, 2, 3, 4, 5};
+	std::vector<Vertex3D> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}};
+
+	GeometryMetadata metadata; // shells left empty
+	auto model = BuildSolidModelFromArrowNative(boundaries, vertices, metadata);
+	REQUIRE(model.ShellCount() == 2);
+}
+
+TEST_CASE("BuildSolidModelFromArrowNative rejects a shells/boundaries face count mismatch", "[arrow_native_import]") {
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1};
+	boundaries.shell_face_offsets = {0, 12}; // 12 faces, padded
+	boundaries.face_ring_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.face_ring_offsets[i] = static_cast<uint32_t>(i);
+	}
+	boundaries.ring_vertex_offsets.resize(13);
+	for (int i = 0; i <= 12; i++) {
+		boundaries.ring_vertex_offsets[i] = static_cast<uint32_t>(i * 3);
+	}
+	boundaries.ring_vertex_indices.assign(36, 0);
+
+	GeometryMetadata metadata;
+	metadata.type = "Solid";
+	metadata.shells = {{6, 5}}; // sums to 11, not 12
+
+	REQUIRE_THROWS_WITH(
+	    BuildSolidModelFromArrowNative(boundaries, std::vector<Vertex3D>(1, Vertex3D {0, 0, 0}), metadata),
+	    Catch::Contains("face count"));
+}
