@@ -143,17 +143,23 @@ All public scalar functions follow DuckDB’s standard null propagation rules:
 
 | Function | Signature | Behavior |
 | --- | --- | --- |
-| `ST_3DFromArrowNative` | `ST_3DFromArrowNative(boundaries, vertices) → SOLID_3D` | Ingest nested `LIST`/`STRUCT` boundaries + a vertex pool directly for `Solid`/`MultiSolid`/`CompositeSolid` — no WKB, no `geometry_properties`. |
-| `ST_3DTryFromArrowNative` | `ST_3DTryFromArrowNative(boundaries, vertices) → SOLID_3D` or `NULL` | Same as above, returning `NULL` on failure. |
-| `ST_Geom3DFromArrowNative` | `ST_Geom3DFromArrowNative(boundaries, vertices) → GEOM_3D` | Same ingestion for `MultiSurface`/`CompositeSurface`, where `boundaries` is padded to solid-count 1 / shell-count 1. |
-| `ST_Geom3DTryFromArrowNative` | `ST_Geom3DTryFromArrowNative(boundaries, vertices) → GEOM_3D` or `NULL` | Same as above, returning `NULL` on failure (including on a non-padded input). |
+| `ST_3DFromArrowNative` | `ST_3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D` | Ingest nested `LIST`/`STRUCT` boundaries + a vertex pool for `Solid`/`MultiSolid`/`CompositeSolid` rows (`geometry_properties.type` checked, not the physical shape — see below); raises if `.type` is not solid-family. |
+| `ST_3DTryFromArrowNative` | `ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D` or `NULL` | Same as above, returning `NULL` on failure (including a family mismatch). |
+| `ST_Geom3DFromArrowNative` | `ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D` | Same ingestion for `MultiSurface`/`CompositeSurface` rows (`boundaries` padded to solid-count 1 / shell-count 1); raises if `.type` is not surface-family. |
+| `ST_Geom3DTryFromArrowNative` | `ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D` or `NULL` | Same as above, returning `NULL` on failure (family mismatch or non-padded input). |
 
-Unlike the WKB constructors, these four take exactly `(boundaries, vertices)` — no
-`geometry_properties` argument. The dispatch on geometry type that a `geometry_properties.type`
-field would otherwise provide already happens one level up: by *which* of these functions (or
-`ST_3DFromWKB` vs `ST_Geom3DFromWKB`) a query calls. Once a caller has committed to the
-arrow-native solid family, the physical shape is self-sufficient — shells are never flattened away
-the way WKB flattens them, so there is nothing left for `geometry_properties` to recover.
+**`geometry_properties` is required, not optional, and its `.type` field is load-bearing —
+consumers dispatch on it, never on the physical shape.** A single `geometry_lod*` column may
+legitimately mix `Solid`-family and (padded) `MultiSurface`-family rows sharing the *identical*
+physical shape (solid-count 1, shell-count 1 is indistinguishable from a real single-shell
+`Solid` by shape alone) — this is exactly why an earlier draft of this API that dropped
+`geometry_properties` and dispatched by *which* of these four functions a query calls was wrong:
+it silently misinterpreted whichever family didn't match the caller's chosen function for an
+entire column, rather than rejecting only the mismatched rows. `geometry_properties` is JSON text
+(`VARCHAR`), parsed via the same `ParseGeometryProperties` the WKB path already uses ([§8.2](#82-metadata-aware-import))
+— the arrow-native path keeps this identical to WKB rather than growing the [§5.1](#51-constructor-and-export-functions)
+STRUCT overload's shape, so the shared parsing step stays byte-for-byte the same between the two
+ingestion paths.
 
 ### 5.1.1 Constructor Rules
 
@@ -471,8 +477,8 @@ This limitation is explicit and must not be hidden behind silent inference.
 ### 8.3 Arrow-Native Import
 
 **Experimental (`arrow-native-type` branch)** — see the design doc in the parent workspace repo
-(`documents/docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`) for the
-cross-repo-agreed shape this must match exactly.
+(`docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`) for the cross-repo-agreed
+shape this must match exactly.
 
 `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`/`ST_Geom3DFromArrowNative`/
 `ST_Geom3DTryFromArrowNative` consume the nested `LIST`/`STRUCT` columns
@@ -496,15 +502,33 @@ matched by vertex *index*, not by coordinate, downstream).
 
 **Padding-dimension convention.** `MultiSurface`/`CompositeSurface` values share the exact same
 physical `boundaries`/`vertices` shape as a `Solid` — encoded as a solid-count-1, shell-count-1
-"padded" value. `ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative` assert this padding
-explicitly (raising / returning `NULL` if it does not hold) rather than branching on it silently;
-a real multi-shell value must go through `ST_3DFromArrowNative` instead.
+"padded" value, carrying no solid/shell/cavity meaning whatsoever. This is precisely why physical
+shape cannot drive dispatch (next paragraph): a real single-shell `Solid` and a padded
+`MultiSurface` are shape-identical by construction.
 
-**No `geometry_properties` argument.** Unlike the WKB constructors, these four functions take
-exactly `(boundaries, vertices)`. The dispatch on geometry type that a `geometry_properties.type`
-field would otherwise provide already happens one level up, by *which* function a query calls — a
-SQL author already knows whether a column is `Solid`-family or surface-family before writing the
-query, exactly as they already do today choosing between `ST_3DFromWKB` and `ST_Geom3DFromWKB`.
+**Dispatch on `geometry_properties.type`, never on physical shape — this is a hard invariant, not
+a convenience.** All four functions take `(boundaries, vertices, geometry_properties)`, where
+`geometry_properties` is required JSON text (`VARCHAR`), parsed via the same `ParseGeometryProperties`
+the WKB path already uses ([§8.2](#82-metadata-aware-import)) — kept identical to WKB rather than
+growing the [§5.1](#51-constructor-and-export-functions) STRUCT overload's shape. Each function
+checks `.type` per row before doing anything else: `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`
+accept `Solid`/`MultiSolid`/`CompositeSolid`; `ST_Geom3DFromArrowNative`/`ST_Geom3DTryFromArrowNative`
+accept `MultiSurface`/`CompositeSurface`. A family mismatch raises (or returns `NULL` in `TRY`
+mode) even when the physical shape alone would have parsed as a valid value of the *other* family
+— the [§8.3](#83-arrow-native-import) padding-dimension assertion inside `BuildGeomModelFromArrowNative`
+still runs too, as a defensive secondary check for a producer that mislabels `.type`, but the
+primary dispatch is always the metadata field.
+
+A single `geometry_lod*` column may legitimately mix `Solid`-family and (padded) surface-family
+rows sharing the identical physical shape — an earlier draft of this API dropped
+`geometry_properties` and dispatched by *which* of these four functions a query calls instead
+(mirroring how a SQL author picks `ST_3DFromWKB` vs `ST_Geom3DFromWKB` for a whole WKB column).
+That draft was wrong for arrow-native specifically: a WKB column's bytes are genuinely
+self-describing per row (the WKB type code says what a row is), so whole-column dispatch happens
+to work there; arrow-native's physical shape is *not* self-describing between `Solid` and a padded
+`MultiSurface`, so the same shortcut silently misinterprets whichever family didn't match the
+caller's chosen function, for an entire column, rather than correctly rejecting only the
+mismatched rows.
 
 **Kernel stays format-agnostic.** The nested-`Vector` traversal is entirely a SQL-layer concern
 (`three_d_extension.cpp`'s `ExtractArrowNativeBoundaries`/`ExtractArrowNativeVertices`), which
@@ -736,21 +760,28 @@ Future integration work may improve metadata richness, but v1 keeps the extensio
 
 **Experimental (`arrow-native-type` branch) — arrow-native equivalent, [§8.3](#83-arrow-native-import):**
 when `read_cityjson`/`cityparquet-rs` expose `boundaries`/`vertices` columns directly (rather than
-WKB + `geometry_properties`), the WKB step and its shell-recovery metadata drop out entirely:
+WKB), the WKB byte-parsing step drops out — but `geometry_properties` stays, since `.type` is now
+the *only* thing that can distinguish a `Solid` row from a physically-identical padded
+`MultiSurface` row in the same column:
 
 ```sql
 LOAD three_d;
 
 WITH objects AS (
-    SELECT id, boundaries, vertices
+    SELECT id, boundaries, vertices, geometry_properties
     FROM read_cityjson_arrow_native('buildings.city.json', lod => '2.2') -- illustrative; not yet implemented upstream
 )
 SELECT
     id,
-    ST_3DVolume(ST_3DFromArrowNative(boundaries, vertices)) AS volume
+    ST_3DVolume(ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties)) AS volume
 FROM objects
 WHERE boundaries IS NOT NULL;
 ```
+
+`ST_3DTryFromArrowNative` is the natural default here (over the raising `ST_3DFromArrowNative`)
+precisely because a real `buildings.city.json` column may contain non-solid-family rows
+(`MultiSurface`/`CompositeSurface`) that this query isn't asking for — they resolve to `NULL`
+rather than aborting the whole scan.
 
 ## 13. Development Workflow
 
@@ -831,8 +862,8 @@ The CGAL/SFCGAL-gated function cluster is specified in
 (alongside `cityparquet-rs` and `duckdb-cityjson`), not yet part of the decided v1 surface this
 document otherwise describes. Status, the cross-repo schema-parity requirement, and the overall
 testing plan live in the parent workspace repo's own design doc:
-`documents/docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` (draft, under
-evaluation — its own status is the authoritative source, not a copy of it here).
+`docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` (draft, under evaluation — its
+own status is the authoritative source, not a copy of it here).
 
 ## 15. Contribution Invariants
 
