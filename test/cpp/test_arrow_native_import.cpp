@@ -83,6 +83,39 @@ TEST_CASE("BuildSolidModelFromArrowNative deduplicates coordinate-equal vertices
 	REQUIRE(model.validation.is_manifold);
 }
 
+TEST_CASE("BuildSolidModelFromArrowNative skips a consecutive-duplicate compact index within a ring",
+          "[arrow_native_import]") {
+	// A validated closed/manifold tetrahedron (the same face set
+	// test_metadata.cpp's MakeTwoShellWKB uses: A=v0,B=v1,C=v2,D=v3, faces
+	// ACB/ABD/BCD/CAD), but face0's ring carries an extra raw index (4) that
+	// is coordinate-identical to C (index 2) and placed immediately adjacent
+	// to it: A,C,C',B instead of A,C,B. Without collapsing this into A,C,B
+	// (mirroring model_builder.cpp's IsConsecutiveDuplicate for the WKB
+	// path), the C-to-C' "edge" is a zero-length self-loop with no twin
+	// anywhere else in the model, and the solid misreports as open.
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1};
+	boundaries.shell_face_offsets = {0, 4};
+	boundaries.face_ring_offsets = {0, 1, 2, 3, 4};
+	boundaries.ring_vertex_offsets = {0, 4, 7, 10, 13};
+	boundaries.ring_vertex_indices = {
+	    0, 2, 4, 1, // face0 (A,C,C'-dup,B) — the injected consecutive duplicate
+	    0, 1, 3,    // face1 (A,B,D)
+	    1, 2, 3,    // face2 (B,C,D)
+	    2, 0, 3,    // face3 (C,A,D)
+	};
+
+	std::vector<Vertex3D> vertices = {
+	    {0, 0, 0}, {2, 0, 0}, {1, 2, 0}, {1, 1, 2}, // A, B, C, D
+	    {1, 2, 0},                                  // C' — coordinate-identical to C (index 2)
+	};
+
+	auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
+	REQUIRE(model.ring_vertex_indices.size() == 12); // 13 raw indices, 1 consecutive duplicate removed
+	REQUIRE(model.validation.is_closed);
+	REQUIRE(model.validation.is_manifold);
+}
+
 TEST_CASE("BuildSolidModelFromArrowNative excludes an unreferenced pool vertex from the model",
           "[arrow_native_import]") {
 	// The vertex pool carries a 4th entry (index 3) that no ring ever

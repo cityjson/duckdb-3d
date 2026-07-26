@@ -409,8 +409,23 @@ static void ST_3DTryFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, 
 // either; `FlatVector::GetData`/`IsNull` assert genuine flat vectors at
 // every level, so flattening once up front (see
 // ST_3DFromWKBWithStructMetaFun below) is required before this can index
-// `row` directly through `StructVector`/`ListVector`.
+// `row` directly through `StructVector`/`ListVector`. The nested `shells`
+// list's own children (one level further down) are flattened inside this
+// function itself, per-level, for the same reason.
 // ──────────────────────────────────────────────────────────────
+
+//! A literal or constant-folded expression (as in a simple `SELECT ...` test
+//! query) can produce a non-FLAT_VECTOR at any nesting depth, not only the
+//! top level — FlatVector::GetData/IsNull assert genuine flat vectors.
+//! `count` is this level's own cardinality (its list's total element count
+//! across every row, not the outer chunk's row count — list children are a
+//! single vector shared/concatenated across all rows' entries).
+static void FlattenIfNeeded(Vector &vec, idx_t count) {
+	if (vec.GetVectorType() != VectorType::FLAT_VECTOR) {
+		vec.Flatten(count);
+	}
+}
+
 static duckdb_3d::GeometryMetadata ExtractGeometryPropertiesFromStruct(Vector &struct_vec, idx_t row) {
 	duckdb_3d::GeometryMetadata result;
 	auto &children = StructVector::GetEntries(struct_vec);
@@ -428,13 +443,32 @@ static duckdb_3d::GeometryMetadata ExtractGeometryPropertiesFromStruct(Vector &s
 	}
 	auto outer_entry = FlatVector::GetData<list_entry_t>(shells_vec)[row];
 	auto &inner_list_vec = ListVector::GetEntry(shells_vec);
+	FlattenIfNeeded(inner_list_vec, ListVector::GetListSize(shells_vec));
+	auto &inner_list_validity = FlatVector::Validity(inner_list_vec);
 	for (idx_t solid_idx = outer_entry.offset; solid_idx < outer_entry.offset + outer_entry.length; solid_idx++) {
+		// Nullability invariant (spec §8 / design doc): a present shells value
+		// carries no null nested elements — a null per-solid array or a null
+		// face-count within it is malformed input, not "no shells", so this
+		// must be rejected rather than dereferencing whatever bytes happen to
+		// sit behind the null slot (unspecified, not merely "wrong data").
+		if (!inner_list_validity.RowIsValid(solid_idx)) {
+			throw std::runtime_error("geometry_properties: null shells entry (no nested list element may be null)");
+		}
 		auto inner_entry = FlatVector::GetData<list_entry_t>(inner_list_vec)[solid_idx];
 		auto &int_vec = ListVector::GetEntry(inner_list_vec);
+		FlattenIfNeeded(int_vec, ListVector::GetListSize(inner_list_vec));
+		auto &int_validity = FlatVector::Validity(int_vec);
 		auto int_data = FlatVector::GetData<int32_t>(int_vec);
 		std::vector<uint32_t> shell_face_counts;
 		shell_face_counts.reserve(inner_entry.length);
 		for (idx_t i = inner_entry.offset; i < inner_entry.offset + inner_entry.length; i++) {
+			if (!int_validity.RowIsValid(i)) {
+				throw std::runtime_error(
+				    "geometry_properties: null shell face count (no nested list element may be null)");
+			}
+			if (int_data[i] < 0) {
+				throw std::runtime_error("geometry_properties: expected non-negative shell face count");
+			}
 			shell_face_counts.push_back(static_cast<uint32_t>(int_data[i]));
 		}
 		result.shells.push_back(std::move(shell_face_counts));
@@ -1985,12 +2019,6 @@ LogicalType ArrowNativeVerticesType() {
 //! level's own cardinality (its list's total element count across every row,
 //! not the outer chunk's row count — list children are a single vector
 //! shared/concatenated across all rows' entries).
-static void FlattenIfNeeded(Vector &vec, idx_t count) {
-	if (vec.GetVectorType() != VectorType::FLAT_VECTOR) {
-		vec.Flatten(count);
-	}
-}
-
 //! Walks one row of the boundaries Vector, flattening each nested level as it
 //! descends, into the kernel's plain-C++ CSR form (real per-level traversal,
 //! not a raw buffer cast: DuckDB ListVectors are list_entry_t pairs into a

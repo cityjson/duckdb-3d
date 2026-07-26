@@ -32,7 +32,6 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
 	model.solid_shell_offsets = boundaries.solid_shell_offsets;
 	model.shell_face_offsets = boundaries.shell_face_offsets;
 	model.face_ring_offsets = boundaries.face_ring_offsets;
-	model.ring_vertex_offsets = boundaries.ring_vertex_offsets;
 
 	// Defensive coordinate-equality dedup, mirroring model_builder.cpp's
 	// GetOrAddVertex, but resolved lazily as each raw pool index is actually
@@ -50,29 +49,58 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
 	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
 	std::unordered_map<uint32_t, uint32_t> remap; // raw pool index -> compacted model index
 
-	model.ring_vertex_indices.reserve(boundaries.ring_vertex_indices.size());
-	for (uint32_t raw : boundaries.ring_vertex_indices) {
+	auto ResolveCompactIndex = [&](uint32_t raw) -> uint32_t {
 		if (raw >= vertices.size()) {
 			throw std::runtime_error(
 			    "arrow-native geometry: vertex-pool index out of range (design doc validity invariant)");
 		}
 		auto remap_it = remap.find(raw);
-		uint32_t compact_idx;
 		if (remap_it != remap.end()) {
-			compact_idx = remap_it->second;
-		} else {
-			const Vertex3D &v = vertices[raw];
-			auto vm_it = vertex_map.find(v);
-			if (vm_it != vertex_map.end()) {
-				compact_idx = vm_it->second;
-			} else {
-				compact_idx = static_cast<uint32_t>(model.vertices.size());
-				model.vertices.push_back(v);
-				vertex_map[v] = compact_idx;
-			}
-			remap[raw] = compact_idx;
+			return remap_it->second;
 		}
-		model.ring_vertex_indices.push_back(compact_idx);
+		const Vertex3D &v = vertices[raw];
+		auto vm_it = vertex_map.find(v);
+		uint32_t compact_idx;
+		if (vm_it != vertex_map.end()) {
+			compact_idx = vm_it->second;
+		} else {
+			compact_idx = static_cast<uint32_t>(model.vertices.size());
+			model.vertices.push_back(v);
+			vertex_map[v] = compact_idx;
+		}
+		remap[raw] = compact_idx;
+		return compact_idx;
+	};
+
+	// Walked ring-by-ring (not one flat pass over ring_vertex_indices) so a
+	// consecutive-duplicate compact index — from a literal repeated raw
+	// index, or from two distinct raw indices that dedup to the same
+	// compact vertex — can be skipped per ring, mirroring
+	// model_builder.cpp's IsConsecutiveDuplicate for the WKB path. Left
+	// uncollapsed, a same-vertex "edge" is a zero-length self-loop with no
+	// twin anywhere else in the model, which ValidateSolidModel would
+	// misreport as an open edge. This can shrink a ring's index count, so
+	// ring_vertex_offsets is rebuilt here rather than copied from boundaries.
+	model.ring_vertex_indices.reserve(boundaries.ring_vertex_indices.size());
+	model.ring_vertex_offsets.reserve(boundaries.ring_vertex_offsets.size());
+	model.ring_vertex_offsets.push_back(0);
+	if (!boundaries.ring_vertex_offsets.empty()) {
+		for (size_t r = 0; r + 1 < boundaries.ring_vertex_offsets.size(); r++) {
+			uint32_t raw_start = boundaries.ring_vertex_offsets[r];
+			uint32_t raw_end = boundaries.ring_vertex_offsets[r + 1];
+			bool has_prev = false;
+			uint32_t prev_compact = 0;
+			for (uint32_t k = raw_start; k < raw_end; k++) {
+				uint32_t compact_idx = ResolveCompactIndex(boundaries.ring_vertex_indices[k]);
+				if (has_prev && compact_idx == prev_compact) {
+					continue; // skip consecutive duplicate
+				}
+				model.ring_vertex_indices.push_back(compact_idx);
+				prev_compact = compact_idx;
+				has_prev = true;
+			}
+			model.ring_vertex_offsets.push_back(static_cast<uint32_t>(model.ring_vertex_indices.size()));
+		}
 	}
 
 	uint32_t face_count = model.FaceCount();

@@ -102,3 +102,30 @@ SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(),
     {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, 3]]}) IS NULL;
 ----
 true
+
+# Test: a NULL element inside the outer shells list (one solid's per-shell
+# array itself null) is rejected, not read as garbage bytes.
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [NULL]}) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [NULL]});
+----
+null
+
+# Test: a NULL face-count element inside a per-shell array is rejected too.
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, NULL]]}) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(),
+    {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, NULL]]});
+----
+null
