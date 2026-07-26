@@ -2011,32 +2011,64 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 	uint32_t total_shells = 0, total_faces = 0, total_rings = 0;
 
+	// Nullability invariant (design doc): "within a non-null geometry cell,
+	// no nested list element is itself null — every solid/shell/face/ring
+	// entry and every vertex index is present." Each level below checks the
+	// CHILD vector's validity for the specific slot about to be dereferenced
+	// before reading its list_entry_t/int32 — reading an unchecked null slot
+	// is not merely "wrong data", it's genuinely undefined: two identical
+	// queries were observed to disagree on whether the same null ring even
+	// raised an error, because nothing constrains what bytes sit behind a
+	// null slot.
 	auto solid_entry = FlatVector::GetData<list_entry_t>(boundaries_vec)[row];
 	auto &shell_vec = ListVector::GetEntry(boundaries_vec);
 	FlattenIfNeeded(shell_vec, ListVector::GetListSize(boundaries_vec));
+	auto &shell_validity = FlatVector::Validity(shell_vec);
 
 	for (idx_t solid_idx = solid_entry.offset; solid_idx < solid_entry.offset + solid_entry.length; solid_idx++) {
+		if (!shell_validity.RowIsValid(solid_idx)) {
+			throw std::runtime_error("arrow-native geometry: null shell entry (no nested list element may be null)");
+		}
 		auto shell_entry = FlatVector::GetData<list_entry_t>(shell_vec)[solid_idx];
 		auto &face_vec = ListVector::GetEntry(shell_vec);
 		FlattenIfNeeded(face_vec, ListVector::GetListSize(shell_vec));
+		auto &face_validity = FlatVector::Validity(face_vec);
 
 		for (idx_t shell_idx = shell_entry.offset; shell_idx < shell_entry.offset + shell_entry.length; shell_idx++) {
+			if (!face_validity.RowIsValid(shell_idx)) {
+				throw std::runtime_error("arrow-native geometry: null face entry (no nested list element may be null)");
+			}
 			auto face_entry = FlatVector::GetData<list_entry_t>(face_vec)[shell_idx];
 			auto &ring_vec = ListVector::GetEntry(face_vec);
 			FlattenIfNeeded(ring_vec, ListVector::GetListSize(face_vec));
+			auto &ring_validity = FlatVector::Validity(ring_vec);
 
 			for (idx_t face_idx = face_entry.offset; face_idx < face_entry.offset + face_entry.length; face_idx++) {
+				if (!ring_validity.RowIsValid(face_idx)) {
+					throw std::runtime_error(
+					    "arrow-native geometry: null ring entry (no nested list element may be null)");
+				}
 				auto ring_entry = FlatVector::GetData<list_entry_t>(ring_vec)[face_idx];
 				auto &index_vec = ListVector::GetEntry(ring_vec);
 				FlattenIfNeeded(index_vec, ListVector::GetListSize(ring_vec));
+				auto &index_validity = FlatVector::Validity(index_vec);
 
 				for (idx_t r = ring_entry.offset; r < ring_entry.offset + ring_entry.length; r++) {
+					if (!index_validity.RowIsValid(r)) {
+						throw std::runtime_error(
+						    "arrow-native geometry: null vertex-index list entry (no nested list element may be null)");
+					}
 					auto idx_ring_entry = FlatVector::GetData<list_entry_t>(index_vec)[r];
 					auto &leaf_vec = ListVector::GetEntry(index_vec);
 					FlattenIfNeeded(leaf_vec, ListVector::GetListSize(index_vec));
+					auto &leaf_validity = FlatVector::Validity(leaf_vec);
 					auto leaf_data = FlatVector::GetData<int32_t>(leaf_vec);
 
 					for (idx_t k = idx_ring_entry.offset; k < idx_ring_entry.offset + idx_ring_entry.length; k++) {
+						if (!leaf_validity.RowIsValid(k)) {
+							throw std::runtime_error(
+							    "arrow-native geometry: null vertex-pool index (no nested list element may be null)");
+						}
 						int32_t raw = leaf_data[k];
 						if (raw < 0) {
 							throw std::runtime_error("arrow-native geometry: negative vertex-pool index");
@@ -2068,6 +2100,12 @@ static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &verti
 	FlattenIfNeeded(*children[0], list_size);
 	FlattenIfNeeded(*children[1], list_size);
 	FlattenIfNeeded(*children[2], list_size);
+	// Nullability invariant (design doc): "no Struct<x,y,z> entry is null and
+	// none of x/y/z is null within a present entry."
+	auto &struct_validity = FlatVector::Validity(struct_vec);
+	auto &x_validity = FlatVector::Validity(*children[0]);
+	auto &y_validity = FlatVector::Validity(*children[1]);
+	auto &z_validity = FlatVector::Validity(*children[2]);
 	auto x_data = FlatVector::GetData<double>(*children[0]);
 	auto y_data = FlatVector::GetData<double>(*children[1]);
 	auto z_data = FlatVector::GetData<double>(*children[2]);
@@ -2075,6 +2113,11 @@ static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &verti
 	std::vector<Vertex3D> vertices;
 	vertices.reserve(vert_entry.length);
 	for (idx_t i = vert_entry.offset; i < vert_entry.offset + vert_entry.length; i++) {
+		if (!struct_validity.RowIsValid(i) || !x_validity.RowIsValid(i) || !y_validity.RowIsValid(i) ||
+		    !z_validity.RowIsValid(i)) {
+			throw std::runtime_error("arrow-native geometry: null vertex-pool entry or coordinate "
+			                         "(no vertex or coordinate may be null)");
+		}
 		vertices.push_back(Vertex3D {x_data[i], y_data[i], z_data[i]});
 	}
 	return vertices;

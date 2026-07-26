@@ -83,6 +83,33 @@ TEST_CASE("BuildSolidModelFromArrowNative deduplicates coordinate-equal vertices
 	REQUIRE(model.validation.is_manifold);
 }
 
+TEST_CASE("BuildSolidModelFromArrowNative excludes an unreferenced pool vertex from the model",
+          "[arrow_native_import]") {
+	// The vertex pool carries a 4th entry (index 3) that no ring ever
+	// references. It must not appear in model.vertices at all — in
+	// particular it must not pollute ComputeBBox with a point far outside
+	// the actual triangle's extent.
+	ArrowNativeBoundaries boundaries;
+	boundaries.solid_shell_offsets = {0, 1};
+	boundaries.shell_face_offsets = {0, 1};
+	boundaries.face_ring_offsets = {0, 1};
+	boundaries.ring_vertex_offsets = {0, 3};
+	boundaries.ring_vertex_indices = {0, 1, 2}; // never references index 3
+
+	std::vector<Vertex3D> vertices = {
+	    {0, 0, 0},
+	    {1, 0, 0},
+	    {0, 1, 0},          // the referenced triangle
+	    {1000, 1000, 1000}, // unreferenced — must be excluded
+	};
+
+	auto model = BuildSolidModelFromArrowNative(boundaries, vertices);
+	REQUIRE(model.vertices.size() == 3);
+	REQUIRE(model.bbox.max_x == 1.0);
+	REQUIRE(model.bbox.max_y == 1.0);
+	REQUIRE(model.bbox.max_z == 0.0);
+}
+
 TEST_CASE("BuildSolidModelFromArrowNative flags a degenerate (zero-length) ring, not a crash",
           "[arrow_native_import]") {
 	// A face whose only ring has 0 indices (offset delta 0) — passes straight

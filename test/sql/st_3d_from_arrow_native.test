@@ -134,3 +134,54 @@ ORDER BY id;
 ----
 1	true
 2	false
+
+# ──────────────────────────────────────────────────────────────
+# Nullability invariants (design doc: "within a non-null geometry cell, no
+# nested list element is itself null — every solid/shell/face/ring entry and
+# every vertex index is present"; "no Struct<x,y,z> entry is null and none of
+# x/y/z is null within a present entry"). A NULL nested element must be
+# rejected deterministically (NULL in TRY mode, a stable error otherwise) —
+# not silently reinterpreted as an empty ring, and not dependent on whatever
+# unspecified bytes happen to sit behind the null slot.
+# ──────────────────────────────────────────────────────────────
+
+# A NULL ring (shell 0's only face's only ring) is rejected, not silently
+# treated as an empty ring.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[NULL]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[[[NULL]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+);
+----
+null
+
+# A NULL x coordinate in the vertex pool is rejected, not read as garbage.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[ [0,1,2] ]]]],
+    [{'x': NULL, 'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[[[ [0,1,2] ]]]],
+    [{'x': NULL, 'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+);
+----
+null

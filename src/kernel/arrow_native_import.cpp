@@ -29,31 +29,26 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
                                           const std::vector<Vertex3D> &vertices) {
 	SolidModel model;
 
-	// Defensive coordinate-equality dedup, mirroring model_builder.cpp's
-	// GetOrAddVertex. This is a public SQL-callable ingestion boundary (unlike
-	// an internal-only path), so a buggy writer that emits geometrically
-	// duplicate vertices at distinct pool indices must not silently produce
-	// mismatched edges downstream — ValidateSolidModel matches edges by vertex
-	// INDEX, so two indices for "the same" point would wrongly read as an
-	// open/non-manifold edge rather than a shared one.
-	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
-	std::vector<uint32_t> remap(vertices.size());
-	for (size_t i = 0; i < vertices.size(); i++) {
-		auto it = vertex_map.find(vertices[i]);
-		if (it != vertex_map.end()) {
-			remap[i] = it->second;
-		} else {
-			uint32_t idx = static_cast<uint32_t>(model.vertices.size());
-			model.vertices.push_back(vertices[i]);
-			vertex_map[vertices[i]] = idx;
-			remap[i] = idx;
-		}
-	}
-
 	model.solid_shell_offsets = boundaries.solid_shell_offsets;
 	model.shell_face_offsets = boundaries.shell_face_offsets;
 	model.face_ring_offsets = boundaries.face_ring_offsets;
 	model.ring_vertex_offsets = boundaries.ring_vertex_offsets;
+
+	// Defensive coordinate-equality dedup, mirroring model_builder.cpp's
+	// GetOrAddVertex, but resolved lazily as each raw pool index is actually
+	// referenced by a ring — not precomputed over the whole input pool. This
+	// is a public SQL-callable ingestion boundary (unlike an internal-only
+	// path), so two things must hold: (1) a buggy writer that emits
+	// geometrically duplicate vertices at distinct pool indices must not
+	// silently produce mismatched edges downstream (ValidateSolidModel
+	// matches edges by vertex INDEX, so two indices for "the same" point
+	// would wrongly read as an open/non-manifold edge rather than a shared
+	// one); (2) a pool entry no ring ever references must never appear in
+	// model.vertices — it would otherwise silently pollute ComputeBBox (and
+	// anything else that iterates all model vertices) with a point outside
+	// the actual geometry.
+	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
+	std::unordered_map<uint32_t, uint32_t> remap; // raw pool index -> compacted model index
 
 	model.ring_vertex_indices.reserve(boundaries.ring_vertex_indices.size());
 	for (uint32_t raw : boundaries.ring_vertex_indices) {
@@ -61,7 +56,23 @@ SolidModel BuildSolidModelFromArrowNative(const ArrowNativeBoundaries &boundarie
 			throw std::runtime_error(
 			    "arrow-native geometry: vertex-pool index out of range (design doc validity invariant)");
 		}
-		model.ring_vertex_indices.push_back(remap[raw]);
+		auto remap_it = remap.find(raw);
+		uint32_t compact_idx;
+		if (remap_it != remap.end()) {
+			compact_idx = remap_it->second;
+		} else {
+			const Vertex3D &v = vertices[raw];
+			auto vm_it = vertex_map.find(v);
+			if (vm_it != vertex_map.end()) {
+				compact_idx = vm_it->second;
+			} else {
+				compact_idx = static_cast<uint32_t>(model.vertices.size());
+				model.vertices.push_back(v);
+				vertex_map[v] = compact_idx;
+			}
+			remap[raw] = compact_idx;
+		}
+		model.ring_vertex_indices.push_back(compact_idx);
 	}
 
 	uint32_t face_count = model.FaceCount();
