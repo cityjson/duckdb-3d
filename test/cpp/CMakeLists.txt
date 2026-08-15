@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.15)
 
 # Standalone C++ unit test executable for the three_d kernel
 project(three_d_unit_tests)

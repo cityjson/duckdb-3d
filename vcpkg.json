@@ -1,7 +1,11 @@
 {
         "dependencies": [
-                "proj"
+                {
+                        "name": "proj",
+                        "version>=": "9.4.0"
+                }
         ],
+        "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35",
         "vcpkg-configuration": {
                 "overlay-ports": [
                         "./extension-ci-tools/vcpkg_ports"
