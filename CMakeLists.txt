@@ -18,6 +18,7 @@ include_directories(src/include)
 set(EXTENSION_SOURCES
     src/three_d_extension.cpp
     src/functions/fixtures.cpp
+    src/functions/solid_io.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
