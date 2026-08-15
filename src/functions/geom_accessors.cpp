@@ -58,8 +58,11 @@ static const char *GeomTypeName(duckdb_3d::GeomType type) {
 static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
-		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return StringVector::AddString(result, GeomTypeName(model.type));
+		// Only the type code is needed — read the O(1) front header. Magic and
+		// major version are still checked; a corrupt *body* is not, since it is
+		// never touched (same contract as ST_3DZMin/ST_3DZMax).
+		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return StringVector::AddString(result, GeomTypeName(info.type));
 	});
 }
 
@@ -270,8 +273,10 @@ static int32_t GeomDimension(duckdb_3d::GeomType type) {
 static void ST_DimensionFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
 		using namespace duckdb_3d;
-		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return GeomDimension(model.type);
+		// Only the type code is needed — read the O(1) front header (see the
+		// header-only contract noted on ST_GeometryTypeFun).
+		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return GeomDimension(info.type);
 	});
 }
 

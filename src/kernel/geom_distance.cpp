@@ -394,7 +394,7 @@ double Geom3DDistance(const GeomModel &g1, const GeomModel &g2) {
 	return best;
 }
 
-double Geom3DBBoxDistance(const GeomModel &g1, const GeomModel &g2) {
+double BBoxDistance(const BBox3D &a, const BBox3D &b) {
 	// Per-axis gap between the two boxes; 0 when they overlap on that axis.
 	auto axis_gap = [](double min1, double max1, double min2, double max2) {
 		if (min1 > max2) {
@@ -405,10 +405,14 @@ double Geom3DBBoxDistance(const GeomModel &g1, const GeomModel &g2) {
 		}
 		return 0.0;
 	};
-	double dx = axis_gap(g1.bbox.min_x, g1.bbox.max_x, g2.bbox.min_x, g2.bbox.max_x);
-	double dy = axis_gap(g1.bbox.min_y, g1.bbox.max_y, g2.bbox.min_y, g2.bbox.max_y);
-	double dz = axis_gap(g1.bbox.min_z, g1.bbox.max_z, g2.bbox.min_z, g2.bbox.max_z);
+	double dx = axis_gap(a.min_x, a.max_x, b.min_x, b.max_x);
+	double dy = axis_gap(a.min_y, a.max_y, b.min_y, b.max_y);
+	double dz = axis_gap(a.min_z, a.max_z, b.min_z, b.max_z);
 	return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+double Geom3DBBoxDistance(const GeomModel &g1, const GeomModel &g2) {
+	return BBoxDistance(g1.bbox, g2.bbox);
 }
 
 bool Geom3DWithin(const GeomModel &g1, const GeomModel &g2, double threshold) {

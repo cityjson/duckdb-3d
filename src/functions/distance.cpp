@@ -26,8 +26,19 @@ static void ST_3DDistanceFun(DataChunk &args, ExpressionState &state, Vector &re
 // ST_3DDWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
 static bool Geom3DWithinSQL(string_t g1, string_t g2, double dist) {
 	using namespace duckdb_3d;
-	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
-	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
+	auto d1 = reinterpret_cast<const uint8_t *>(g1.GetData());
+	auto d2 = reinterpret_cast<const uint8_t *>(g2.GetData());
+	// The bbox lives in the fixed front header: reject far-apart pairs in O(1)
+	// without materialising either geometry body. This is a pure fast *negative*
+	// — the bbox gap is a lower bound on the true distance, so exceeding `dist`
+	// is conclusive. Anything not rejected here still takes the full path.
+	auto h1 = ReadGeomPayloadHeader(d1, g1.GetSize());
+	auto h2 = ReadGeomPayloadHeader(d2, g2.GetSize());
+	if (BBoxDistance(h1.bbox, h2.bbox) > dist) {
+		return false;
+	}
+	auto m1 = DeserializeGeomPayload(d1, g1.GetSize());
+	auto m2 = DeserializeGeomPayload(d2, g2.GetSize());
 	return Geom3DWithin(m1, m2, dist);
 }
 
