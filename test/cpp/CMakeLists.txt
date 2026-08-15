@@ -36,6 +36,7 @@ set(TEST_SOURCES
     test_main.cpp
     test_payload.cpp
     test_wkb_parser.cpp
+    test_wkb_io.cpp
     test_model_builder.cpp
     test_validation.cpp
     test_measurements.cpp

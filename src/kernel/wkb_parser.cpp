@@ -1,65 +1,17 @@
 #include "kernel/wkb_parser.hpp"
-#include <cstring>
+#include "kernel/wkb_io.hpp"
 #include <stdexcept>
 
 namespace duckdb_3d {
 
 namespace {
 
-class WKBReader {
+//! The shared endian-aware cursor plus this parser's own type-code read and its
+//! historical truncation message (pinned by test/sql/st_3d_from_wkb.test).
+class WKBReader : public WkbCursor {
 public:
-	const uint8_t *data;
-	size_t size;
-	size_t pos = 0;
-	bool swap_bytes = false; // true if WKB is big-endian on little-endian host
-
-	WKBReader(const uint8_t *data, size_t size) : data(data), size(size) {
+	WKBReader(const uint8_t *data, size_t size) : WkbCursor(data, size, "WKB data truncated") {
 	}
-
-	void Ensure(size_t n) const {
-		if (pos + n > size) {
-			throw std::runtime_error("WKB data truncated");
-		}
-	}
-
-	uint8_t ReadByte() {
-		Ensure(1);
-		return data[pos++];
-	}
-
-	uint32_t ReadU32() {
-		Ensure(4);
-		uint32_t v;
-		std::memcpy(&v, data + pos, 4);
-		pos += 4;
-		if (swap_bytes) {
-			v = ((v >> 24) & 0xFF) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | ((v << 24) & 0xFF000000);
-		}
-		return v;
-	}
-
-	double ReadF64() {
-		Ensure(8);
-		double v;
-		if (swap_bytes) {
-			uint8_t tmp[8];
-			for (int i = 0; i < 8; i++) {
-				tmp[i] = data[pos + 7 - i];
-			}
-			std::memcpy(&v, tmp, 8);
-		} else {
-			std::memcpy(&v, data + pos, 8);
-		}
-		pos += 8;
-		return v;
-	}
-
-	void ReadByteOrder() {
-		uint8_t bo = ReadByte();
-		// 1 = little-endian (match host assumption), 0 = big-endian
-		swap_bytes = (bo == 0);
-	}
-
 	WKBGeometryType ReadGeometryType() {
 		return static_cast<WKBGeometryType>(ReadU32());
 	}

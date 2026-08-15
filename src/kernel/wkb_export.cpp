@@ -1,38 +1,16 @@
 #include "kernel/wkb_export.hpp"
+#include "kernel/wkb_io.hpp"
 #include "kernel/wkb_parser.hpp"
-#include <cstring>
 
 namespace duckdb_3d {
 
 namespace {
 
-class WKBWriter {
+//! The shared little-endian writer plus this exporter's own type-code write.
+class WKBWriter : public WkbLEWriter {
 public:
-	std::vector<uint8_t> buffer;
-
-	void WriteByte(uint8_t v) {
-		buffer.push_back(v);
-	}
-
-	void WriteU32LE(uint32_t v) {
-		buffer.push_back(v & 0xFF);
-		buffer.push_back((v >> 8) & 0xFF);
-		buffer.push_back((v >> 16) & 0xFF);
-		buffer.push_back((v >> 24) & 0xFF);
-	}
-
-	void WriteF64LE(double v) {
-		uint8_t bytes[8];
-		std::memcpy(bytes, &v, 8);
-		buffer.insert(buffer.end(), bytes, bytes + 8);
-	}
-
-	void WriteByteOrder() {
-		WriteByte(1); // little-endian
-	}
-
 	void WriteGeometryType(WKBGeometryType type) {
-		WriteU32LE(static_cast<uint32_t>(type));
+		WriteU32(static_cast<uint32_t>(type));
 	}
 };
 
@@ -49,7 +27,7 @@ void WritePolyhedralSurface(WKBWriter &writer, const SolidModel &model, uint32_t
 	for (uint32_t s = shell_start; s < shell_end; s++) {
 		total_faces += model.shell_face_offsets[s + 1] - model.shell_face_offsets[s];
 	}
-	writer.WriteU32LE(total_faces);
+	writer.WriteU32(total_faces);
 
 	// Write each face as a polygon
 	for (uint32_t s = shell_start; s < shell_end; s++) {
@@ -65,7 +43,7 @@ void WritePolyhedralSurface(WKBWriter &writer, const SolidModel &model, uint32_t
 			// full nested WKB value with its own byte-order byte and type code.
 			writer.WriteByteOrder();
 			writer.WriteGeometryType(WKBGeometryType::PolygonZ);
-			writer.WriteU32LE(num_rings);
+			writer.WriteU32(num_rings);
 
 			for (uint32_t r = ring_start; r < ring_end; r++) {
 				uint32_t vi_start = model.ring_vertex_offsets[r];
@@ -73,18 +51,18 @@ void WritePolyhedralSurface(WKBWriter &writer, const SolidModel &model, uint32_t
 				uint32_t num_verts = vi_end - vi_start;
 
 				// WKB rings include closing vertex
-				writer.WriteU32LE(num_verts + 1);
+				writer.WriteU32(num_verts + 1);
 				for (uint32_t vi = vi_start; vi < vi_end; vi++) {
 					uint32_t idx = model.ring_vertex_indices[vi];
-					writer.WriteF64LE(model.vertices[idx].x);
-					writer.WriteF64LE(model.vertices[idx].y);
-					writer.WriteF64LE(model.vertices[idx].z);
+					writer.WriteF64(model.vertices[idx].x);
+					writer.WriteF64(model.vertices[idx].y);
+					writer.WriteF64(model.vertices[idx].z);
 				}
 				// Closing vertex = first vertex of ring
 				uint32_t first_idx = model.ring_vertex_indices[vi_start];
-				writer.WriteF64LE(model.vertices[first_idx].x);
-				writer.WriteF64LE(model.vertices[first_idx].y);
-				writer.WriteF64LE(model.vertices[first_idx].z);
+				writer.WriteF64(model.vertices[first_idx].x);
+				writer.WriteF64(model.vertices[first_idx].y);
+				writer.WriteF64(model.vertices[first_idx].z);
 			}
 		}
 	}
@@ -105,7 +83,7 @@ std::vector<uint8_t> ExportWKB(const SolidModel &model) {
 	WKBWriter writer;
 	writer.WriteByteOrder();
 	writer.WriteGeometryType(WKBGeometryType::GeometryCollectionZ);
-	writer.WriteU32LE(solid_count);
+	writer.WriteU32(solid_count);
 
 	for (uint32_t s = 0; s < solid_count; s++) {
 		WritePolyhedralSurface(writer, model, s);

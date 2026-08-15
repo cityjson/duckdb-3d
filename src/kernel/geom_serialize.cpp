@@ -1,9 +1,9 @@
 #include "kernel/geom_serialize.hpp"
+#include "kernel/wkb_io.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -236,27 +236,10 @@ enum class WKBType : uint32_t {
 	GeometryCollectionZ = 1007
 };
 
-class WKBWriter {
+//! The shared little-endian writer plus this serialiser's own type-code and
+//! vertex writes.
+class WKBWriter : public WkbLEWriter {
 public:
-	std::vector<uint8_t> buffer;
-
-	void WriteByte(uint8_t v) {
-		buffer.push_back(v);
-	}
-	void WriteU32(uint32_t v) {
-		buffer.push_back(v & 0xFF);
-		buffer.push_back((v >> 8) & 0xFF);
-		buffer.push_back((v >> 16) & 0xFF);
-		buffer.push_back((v >> 24) & 0xFF);
-	}
-	void WriteF64(double v) {
-		uint8_t bytes[8];
-		std::memcpy(bytes, &v, 8);
-		buffer.insert(buffer.end(), bytes, bytes + 8);
-	}
-	void WriteByteOrder() {
-		WriteByte(1);
-	}
 	void WriteType(WKBType type) {
 		WriteU32(static_cast<uint32_t>(type));
 	}
