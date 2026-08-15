@@ -1,8 +1,10 @@
 #include "functions/three_d_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "kernel/crs_transform.hpp"
 #include "kernel/validation.hpp"
@@ -12,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace duckdb {
@@ -382,10 +385,28 @@ static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t siz
 	}
 }
 
+//! Per-executor (thread-local) state for ST_3DTransform. Building a PROJ
+//! transform is expensive — `proj_create_crs_to_crs` hits the EPSG database on
+//! disk — so the cache must outlive a single 2048-row chunk. DuckDB creates one
+//! FunctionLocalState per expression executor, i.e. one per query thread, so the
+//! map is never shared across threads: each thread owns its own CrsTransform
+//! objects, and with them its own PJ_CONTEXT (PROJ contexts are not thread-safe
+//! to share). The state dies with the executor at end of query.
+struct TransformLocalState : public FunctionLocalState {
+	//! One CrsTransform per distinct "source\x1ftarget" pair, reused across chunks.
+	std::unordered_map<std::string, std::unique_ptr<duckdb_3d::CrsTransform>> cache;
+};
+
+static unique_ptr<FunctionLocalState>
+TransformInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data) {
+	return make_uniq<TransformLocalState>();
+}
+
 //! Shared chunk loop. `get_crs(i)` returns the {source, target} CRS strings for
-//! row i. One CrsTransform is built per distinct pair and reused across rows.
+//! row i. One CrsTransform is built per distinct pair and reused across rows —
+//! and, via the local state, across every chunk this executor sees.
 template <class GetCrs>
-static void TransformChunk(DataChunk &args, Vector &result, GetCrs get_crs) {
+static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &result, GetCrs get_crs) {
 	using namespace duckdb_3d;
 	auto count = args.size();
 
@@ -394,7 +415,7 @@ static void TransformChunk(DataChunk &args, Vector &result, GetCrs get_crs) {
 	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
 	auto &result_validity = FlatVector::Validity(result);
 
-	std::unordered_map<std::string, std::unique_ptr<CrsTransform>> cache;
+	auto &cache = ExecuteFunctionState::GetFunctionState(state)->Cast<TransformLocalState>().cache;
 
 	for (idx_t i = 0; i < count; i++) {
 		auto geom_idx = geom_data.sel->get_index(i);
@@ -437,7 +458,7 @@ static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &
 	auto src_strings = UnifiedVectorFormat::GetData<string_t>(src_data);
 	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
 
-	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
 		auto si = src_data.sel->get_index(i);
 		auto ti = tgt_data.sel->get_index(i);
 		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
@@ -460,7 +481,7 @@ static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &
 	auto src_vals = UnifiedVectorFormat::GetData<int32_t>(src_data);
 	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
 
-	TransformChunk(args, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
 		auto si = src_data.sel->get_index(i);
 		auto ti = tgt_data.sel->get_index(i);
 		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
@@ -515,19 +536,25 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	loader.RegisterFunction(rotatez_set);
 
 	// ST_3DTransform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
-	// on SOLID_3D and GEOM_3D. Output type equals input type.
+	// on SOLID_3D and GEOM_3D. Output type equals input type. Every overload gets
+	// the same local-state initialiser so the PROJ transform cache survives across
+	// chunks (see TransformLocalState).
 	ScalarFunctionSet transform_set("st_3dtransform");
-	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER},
-	                                         LogicalType::BLOB, ST_TransformIntFun));
-	transform_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                         LogicalType::BLOB, ST_TransformStrFun));
-	transform_set.AddFunction(
+	auto add_transform = [&transform_set](ScalarFunction fun) {
+		fun.SetInitStateCallback(TransformInitLocalState);
+		transform_set.AddFunction(std::move(fun));
+	};
+	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER}, LogicalType::BLOB,
+	                             ST_TransformIntFun));
+	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
+	                             ST_TransformStrFun));
+	add_transform(
 	    ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type, ST_TransformIntFun));
-	transform_set.AddFunction(
+	add_transform(
 	    ScalarFunction({geom_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, geom_3d_type, ST_TransformIntFun));
-	transform_set.AddFunction(
+	add_transform(
 	    ScalarFunction({solid_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, solid_3d_type, ST_TransformStrFun));
-	transform_set.AddFunction(
+	add_transform(
 	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_TransformStrFun));
 	loader.RegisterFunction(transform_set);
 }
