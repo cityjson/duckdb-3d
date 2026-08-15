@@ -57,6 +57,16 @@ TEST_CASE("GeomPayload rejects non-monotone ring offsets", "[geom_payload]") {
 	REQUIRE_THROWS_WITH(DeserializeGeomPayload(bytes.data(), bytes.size()), Catch::Contains("offsets"));
 }
 
+TEST_CASE("GeomPayload rejects ring offsets that decrease mid-sequence", "[geom_payload]") {
+	// front()==0 and back()==vertex count both hold, so only the monotonicity
+	// loop in ValidateGeomOffsets can catch this: {0,3} then a decrease to 2.
+	auto model = MakeRectanglePolygon();
+	model.ring_offsets = {0, 3, 2, 4};
+	auto bytes = SerializeGeomPayload(model);
+	REQUIRE_THROWS_WITH(DeserializeGeomPayload(bytes.data(), bytes.size()),
+	                     Catch::Contains("non-monotonic ring-vertex offsets"));
+}
+
 TEST_CASE("GeomPayload rejects ring offsets past the vertex array", "[geom_payload]") {
 	auto model = MakeRectanglePolygon();
 	model.ring_offsets = {0, 99}; // Geom3DFootprintArea/WKT writer would read vertices[98]
