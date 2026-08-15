@@ -30,6 +30,28 @@ static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector 
 	});
 }
 
+//! Reject a type code that is not in the GEOM_3D enum. The header-read accessors
+//! below consult exactly this field, so a crafted code must not be laundered into
+//! a plausible generic answer — unlike ST_3DZMin/ST_3DZMax, whose contract is
+//! bbox-only and never looks at the code. The codes are non-contiguous (1-7, 15),
+//! hence an explicit whitelist rather than a range check.
+static duckdb_3d::GeomType ValidatedGeomType(duckdb_3d::GeomType type) {
+	using namespace duckdb_3d;
+	switch (type) {
+	case GeomType::Point:
+	case GeomType::LineString:
+	case GeomType::Polygon:
+	case GeomType::MultiPoint:
+	case GeomType::MultiLineString:
+	case GeomType::MultiPolygon:
+	case GeomType::GeometryCollection:
+	case GeomType::PolyhedralSurface:
+		return type;
+	default:
+		throw InvalidInputException("GEOM_3D payload: unknown geometry type code");
+	}
+}
+
 static const char *GeomTypeName(duckdb_3d::GeomType type) {
 	using namespace duckdb_3d;
 	switch (type) {
@@ -58,11 +80,11 @@ static const char *GeomTypeName(duckdb_3d::GeomType type) {
 static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
-		// Only the type code is needed — read the O(1) front header. Magic and
-		// major version are still checked; a corrupt *body* is not, since it is
-		// never touched (same contract as ST_3DZMin/ST_3DZMax).
+		// Only the type code is needed — read the O(1) front header. Magic, major
+		// version and the type code itself are still checked; a corrupt *body* is
+		// not, since it is never touched.
 		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return StringVector::AddString(result, GeomTypeName(info.type));
+		return StringVector::AddString(result, GeomTypeName(ValidatedGeomType(info.type)));
 	});
 }
 
@@ -276,7 +298,7 @@ static void ST_DimensionFun(DataChunk &args, ExpressionState &state, Vector &res
 		// Only the type code is needed — read the O(1) front header (see the
 		// header-only contract noted on ST_GeometryTypeFun).
 		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return GeomDimension(info.type);
+		return GeomDimension(ValidatedGeomType(info.type));
 	});
 }
 
