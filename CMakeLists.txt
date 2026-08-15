@@ -22,6 +22,7 @@ set(EXTENSION_SOURCES
     src/functions/solid_accessors.cpp
     src/functions/geom_accessors.cpp
     src/functions/distance.cpp
+    src/functions/transforms.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
