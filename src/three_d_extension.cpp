@@ -2272,14 +2272,35 @@ static std::string BuildGeomPayloadForRow(Vector &boundaries_vec, Vector &vertic
 }
 
 // ──────────────────────────────────────────────────────────────
-// ST_3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D
-// geometry_properties is JSON text, parsed via the same ParseGeometryProperties
-// the WKB path uses — per the design doc, arrow-native keeps geometry_properties
-// as VARCHAR-JSON on both paths precisely so this parsing step is identical,
-// not something the new path gets to skip. `.type` is load-bearing (dispatch),
-// not merely informational as on the WKB path.
+// Arrow-native ingestion:
+// ST_3DFromArrowNative / ST_3DTryFromArrowNative(boundaries, vertices,
+// geometry_properties) → SOLID_3D, plus the ST_Geom3D* twins → GEOM_3D.
+//
+// One executor covers all eight overloads: {solid, surface} × {plain, TRY} ×
+// {JSON VARCHAR metadata, geometry_properties STRUCT}. The VARCHAR overloads
+// parse JSON text through the same ParseGeometryProperties the WKB path uses —
+// per the design doc, arrow-native keeps geometry_properties as VARCHAR-JSON on
+// both paths precisely so this parsing step is identical, not something the new
+// path gets to skip. The STRUCT overloads mirror ST_3DFromWKB's struct
+// overload: they bind directly against cityparquet-rs's real
+// geometry_properties_lod* column (confirmed STRUCT, the same type for WKB and
+// arrow-native rows) without an explicit to_json() cast.
+//
+// `.type` is load-bearing here — it dispatches solid-family vs surface-family
+// in the row builders — rather than merely informational as on the WKB path.
+// For the surface functions the boundaries' padding to solid-count 1 /
+// shell-count 1 (see BuildGeomModelFromArrowNative) is only a defensive
+// secondary check.
 // ──────────────────────────────────────────────────────────────
-static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+
+//! Shared executor for all eight arrow-native ingestion functions
+//! (st_3d[try]fromarrownative and st_geom3d[try]fromarrownative, VARCHAR and
+//! STRUCT geometry_properties). BUILD_ROW is BuildSolidPayloadForRow or
+//! BuildGeomPayloadForRow; TRY_VARIANT turns per-row failures into NULLs.
+using ArrowNativeRowBuilder = std::string (*)(Vector &, Vector &, idx_t, const duckdb_3d::GeometryMetadata &);
+
+template <bool TRY_VARIANT, MetaSource SOURCE, ArrowNativeRowBuilder BUILD_ROW>
+static void FromArrowNativeExecutor(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &boundaries_vec = args.data[0];
 	auto &vertices_vec = args.data[1];
 	auto &meta_vec = args.data[2];
@@ -2291,318 +2312,52 @@ static void ST_3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vec
 	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
 	auto &vertices_validity = FlatVector::Validity(vertices_vec);
 	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetData<string_t>(result);
 
 	UnifiedVectorFormat meta_data;
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+	const string_t *meta_strings = nullptr;
+	if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+		meta_vec.Flatten(count);
+	} else {
+		meta_vec.ToUnifiedFormat(count, meta_data);
+		meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+	}
 
 	for (idx_t i = 0; i < count; i++) {
-		auto meta_idx = meta_data.sel->get_index(i);
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
-		    !meta_data.validity.RowIsValid(meta_idx)) {
+		bool meta_valid;
+		idx_t meta_idx = i;
+		if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+			meta_valid = FlatVector::Validity(meta_vec).RowIsValid(i);
+		} else {
+			meta_idx = meta_data.sel->get_index(i);
+			meta_valid = meta_data.validity.RowIsValid(meta_idx);
+		}
+		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) || !meta_valid) {
 			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
+			result_data[i] = string_t();
 			continue;
 		}
-		using namespace duckdb_3d;
-		auto &meta_str = meta_strings[meta_idx];
-		auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-		auto payload = BuildSolidPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-		FlatVector::GetData<string_t>(result)[i] =
-		    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_3DFromArrowNative(boundaries, vertices, geometry_properties STRUCT(...)) → SOLID_3D
-// STRUCT overload, mirroring Task 1's ST_3DFromWKBWithStructMetaFun: binds
-// directly against cityparquet-rs's real geometry_properties_lod* column
-// (confirmed STRUCT, same type for WKB and arrow-native rows) without an
-// explicit to_json() cast.
-// ──────────────────────────────────────────────────────────────
-static void ST_3DFromArrowNativeStructMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	meta_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) || !meta_validity.RowIsValid(i)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		using namespace duckdb_3d;
-		auto metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
-		auto payload = BuildSolidPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-		FlatVector::GetData<string_t>(result)[i] =
-		    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → SOLID_3D or NULL
-// ──────────────────────────────────────────────────────────────
-static void ST_3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	UnifiedVectorFormat meta_data;
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto meta_idx = meta_data.sel->get_index(i);
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
-		    !meta_data.validity.RowIsValid(meta_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		try {
+		auto process_row = [&]() {
 			using namespace duckdb_3d;
-			auto &meta_str = meta_strings[meta_idx];
-			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-			auto payload = BuildSolidPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-			FlatVector::GetData<string_t>(result)[i] =
-			    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-		}
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties STRUCT(...)) → SOLID_3D or NULL
-// ──────────────────────────────────────────────────────────────
-static void ST_3DTryFromArrowNativeStructMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	meta_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) || !meta_validity.RowIsValid(i)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		try {
-			using namespace duckdb_3d;
-			auto metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
-			auto payload = BuildSolidPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-			FlatVector::GetData<string_t>(result)[i] =
-			    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-		}
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D
-// (boundaries padded to solid-count 1 / shell-count 1 for surface-family
-// types — see BuildGeomModelFromArrowNative. That padding-shape assertion is
-// a defensive secondary check; the primary dispatch is geometry_properties.type.)
-// ──────────────────────────────────────────────────────────────
-static void ST_Geom3DFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	UnifiedVectorFormat meta_data;
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto meta_idx = meta_data.sel->get_index(i);
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
-		    !meta_data.validity.RowIsValid(meta_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		using namespace duckdb_3d;
-		auto &meta_str = meta_strings[meta_idx];
-		auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-		auto payload = BuildGeomPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-		FlatVector::GetData<string_t>(result)[i] =
-		    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties STRUCT(...)) → GEOM_3D
-// ──────────────────────────────────────────────────────────────
-static void ST_Geom3DFromArrowNativeStructMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	meta_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) || !meta_validity.RowIsValid(i)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		using namespace duckdb_3d;
-		auto metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
-		auto payload = BuildGeomPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-		FlatVector::GetData<string_t>(result)[i] =
-		    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties VARCHAR) → GEOM_3D or NULL
-// ──────────────────────────────────────────────────────────────
-static void ST_Geom3DTryFromArrowNativeFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	UnifiedVectorFormat meta_data;
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto meta_idx = meta_data.sel->get_index(i);
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) ||
-		    !meta_data.validity.RowIsValid(meta_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		try {
-			using namespace duckdb_3d;
-			auto &meta_str = meta_strings[meta_idx];
-			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-			auto payload = BuildGeomPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-			FlatVector::GetData<string_t>(result)[i] =
-			    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-		}
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_Geom3DTryFromArrowNative(boundaries, vertices, geometry_properties STRUCT(...)) → GEOM_3D or NULL
-// ──────────────────────────────────────────────────────────────
-static void ST_Geom3DTryFromArrowNativeStructMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &boundaries_vec = args.data[0];
-	auto &vertices_vec = args.data[1];
-	auto &meta_vec = args.data[2];
-	auto count = args.size();
-	bool all_constant = args.AllConstant();
-
-	boundaries_vec.Flatten(count);
-	vertices_vec.Flatten(count);
-	meta_vec.Flatten(count);
-	auto &boundaries_validity = FlatVector::Validity(boundaries_vec);
-	auto &vertices_validity = FlatVector::Validity(vertices_vec);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		if (!boundaries_validity.RowIsValid(i) || !vertices_validity.RowIsValid(i) || !meta_validity.RowIsValid(i)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-		try {
-			using namespace duckdb_3d;
-			auto metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
-			auto payload = BuildGeomPayloadForRow(boundaries_vec, vertices_vec, i, metadata);
-			FlatVector::GetData<string_t>(result)[i] =
-			    StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
+			GeometryMetadata metadata;
+			if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+				metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
+			} else {
+				auto &meta_str = meta_strings[meta_idx];
+				metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+			}
+			auto payload = BUILD_ROW(boundaries_vec, vertices_vec, i, metadata);
+			result_data[i] = StringVector::AddStringOrBlob(result, string_t(payload.data(), payload.size()));
+		};
+		if constexpr (TRY_VARIANT) {
+			try {
+				process_row();
+			} catch (...) {
+				result_validity.SetInvalid(i);
+				result_data[i] = string_t();
+			}
+		} else {
+			process_row();
 		}
 	}
 
@@ -2664,12 +2419,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ScalarFunctionSet geom3d_from_arrow_native_set("st_geom3dfromarrownative");
 	auto geom3d_from_arrow_native =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, geom_3d_type,
-	                   ST_Geom3DFromArrowNativeFun);
+	                   FromArrowNativeExecutor<false, MetaSource::JSON_TEXT, BuildGeomPayloadForRow>);
 	geom3d_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	geom3d_from_arrow_native_set.AddFunction(geom3d_from_arrow_native);
 	auto geom3d_from_arrow_native_struct =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type},
-	                   geom_3d_type, ST_Geom3DFromArrowNativeStructMetaFun);
+	                   geom_3d_type, FromArrowNativeExecutor<false, MetaSource::STRUCT_FIELDS, BuildGeomPayloadForRow>);
 	geom3d_from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	geom3d_from_arrow_native_set.AddFunction(geom3d_from_arrow_native_struct);
 	loader.RegisterFunction(geom3d_from_arrow_native_set);
@@ -2677,12 +2432,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ScalarFunctionSet geom3d_try_from_arrow_native_set("st_geom3dtryfromarrownative");
 	auto geom3d_try_from_arrow_native =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, geom_3d_type,
-	                   ST_Geom3DTryFromArrowNativeFun);
+	                   FromArrowNativeExecutor<true, MetaSource::JSON_TEXT, BuildGeomPayloadForRow>);
 	geom3d_try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	geom3d_try_from_arrow_native_set.AddFunction(geom3d_try_from_arrow_native);
 	auto geom3d_try_from_arrow_native_struct =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type},
-	                   geom_3d_type, ST_Geom3DTryFromArrowNativeStructMetaFun);
+	                   geom_3d_type, FromArrowNativeExecutor<true, MetaSource::STRUCT_FIELDS, BuildGeomPayloadForRow>);
 	geom3d_try_from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	geom3d_try_from_arrow_native_set.AddFunction(geom3d_try_from_arrow_native_struct);
 	loader.RegisterFunction(geom3d_try_from_arrow_native_set);
@@ -2757,12 +2512,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ScalarFunctionSet from_arrow_native_set("st_3dfromarrownative");
 	auto from_arrow_native =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, LogicalType::BLOB,
-	                   ST_3DFromArrowNativeFun);
+	                   FromArrowNativeExecutor<false, MetaSource::JSON_TEXT, BuildSolidPayloadForRow>);
 	from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_arrow_native_set.AddFunction(from_arrow_native);
-	auto from_arrow_native_struct =
-	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type},
-	                   LogicalType::BLOB, ST_3DFromArrowNativeStructMetaFun);
+	auto from_arrow_native_struct = ScalarFunction(
+	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, LogicalType::BLOB,
+	    FromArrowNativeExecutor<false, MetaSource::STRUCT_FIELDS, BuildSolidPayloadForRow>);
 	from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_arrow_native_set.AddFunction(from_arrow_native_struct);
 	loader.RegisterFunction(from_arrow_native_set);
@@ -2770,12 +2525,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ScalarFunctionSet try_from_arrow_native_set("st_3dtryfromarrownative");
 	auto try_from_arrow_native =
 	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, LogicalType::BLOB,
-	                   ST_3DTryFromArrowNativeFun);
+	                   FromArrowNativeExecutor<true, MetaSource::JSON_TEXT, BuildSolidPayloadForRow>);
 	try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_arrow_native_set.AddFunction(try_from_arrow_native);
-	auto try_from_arrow_native_struct =
-	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type},
-	                   LogicalType::BLOB, ST_3DTryFromArrowNativeStructMetaFun);
+	auto try_from_arrow_native_struct = ScalarFunction(
+	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, LogicalType::BLOB,
+	    FromArrowNativeExecutor<true, MetaSource::STRUCT_FIELDS, BuildSolidPayloadForRow>);
 	try_from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_arrow_native_set.AddFunction(try_from_arrow_native_struct);
 	loader.RegisterFunction(try_from_arrow_native_set);
