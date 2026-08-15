@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Extruding the 4x3 rect footprint (at z=5) by height 2 yields a closed LoD1 box
 # with volume 4*3*2 = 24 and six faces.
 query III

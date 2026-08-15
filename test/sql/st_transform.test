@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # String form: reproject a Point Z from EPSG:4326 to EPSG:3857.
 # Axis order is normalised, so input is (lon, lat); Z passes through unchanged.
 query III

@@ -102,13 +102,14 @@ PAIRS = (
 )
 
 
-def run(cmd: list[str], *, stdin: str | None = None) -> str:
+def run(cmd: list[str], *, stdin: str | None = None, env: dict[str, str] | None = None) -> str:
     """Run a subprocess, return stdout, raise with stderr on failure."""
     proc = subprocess.run(
         cmd,
         input=stdin,
         capture_output=True,
         text=True,
+        env=env,
     )
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
@@ -132,8 +133,11 @@ def export_wkb_inputs() -> list[dict[str, str]]:
     """DuckDB side: (feature_id, lod, geom_role, wkb_hex) rows from the fixture."""
     if not DUCKDB.exists():
         raise SystemExit(f"release CLI not found at {DUCKDB}; run `just build` first")
+    # export_wkb.sql opens with the analytic ST_AsWKB* fixtures, which three_d
+    # only registers when THREE_D_TEST_FIXTURES is set (src/functions/fixtures.cpp).
     out = run([str(DUCKDB), "-unsigned", "-cmd", "LOAD three_d;",
-               "-c", f".read {EXPORT_SQL}"])
+               "-c", f".read {EXPORT_SQL}"],
+              env={**os.environ, "THREE_D_TEST_FIXTURES": "1"})
     return list(csv.DictReader(io.StringIO(out)))
 
 

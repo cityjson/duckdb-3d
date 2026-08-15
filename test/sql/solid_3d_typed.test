@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 query I
 SELECT typeof(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()));
 ----

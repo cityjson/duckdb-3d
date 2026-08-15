@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # ST_3DAsText: Point Z
 query I
 SELECT ST_3DAsText(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));

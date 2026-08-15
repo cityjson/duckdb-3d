@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 statement ok
 CREATE TABLE pts AS
 SELECT ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)) AS p;

@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # ST_IsPlanar: a flat polygon is planar
 query I
 SELECT ST_IsPlanar(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));

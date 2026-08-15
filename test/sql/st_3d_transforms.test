@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 statement ok
 CREATE TABLE solids AS
 SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS solid;

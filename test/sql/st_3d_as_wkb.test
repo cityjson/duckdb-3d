@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Test: round-trip - import and export should produce valid WKB
 query I
 SELECT ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra())) IS NOT NULL;

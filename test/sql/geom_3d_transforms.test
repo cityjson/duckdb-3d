@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # ST_3DTranslate shifts a Point Z by (dx, dy, dz)
 query III
 SELECT ST_3DX(t), ST_3DY(t), ST_3DZ(t)

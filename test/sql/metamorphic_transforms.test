@@ -13,6 +13,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # ── Controlled fixtures: exact to machine precision (small integer coords) ─────
 
 # Unit tetrahedron, volume 1/6: invariant under translation & rotation; volume

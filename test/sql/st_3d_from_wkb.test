@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Helper: create a valid PolyhedralSurface Z WKB for a tetrahedron
 # WKB little-endian, type 1015 (PolyhedralSurface Z), 4 triangular faces
 # Each face: 1 ring, 4 points (3 + closing vertex)

@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # A CityParquet package stores geometry_properties_lod* as a native STRUCT
 # (spec §8: STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[],
 # shells INTEGER[][])), with `shells` nested one array per solid ([[6, 6]]).

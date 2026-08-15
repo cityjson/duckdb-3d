@@ -12,6 +12,8 @@ require three_d
 
 require spatial
 
+require-env THREE_D_TEST_FIXTURES
+
 # spatial owns the 2D simple-features vocabulary on its GEOMETRY type.
 query I
 SELECT ST_Area(ST_GeomFromText('POLYGON((0 0, 0 2, 2 2, 2 0, 0 0))'));

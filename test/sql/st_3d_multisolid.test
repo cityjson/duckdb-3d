@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Fixture (ST_AsWKBMultiCube): two disjoint outward cubes [0,2]^3 and [5,7]^3, each
 # volume 8, surface area 24, as a GeometryCollection Z of two PolyhedralSurface Z.
 # The plain-WKB path imports them as two single-shell solids. Per DESIGN_DOC §10.2

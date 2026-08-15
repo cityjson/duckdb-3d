@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Fixture: 1 solid, 2 shells, 1 triangular face each (mirrors
 # test/cpp/test_arrow_native_import.cpp's basic two-shell case) — not a
 # closed/valid solid, just enough to prove the ingestion pipeline binds and

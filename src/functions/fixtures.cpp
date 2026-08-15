@@ -3,6 +3,7 @@
 #include "duckdb/function/scalar_function.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -468,6 +469,14 @@ static void ST_AsWKBMultiPolygonZFun(DataChunk &args, ExpressionState &state, Ve
 }
 
 void RegisterFixtureFunctions(ExtensionLoader &loader) {
+	// Test-only WKB fixture generators (st_aswkb*). Not part of the public
+	// surface: registration is opt-in so the production catalog stays clean.
+	// The SQL suite gets the variable from the Makefile's `export`; the .test
+	// files that use fixtures declare `require-env THREE_D_TEST_FIXTURES`.
+	if (std::getenv("THREE_D_TEST_FIXTURES") == nullptr) {
+		return;
+	}
+
 	// Test helper: generate tetrahedron WKB
 	loader.RegisterFunction(
 	    ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));

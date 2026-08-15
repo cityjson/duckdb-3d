@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Create a tetrahedron solid
 statement ok
 CREATE TABLE solids AS

@@ -6,7 +6,10 @@ gaps. Generated as part of the test-comprehensiveness pass.
 ## Method
 
 - **Function inventory:** every `ST_*` name registered in `src/three_d_extension.cpp`
-  (60 names, counting the `st_aswkb*` SQL test-helpers).
+  (60 names, counting the `st_aswkb*` SQL test-helpers). The helpers are not part of the
+  public surface: they are registered only when `THREE_D_TEST_FIXTURES` is set in the
+  environment (see `src/functions/fixtures.cpp`), which the `Makefile` exports for
+  `make test`, and each test file using them declares `require-env THREE_D_TEST_FIXTURES`.
 - **SQL coverage:** whether the name appears in any `test/sql/*.test` (excluding the oracle).
 - **Oracle coverage:** whether the function is cross-checked in the PostGIS/SFCGAL differential
   oracle (`test/sql/postgis_oracle.test` + `scripts/oracle/gen_golden.py`).
