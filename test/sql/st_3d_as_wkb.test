@@ -16,8 +16,9 @@ SELECT ST_3DFromWKB(ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()))) IS NOT 
 ----
 true
 
-# Test: NULL input returns NULL
+# Test: NULL input returns NULL. ST_3DAsWKB is overloaded over SOLID_3D / BLOB,
+# so an untyped NULL is ambiguous and must be cast (like ST_3DZMin/ST_3DZMax).
 query I
-SELECT ST_3DAsWKB(NULL) IS NULL;
+SELECT ST_3DAsWKB(NULL::SOLID_3D) IS NULL;
 ----
 true

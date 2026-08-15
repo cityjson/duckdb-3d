@@ -326,16 +326,18 @@ static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type) {
-	// ST_3DFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads
+	// ST_3DFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads.
+	// The constructors return the SOLID_3D alias so their result carries the type
+	// through to the typed consumer overloads without an explicit cast.
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
-	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
-	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB,
+	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, solid_3d_type, ST_3DFromWKBFun));
+	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, solid_3d_type,
 	                                    FromWKBWithMetaExecutor<false, MetaSource::JSON_TEXT>);
 	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_2arg);
 	// (BLOB, ANY): accept CityParquet's geometry_properties STRUCT directly; the
 	// bind routes VARCHAR/JSON/SQLNULL back to the JSON executor.
-	auto from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
+	auto from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, solid_3d_type,
 	                                   FromWKBWithMetaExecutor<false, MetaSource::STRUCT_FIELDS>, FromWkbAnyBind);
 	from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_any);
@@ -343,19 +345,23 @@ void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_
 
 	// ST_3DTryFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads
 	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
-	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
-	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB,
+	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, solid_3d_type, ST_3DTryFromWKBFun));
+	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, solid_3d_type,
 	                                        FromWKBWithMetaExecutor<true, MetaSource::JSON_TEXT>);
 	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg);
-	auto try_from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
+	auto try_from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, solid_3d_type,
 	                                       FromWKBWithMetaExecutor<true, MetaSource::STRUCT_FIELDS>, TryFromWkbAnyBind);
 	try_from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_any);
 	loader.RegisterFunction(try_from_wkb_set);
 
-	// ST_3DAsWKB(solid SOLID_3D) -> BLOB
-	loader.RegisterFunction(ScalarFunction("st_3daswkb", {LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
+	// ST_3DAsWKB(solid SOLID_3D) -> BLOB. The BLOB overload keeps stored/legacy
+	// payloads working; DuckDB resolves the alias exactly, so both are needed.
+	ScalarFunctionSet as_wkb_set("st_3daswkb");
+	as_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
+	as_wkb_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BLOB, ST_3DAsWKBFun));
+	loader.RegisterFunction(as_wkb_set);
 }
 
 } // namespace duckdb

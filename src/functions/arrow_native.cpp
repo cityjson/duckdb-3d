@@ -467,12 +467,12 @@ void RegisterArrowNativeFunctions(ExtensionLoader &loader, const LogicalType &so
 	// VARCHAR and STRUCT geometry_properties overloads, mirroring the WKB set above.
 	ScalarFunctionSet from_arrow_native_set("st_3dfromarrownative");
 	auto from_arrow_native =
-	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, LogicalType::BLOB,
+	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, solid_3d_type,
 	                   FromArrowNativeExecutor<false, MetaSource::JSON_TEXT, BuildSolidPayloadForRow>);
 	from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_arrow_native_set.AddFunction(from_arrow_native);
 	auto from_arrow_native_struct = ScalarFunction(
-	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, LogicalType::BLOB,
+	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, solid_3d_type,
 	    FromArrowNativeExecutor<false, MetaSource::STRUCT_FIELDS, BuildSolidPayloadForRow>);
 	from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_arrow_native_set.AddFunction(from_arrow_native_struct);
@@ -480,12 +480,12 @@ void RegisterArrowNativeFunctions(ExtensionLoader &loader, const LogicalType &so
 
 	ScalarFunctionSet try_from_arrow_native_set("st_3dtryfromarrownative");
 	auto try_from_arrow_native =
-	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, LogicalType::BLOB,
+	    ScalarFunction({ArrowNativeGeometryType(), ArrowNativeVerticesType(), LogicalType::VARCHAR}, solid_3d_type,
 	                   FromArrowNativeExecutor<true, MetaSource::JSON_TEXT, BuildSolidPayloadForRow>);
 	try_from_arrow_native.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_arrow_native_set.AddFunction(try_from_arrow_native);
 	auto try_from_arrow_native_struct = ScalarFunction(
-	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, LogicalType::BLOB,
+	    {ArrowNativeGeometryType(), ArrowNativeVerticesType(), geometry_properties_struct_type}, solid_3d_type,
 	    FromArrowNativeExecutor<true, MetaSource::STRUCT_FIELDS, BuildSolidPayloadForRow>);
 	try_from_arrow_native_struct.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_arrow_native_set.AddFunction(try_from_arrow_native_struct);

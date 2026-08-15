@@ -300,13 +300,25 @@ static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) 
 
 void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                     const LogicalType &geom_3d_type) {
-	// Introspection: counts
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dnumsolids", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumSolidsFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dnumshells", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumShellsFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dnumfaces", {LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumFacesFun));
+	// Introspection: counts. Every SOLID_3D consumer carries both a SOLID_3D and a
+	// plain-BLOB overload: the constructors now return the alias (so the typed
+	// overload binds without a cast), while the BLOB overload keeps stored and
+	// legacy payloads working. DuckDB treats a named alias as distinct from its
+	// base type for function resolution, hence the pair rather than one entry.
+	ScalarFunctionSet num_solids_set("st_3dnumsolids");
+	num_solids_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumSolidsFun));
+	num_solids_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumSolidsFun));
+	loader.RegisterFunction(num_solids_set);
+
+	ScalarFunctionSet num_shells_set("st_3dnumshells");
+	num_shells_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumShellsFun));
+	num_shells_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumShellsFun));
+	loader.RegisterFunction(num_shells_set);
+
+	ScalarFunctionSet num_faces_set("st_3dnumfaces");
+	num_faces_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumFacesFun));
+	num_faces_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumFacesFun));
+	loader.RegisterFunction(num_faces_set);
 
 	// Introspection: bounds
 	child_list_t<LogicalType> bbox_children;
@@ -317,15 +329,26 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	bbox_children.push_back({"max_y", LogicalType::DOUBLE});
 	bbox_children.push_back({"max_z", LogicalType::DOUBLE});
 	auto bbox_type = LogicalType::STRUCT(std::move(bbox_children));
-	loader.RegisterFunction(ScalarFunction("st_3dbounds", {LogicalType::BLOB}, bbox_type, ST_3DBoundsFun));
+	ScalarFunctionSet bounds_set("st_3dbounds");
+	bounds_set.AddFunction(ScalarFunction({LogicalType::BLOB}, bbox_type, ST_3DBoundsFun));
+	bounds_set.AddFunction(ScalarFunction({solid_3d_type}, bbox_type, ST_3DBoundsFun));
+	loader.RegisterFunction(bounds_set);
 
 	// Validation functions
-	loader.RegisterFunction(
-	    ScalarFunction("st_3disclosed", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dismanifold", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3disoriented", {LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
+	ScalarFunctionSet is_closed_set("st_3disclosed");
+	is_closed_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
+	is_closed_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
+	loader.RegisterFunction(is_closed_set);
+
+	ScalarFunctionSet is_manifold_set("st_3dismanifold");
+	is_manifold_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
+	is_manifold_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
+	loader.RegisterFunction(is_manifold_set);
+
+	ScalarFunctionSet is_oriented_set("st_3disoriented");
+	is_oriented_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
+	is_oriented_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
+	loader.RegisterFunction(is_oriented_set);
 
 	// Validation report
 	child_list_t<LogicalType> report_children;
@@ -343,15 +366,25 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	report_children.push_back({"code", LogicalType::VARCHAR});
 	report_children.push_back({"message", LogicalType::VARCHAR});
 	auto report_type = LogicalType::STRUCT(std::move(report_children));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dvalidationreport", {LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
+	ScalarFunctionSet report_set("st_3dvalidationreport");
+	report_set.AddFunction(ScalarFunction({LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
+	report_set.AddFunction(ScalarFunction({solid_3d_type}, report_type, ST_3DValidationReportFun));
+	loader.RegisterFunction(report_set);
 
 	// Measurement functions
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dsurfacearea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	ScalarFunctionSet surface_area_set("st_3dsurfacearea");
+	surface_area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	surface_area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	loader.RegisterFunction(surface_area_set);
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
-	loader.RegisterFunction(ScalarFunction("st_3darea", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
-	loader.RegisterFunction(ScalarFunction("st_3dvolume", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
+	ScalarFunctionSet area3d_set("st_3darea");
+	area3d_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	area3d_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	loader.RegisterFunction(area3d_set);
+	ScalarFunctionSet volume_set("st_3dvolume");
+	volume_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
+	volume_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DVolumeFun));
+	loader.RegisterFunction(volume_set);
 	// ST_3DFootprintArea dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
 	// raw BLOB) — same pattern as ST_3DZMin/ST_3DZMax.
 	ScalarFunctionSet area_set("st_3dfootprintarea");
@@ -359,8 +392,10 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
 	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
 	loader.RegisterFunction(area_set);
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dperimeter", {LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
+	ScalarFunctionSet perimeter_set("st_3dperimeter");
+	perimeter_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
+	perimeter_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DPerimeterFun));
+	loader.RegisterFunction(perimeter_set);
 
 	// Accessor functions
 	ScalarFunctionSet ndims_set("st_ndims");

@@ -319,11 +319,11 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));
 	loader.RegisterFunction(ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
-	// Returns plain BLOB (like st_3dfromwkb) so the SOLID_3D measurement/introspection
-	// functions, which bind on BLOB, compose directly on the result.
+	// Solid-producing constructors: return the SOLID_3D alias (like st_3dfromwkb) so
+	// the typed measurement/introspection overloads compose directly on the result.
 	loader.RegisterFunction(
-	    ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DExtrudeFun));
-	loader.RegisterFunction(ScalarFunction("st_makesolid", {geom_3d_type}, LogicalType::BLOB, ST_MakeSolidFun));
+	    ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DExtrudeFun));
+	loader.RegisterFunction(ScalarFunction("st_makesolid", {geom_3d_type}, solid_3d_type, ST_MakeSolidFun));
 }
 
 } // namespace duckdb

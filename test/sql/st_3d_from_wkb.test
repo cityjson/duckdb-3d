@@ -19,11 +19,11 @@ SELECT ST_3DFromWKB(wkb) IS NOT NULL FROM test_wkb;
 ----
 true
 
-# Test: typeof returns BLOB (SOLID_3D is alias over BLOB)
+# Test: typeof returns the SOLID_3D alias type
 query I
 SELECT typeof(ST_3DFromWKB(wkb)) FROM test_wkb;
 ----
-BLOB
+SOLID_3D
 
 # Test: NULL input returns NULL (standard null propagation)
 query I
