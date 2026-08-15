@@ -36,6 +36,11 @@ inline void FlattenIfNeeded(Vector &vec, idx_t count) {
 	}
 }
 
+//! The coordinate dimension every v1 value carries. Defined in
+//! functions/solid_accessors.cpp; shared because ST_NDims (solid accessors) and
+//! ST_CoordDim (geom accessors) live in different translation units.
+int32_t CoordinateDimension3D();
+
 //! Per-domain registration hooks, called from LoadInternal.
 void RegisterFixtureFunctions(ExtensionLoader &loader);
 void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type);
