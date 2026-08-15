@@ -64,7 +64,7 @@ TEST_CASE("GeomPayload rejects ring offsets that decrease mid-sequence", "[geom_
 	model.ring_offsets = {0, 3, 2, 4};
 	auto bytes = SerializeGeomPayload(model);
 	REQUIRE_THROWS_WITH(DeserializeGeomPayload(bytes.data(), bytes.size()),
-	                     Catch::Contains("non-monotonic ring-vertex offsets"));
+	                    Catch::Contains("non-monotonic ring-vertex offsets"));
 }
 
 TEST_CASE("GeomPayload rejects ring offsets past the vertex array", "[geom_payload]") {
