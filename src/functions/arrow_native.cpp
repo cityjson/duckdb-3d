@@ -1,5 +1,6 @@
 #include "functions/three_d_functions.hpp"
 
+#include "duckdb/common/exception.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
@@ -8,7 +9,6 @@
 #include "kernel/solid_model.hpp"
 
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,8 +17,8 @@ namespace duckdb {
 // ──────────────────────────────────────────────────────────────
 // geometry_properties STRUCT("type" VARCHAR, surfaces JSON, face_semantics
 // INTEGER[], shells INTEGER[][]) → the kernel's plain GeometryMetadata.
-// duckdb-cityjson's arrow-native-type branch (commit d334b26) types
-// geometry_properties_lod* this way instead of VARCHAR JSON text; the shared
+// duckdb-cityjson's arrow-native output types geometry_properties_lod* this
+// way instead of VARCHAR JSON text; the shared
 // ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp) extracts the
 // same shell-grouping information the JSON-text path parses, for this path and
 // ST_3DFromWKB's (BLOB, ANY) overload alike. It resolves `type`/`shells` by
@@ -57,7 +57,7 @@ LogicalType ArrowNativeVerticesType() {
 }
 
 //! A literal or constant-folded expression (as in a simple `SELECT ...` test
-//! query, or Task 1's STRUCT overload before this fix) can produce a
+//! query, or the STRUCT geometry_properties overload) can produce a
 //! non-FLAT_VECTOR at any nesting depth, not only the top level —
 //! FlatVector::GetData/IsNull assert genuine flat vectors. `count` is this
 //! level's own cardinality (its list's total element count across every row,
@@ -99,7 +99,7 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 	for (idx_t solid_idx = solid_entry.offset; solid_idx < solid_entry.offset + solid_entry.length; solid_idx++) {
 		if (!shell_validity.RowIsValid(solid_idx)) {
-			throw std::runtime_error("arrow-native geometry: null shell entry (no nested list element may be null)");
+			throw InvalidInputException("arrow-native geometry: null shell entry (no nested list element may be null)");
 		}
 		auto shell_entry = FlatVector::GetData<list_entry_t>(shell_vec)[solid_idx];
 		auto &face_vec = ListVector::GetEntry(shell_vec);
@@ -108,7 +108,8 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 		for (idx_t shell_idx = shell_entry.offset; shell_idx < shell_entry.offset + shell_entry.length; shell_idx++) {
 			if (!face_validity.RowIsValid(shell_idx)) {
-				throw std::runtime_error("arrow-native geometry: null face entry (no nested list element may be null)");
+				throw InvalidInputException(
+				    "arrow-native geometry: null face entry (no nested list element may be null)");
 			}
 			auto face_entry = FlatVector::GetData<list_entry_t>(face_vec)[shell_idx];
 			auto &ring_vec = ListVector::GetEntry(face_vec);
@@ -117,7 +118,7 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 			for (idx_t face_idx = face_entry.offset; face_idx < face_entry.offset + face_entry.length; face_idx++) {
 				if (!ring_validity.RowIsValid(face_idx)) {
-					throw std::runtime_error(
+					throw InvalidInputException(
 					    "arrow-native geometry: null ring entry (no nested list element may be null)");
 				}
 				auto ring_entry = FlatVector::GetData<list_entry_t>(ring_vec)[face_idx];
@@ -127,7 +128,7 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 				for (idx_t r = ring_entry.offset; r < ring_entry.offset + ring_entry.length; r++) {
 					if (!index_validity.RowIsValid(r)) {
-						throw std::runtime_error(
+						throw InvalidInputException(
 						    "arrow-native geometry: null vertex-index list entry (no nested list element may be null)");
 					}
 					auto idx_ring_entry = FlatVector::GetData<list_entry_t>(index_vec)[r];
@@ -138,12 +139,12 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 					for (idx_t k = idx_ring_entry.offset; k < idx_ring_entry.offset + idx_ring_entry.length; k++) {
 						if (!leaf_validity.RowIsValid(k)) {
-							throw std::runtime_error(
+							throw InvalidInputException(
 							    "arrow-native geometry: null vertex-pool index (no nested list element may be null)");
 						}
 						int32_t raw = leaf_data[k];
 						if (raw < 0) {
-							throw std::runtime_error("arrow-native geometry: negative vertex-pool index");
+							throw InvalidInputException("arrow-native geometry: negative vertex-pool index");
 						}
 						result.ring_vertex_indices.push_back(static_cast<uint32_t>(raw));
 					}
@@ -187,8 +188,8 @@ static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &verti
 	for (idx_t i = vert_entry.offset; i < vert_entry.offset + vert_entry.length; i++) {
 		if (!struct_validity.RowIsValid(i) || !x_validity.RowIsValid(i) || !y_validity.RowIsValid(i) ||
 		    !z_validity.RowIsValid(i)) {
-			throw std::runtime_error("arrow-native geometry: null vertex-pool entry or coordinate "
-			                         "(no vertex or coordinate may be null)");
+			throw InvalidInputException("arrow-native geometry: null vertex-pool entry or coordinate "
+			                            "(no vertex or coordinate may be null)");
 		}
 		vertices.push_back(Vertex3D {x_data[i], y_data[i], z_data[i]});
 	}
@@ -222,9 +223,9 @@ static std::string BuildSolidPayloadForRow(Vector &boundaries_vec, Vector &verti
                                            const duckdb_3d::GeometryMetadata &metadata) {
 	using namespace duckdb_3d;
 	if (!IsSolidFamilyType(metadata.type)) {
-		throw std::runtime_error("geometry_properties.type '" + metadata.type +
-		                         "' is not a solid-family type (Solid/MultiSolid/CompositeSolid) — "
-		                         "call ST_Geom3DFromArrowNative for surface types");
+		throw InvalidInputException("geometry_properties.type '" + metadata.type +
+		                            "' is not a solid-family type (Solid/MultiSolid/CompositeSolid) — "
+		                            "call ST_Geom3DFromArrowNative for surface types");
 	}
 	auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, row);
 	auto vertices = ExtractArrowNativeVertices(vertices_vec, row);
@@ -241,9 +242,9 @@ static std::string BuildGeomPayloadForRow(Vector &boundaries_vec, Vector &vertic
                                           const duckdb_3d::GeometryMetadata &metadata) {
 	using namespace duckdb_3d;
 	if (!IsSurfaceFamilyType(metadata.type)) {
-		throw std::runtime_error("geometry_properties.type '" + metadata.type +
-		                         "' is not a surface-family type (MultiSurface/CompositeSurface) — "
-		                         "call ST_3DFromArrowNative for solid types");
+		throw InvalidInputException("geometry_properties.type '" + metadata.type +
+		                            "' is not a surface-family type (MultiSurface/CompositeSurface) — "
+		                            "call ST_3DFromArrowNative for solid types");
 	}
 	auto boundaries = ExtractArrowNativeBoundaries(boundaries_vec, row);
 	auto vertices = ExtractArrowNativeVertices(vertices_vec, row);
@@ -348,9 +349,9 @@ static void FromArrowNativeExecutor(DataChunk &args, ExpressionState &state, Vec
 }
 
 //! geometry_properties STRUCT("type" VARCHAR, surfaces JSON, face_semantics
-//! INTEGER[], shells INTEGER[][]) — the shape duckdb-cityjson's arrow-native-type
-//! branch (commit d334b26) and cityparquet-rs both emit for
-//! geometry_properties_lod* instead of/alongside VARCHAR JSON text.
+//! INTEGER[], shells INTEGER[][]) — the shape duckdb-cityjson's arrow-native
+//! output and cityparquet-rs both emit for geometry_properties_lod* instead
+//! of/alongside VARCHAR JSON text.
 static LogicalType GeometryPropertiesStructType() {
 	child_list_t<LogicalType> geom_props_fields;
 	geom_props_fields.push_back(make_pair("type", LogicalType::VARCHAR));

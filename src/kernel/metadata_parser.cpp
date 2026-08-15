@@ -88,6 +88,9 @@ public:
 			case 't':
 				result.push_back('\t');
 				break;
+			// KNOWN LIMITATION: \uXXXX escapes are validated then replaced with '?' — non-ASCII
+			// geometry_properties strings are corrupted. Follow-up: decode to UTF-8 or swap in a
+			// real JSON parser.
 			case 'u':
 				for (int i = 0; i < 4; i++) {
 					if (pos >= input.size() || !std::isxdigit(static_cast<unsigned char>(input[pos]))) {

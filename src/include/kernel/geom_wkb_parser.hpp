@@ -6,9 +6,10 @@
 
 namespace duckdb_3d {
 
-//! Parse an ISO SQL/MM WKB blob into a general GeomModel.
-//! Supported in this slice: Point Z. Other classes throw std::runtime_error
-//! until added. Big-endian WKB is rejected for now.
+//! Parse an ISO SQL/MM WKB blob into a general GeomModel. Supported classes:
+//! Point/LineString/Polygon/MultiPoint/MultiLineString/MultiPolygon/
+//! PolyhedralSurface (Z variants), in either byte order; unsupported type
+//! codes throw std::runtime_error.
 GeomModel ParseGeomWKB(const uint8_t *data, size_t size);
 
 } // namespace duckdb_3d

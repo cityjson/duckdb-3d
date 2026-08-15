@@ -2,10 +2,8 @@
 #include "kernel/validation.hpp"
 #include "kernel/triangulation.hpp"
 #include <unordered_map>
-#include <cmath>
 #include <functional>
 #include <stdexcept>
-#include <numeric>
 
 namespace duckdb_3d {
 

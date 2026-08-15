@@ -31,10 +31,6 @@ Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
 
 //! Project a 3D point to 2D given a face normal.
 //! Chooses the two axes that maximize projection quality.
-struct Point2D {
-	double x, y;
-};
-
 void ProjectTo2D(const Vertex3D &v, const Vertex3D &normal, double &out_x, double &out_y) {
 	// Drop the axis aligned with the largest normal component
 	double ax = std::abs(normal.x), ay = std::abs(normal.y), az = std::abs(normal.z);
