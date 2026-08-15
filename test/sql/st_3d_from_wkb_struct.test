@@ -137,3 +137,18 @@ SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(),
                        {'type': 'Solid', 'shells': [[18446744073709551615, 6]]::UBIGINT[][]}) IS NULL;
 ----
 true
+
+# Row-varying STRUCT metadata: multiple rows through the same executor chunk,
+# exercising non-constant struct/list vectors in the bind-normalised path.
+query I
+WITH rows AS (
+    SELECT ST_AsWKBHollowCube() AS wkb,
+           {'type': 'Solid', 'shells': [[6, 6]]} AS gp
+    UNION ALL
+    SELECT ST_AsWKBPolyhedralTetra() AS wkb,
+           {'type': 'Solid', 'shells': [[4]]} AS gp
+)
+SELECT ST_3DNumShells(ST_3DFromWKB(wkb, gp)) FROM rows ORDER BY 1;
+----
+1
+2

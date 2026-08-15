@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "kernel/geom_payload.hpp"
+#include "kernel/metadata_parser.hpp"
 #include "kernel/payload.hpp"
 
 #include <cstring>
@@ -35,6 +36,17 @@ inline void FlattenIfNeeded(Vector &vec, idx_t count) {
 		vec.Flatten(count);
 	}
 }
+
+//! Read one row of a geometry_properties STRUCT into the kernel's
+//! GeometryMetadata. Resolves `type` and `shells` children by case-insensitive
+//! name, applies FlattenIfNeeded at every nesting level before dereferencing,
+//! and accepts both HUGEINT face counts (the (BLOB, ANY) bind normalises
+//! shells to HUGEINT[][]) and INTEGER face counts (the arrow-native overloads
+//! bind the producer's INTEGER[][] directly). `struct_vec` must already be
+//! flattened to `count` rows by the caller. Defined in
+//! functions/struct_metadata.cpp; shared because the WKB (solid_io) and
+//! arrow-native STRUCT overloads live in different translation units.
+duckdb_3d::GeometryMetadata ReadGeometryPropertiesStructRow(Vector &struct_vec, idx_t count, idx_t row);
 
 //! The coordinate dimension every v1 value carries. Defined in
 //! functions/solid_accessors.cpp; shared because ST_NDims (solid accessors) and

@@ -24,6 +24,7 @@ set(EXTENSION_SOURCES
     src/functions/distance.cpp
     src/functions/transforms.cpp
     src/functions/arrow_native.cpp
+    src/functions/struct_metadata.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp

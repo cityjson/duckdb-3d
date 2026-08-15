@@ -15,88 +15,20 @@
 namespace duckdb {
 
 // ──────────────────────────────────────────────────────────────
-// Second geometry_properties STRUCT reader, for the ARROW-NATIVE path.
-//
-// ReadStructRowMetadata above serves ST_3DFromWKB's (BLOB, ANY) overload,
-// whose bind normalises the struct first (shells -> HUGEINT[][], type ->
-// VARCHAR), so it can read pre-normalised children by index. The
-// arrow-native functions below bind the geometry_properties STRUCT
-// directly, with no such normalisation pass, so they need a reader that
-// walks the struct as the producer typed it (shells as INTEGER[][]) and
-// flattens each nesting level itself. Keep both until the arrow-native
-// overloads are moved onto the same (…, ANY) + bind strategy.
+// geometry_properties STRUCT("type" VARCHAR, surfaces JSON, face_semantics
+// INTEGER[], shells INTEGER[][]) → the kernel's plain GeometryMetadata.
+// duckdb-cityjson's arrow-native-type branch (commit d334b26) types
+// geometry_properties_lod* this way instead of VARCHAR JSON text; the shared
+// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp) extracts the
+// same shell-grouping information the JSON-text path parses, for this path and
+// ST_3DFromWKB's (BLOB, ANY) overload alike. It resolves `type`/`shells` by
+// name, so the arrow-native overloads' fixed field order and the WKB overload's
+// bind-normalised (reorderable) struct both read correctly, and it accepts the
+// producer's INTEGER face counts as well as the WKB bind's normalised HUGEINT
+// ones. It lives in the SQL/vectorized layer rather than in
+// kernel/metadata_parser.* because it reads a live DuckDB Vector (mirroring how
+// a BLOB WKB argument is unwrapped into a plain uint8_t*/size before ParseWKB).
 // ──────────────────────────────────────────────────────────────
-// Adapter: geometry_properties STRUCT("type" VARCHAR, surfaces JSON,
-// face_semantics INTEGER[], shells INTEGER[][]) row → the kernel's plain
-// GeometryMetadata. duckdb-cityjson's arrow-native-type branch (commit
-// d334b26) types geometry_properties_lod* this way instead of VARCHAR JSON
-// text; this extracts the same shell-grouping information the JSON-text
-// path parses. Deliberately kept here rather than in
-// kernel/metadata_parser.* — it reads a live DuckDB Vector, so it belongs
-// in the SQL/vectorized layer, not the DuckDB-free geometry kernel (mirrors
-// how the BLOB WKB argument above is unwrapped into a plain uint8_t*/size
-// before ParseWKB, rather than handing the kernel a Vector directly).
-//
-// `struct_vec` must already be flattened by the caller (`Vector::Flatten`) —
-// a STRUCT argument can arrive as a CONSTANT_VECTOR (e.g. a literal, as in a
-// simple `SELECT ... {...}` test query) whose children are not `FLAT_VECTOR`
-// either; `FlatVector::GetData`/`IsNull` assert genuine flat vectors at
-// every level, so flattening once up front (as
-// FromWKBWithMetaExecutor above does) is required before this can index
-// `row` directly through `StructVector`/`ListVector`. The nested `shells`
-// list's own children (one level further down) are flattened inside this
-// function itself, per-level, for the same reason.
-// ──────────────────────────────────────────────────────────────
-
-static duckdb_3d::GeometryMetadata ExtractGeometryPropertiesFromStruct(Vector &struct_vec, idx_t row) {
-	duckdb_3d::GeometryMetadata result;
-	auto &children = StructVector::GetEntries(struct_vec);
-	// children[0] = type, children[1] = surfaces (unused for shell grouping,
-	// same as the JSON-text parser), children[2] = face_semantics (unused),
-	// children[3] = shells.
-	auto &type_vec = *children[0];
-	if (!FlatVector::IsNull(type_vec, row)) {
-		result.type = FlatVector::GetData<string_t>(type_vec)[row].GetString();
-	}
-
-	auto &shells_vec = *children[3];
-	if (FlatVector::IsNull(shells_vec, row)) {
-		return result; // no shells -> non-solid type, same default as the JSON-text parser
-	}
-	auto outer_entry = FlatVector::GetData<list_entry_t>(shells_vec)[row];
-	auto &inner_list_vec = ListVector::GetEntry(shells_vec);
-	FlattenIfNeeded(inner_list_vec, ListVector::GetListSize(shells_vec));
-	auto &inner_list_validity = FlatVector::Validity(inner_list_vec);
-	for (idx_t solid_idx = outer_entry.offset; solid_idx < outer_entry.offset + outer_entry.length; solid_idx++) {
-		// Nullability invariant (spec §8 / design doc): a present shells value
-		// carries no null nested elements — a null per-solid array or a null
-		// face-count within it is malformed input, not "no shells", so this
-		// must be rejected rather than dereferencing whatever bytes happen to
-		// sit behind the null slot (unspecified, not merely "wrong data").
-		if (!inner_list_validity.RowIsValid(solid_idx)) {
-			throw std::runtime_error("geometry_properties: null shells entry (no nested list element may be null)");
-		}
-		auto inner_entry = FlatVector::GetData<list_entry_t>(inner_list_vec)[solid_idx];
-		auto &int_vec = ListVector::GetEntry(inner_list_vec);
-		FlattenIfNeeded(int_vec, ListVector::GetListSize(inner_list_vec));
-		auto &int_validity = FlatVector::Validity(int_vec);
-		auto int_data = FlatVector::GetData<int32_t>(int_vec);
-		std::vector<uint32_t> shell_face_counts;
-		shell_face_counts.reserve(inner_entry.length);
-		for (idx_t i = inner_entry.offset; i < inner_entry.offset + inner_entry.length; i++) {
-			if (!int_validity.RowIsValid(i)) {
-				throw std::runtime_error(
-				    "geometry_properties: null shell face count (no nested list element may be null)");
-			}
-			if (int_data[i] < 0) {
-				throw std::runtime_error("geometry_properties: expected non-negative shell face count");
-			}
-			shell_face_counts.push_back(static_cast<uint32_t>(int_data[i]));
-		}
-		result.shells.push_back(std::move(shell_face_counts));
-	}
-	return result;
-}
 
 // ──────────────────────────────────────────────────────────────
 // Arrow-native ingestion (arrow-native-type branch): ST_3DFromArrowNative /
@@ -390,7 +322,7 @@ static void FromArrowNativeExecutor(DataChunk &args, ExpressionState &state, Vec
 			using namespace duckdb_3d;
 			GeometryMetadata metadata;
 			if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
-				metadata = ExtractGeometryPropertiesFromStruct(meta_vec, i);
+				metadata = ReadGeometryPropertiesStructRow(meta_vec, count, i);
 			} else {
 				auto &meta_str = meta_strings[meta_idx];
 				metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));

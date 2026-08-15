@@ -2,10 +2,8 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "kernel/metadata_parser.hpp"
 #include "kernel/model_builder.hpp"
@@ -63,85 +61,12 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 // overload is registered as (BLOB, ANY) with a bind that normalises the struct
 // and routes plain VARCHAR / JSON / SQLNULL metadata back to the JSON executor,
 // so it is a strict superset of the VARCHAR overload.
+//
+// The struct itself is read row-by-row by the shared, name-resolved
+// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp), which the
+// arrow-native STRUCT overloads use too — so the bind needs no per-field index
+// bookkeeping, only the type normalisation and the missing-`shells` diagnosis.
 // ──────────────────────────────────────────────────────────────
-struct FromWkbStructBindData : public FunctionData {
-	idx_t shells_index;
-	bool has_type;
-	idx_t type_index;
-
-	FromWkbStructBindData(idx_t shells_index_p, bool has_type_p, idx_t type_index_p)
-	    : shells_index(shells_index_p), has_type(has_type_p), type_index(type_index_p) {
-	}
-
-	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<FromWkbStructBindData>(shells_index, has_type, type_index);
-	}
-	bool Equals(const FunctionData &other_p) const override {
-		auto &o = other_p.Cast<FromWkbStructBindData>();
-		return shells_index == o.shells_index && has_type == o.has_type && type_index == o.type_index;
-	}
-};
-
-// Extract GeometryMetadata (type + shells) from row `row` of the flattened
-// struct children. `shells_vec` is a normalised LIST(LIST(INTEGER)); `type_vec`
-// (when present) is a normalised VARCHAR.
-static duckdb_3d::GeometryMetadata ReadStructRowMetadata(Vector *type_vec, Vector *shells_vec, idx_t row,
-                                                         bool has_type) {
-	duckdb_3d::GeometryMetadata md;
-	if (has_type && type_vec) {
-		auto &type_validity = FlatVector::Validity(*type_vec);
-		if (type_validity.RowIsValid(row)) {
-			auto s = FlatVector::GetData<string_t>(*type_vec)[row];
-			md.type = std::string(s.GetData(), s.GetSize());
-		}
-	}
-	auto &shells_validity = FlatVector::Validity(*shells_vec);
-	if (shells_validity.RowIsValid(row)) {
-		auto outer = ListVector::GetData(*shells_vec)[row];
-		auto &inner_list = ListVector::GetEntry(*shells_vec); // LIST(HUGEINT)
-		auto inner_data = ListVector::GetData(inner_list);
-		auto &int_vec = ListVector::GetEntry(inner_list); // HUGEINT
-		auto int_data = FlatVector::GetData<hugeint_t>(int_vec);
-		auto &int_validity = FlatVector::Validity(int_vec);
-		auto &inner_list_validity = FlatVector::Validity(inner_list);
-		std::vector<std::vector<uint32_t>> shells;
-		shells.reserve(outer.length);
-		for (idx_t j = 0; j < outer.length; j++) {
-			// A present `shells` value carries no null nested elements (spec §8):
-			// a null per-solid array is malformed input, not "no shells". Reject it
-			// rather than reading whatever sits behind the null slot, whose contents
-			// are unspecified rather than merely wrong. The face-count level below
-			// is checked the same way.
-			if (!inner_list_validity.RowIsValid(outer.offset + j)) {
-				throw InvalidInputException(
-				    "geometry_properties: null shells entry (no nested list element may be null)");
-			}
-			auto ie = inner_data[outer.offset + j];
-			std::vector<uint32_t> shell;
-			shell.reserve(ie.length);
-			for (idx_t k = 0; k < ie.length; k++) {
-				idx_t pos = ie.offset + k;
-				if (!int_validity.RowIsValid(pos)) {
-					throw InvalidInputException(
-					    "geometry_properties: null shell face count (no nested list element may be null)");
-				}
-				// shells is normalised to HUGEINT[][] by the bind (so any standard
-				// integer producer type is accepted without a pre-executor cast
-				// failure); the fits-in-uint32 check runs here — inside the TRY
-				// variant's catch — so an out-of-range count fails cleanly. TryCast
-				// also rejects negatives.
-				uint32_t face_count;
-				if (!Hugeint::TryCast<uint32_t>(int_data[pos], face_count)) {
-					throw InvalidInputException("geometry_properties: shells face count out of range");
-				}
-				shell.push_back(face_count);
-			}
-			shells.push_back(std::move(shell));
-		}
-		md.shells = std::move(shells);
-	}
-	return md;
-}
 
 // ──────────────────────────────────────────────────────────────
 // ST_3DFromWKB / ST_3DTryFromWKB(wkb BLOB, geometry_properties) → SOLID_3D
@@ -170,20 +95,8 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 
 	UnifiedVectorFormat meta_data;
 	const string_t *meta_strings = nullptr;
-	Vector *shells_vec = nullptr;
-	Vector *type_vec = nullptr;
-	bool has_type = false;
 	if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
-		auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
 		meta_vec.Flatten(count);
-		auto &children = StructVector::GetEntries(meta_vec);
-		shells_vec = children[info.shells_index].get();
-		shells_vec->Flatten(count);
-		has_type = info.has_type;
-		if (info.has_type) {
-			type_vec = children[info.type_index].get();
-			type_vec->Flatten(count);
-		}
 	} else {
 		meta_vec.ToUnifiedFormat(count, meta_data);
 		meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
@@ -215,7 +128,7 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 			if (meta_valid) {
 				GeometryMetadata metadata;
 				if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
-					metadata = ReadStructRowMetadata(type_vec, shells_vec, i, has_type);
+					metadata = ReadGeometryPropertiesStructRow(meta_vec, count, i);
 				} else {
 					auto &meta_str = meta_strings[meta_data.sel->get_index(i)];
 					metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
@@ -264,35 +177,33 @@ static unique_ptr<FunctionData> BindWkbMetaAny(ScalarFunction &bound_function,
 		return nullptr;
 	case LogicalTypeId::STRUCT: {
 		auto &child_types = StructType::GetChildTypes(meta_type);
-		idx_t shells_index = DConstants::INVALID_INDEX;
-		idx_t type_index = DConstants::INVALID_INDEX;
-		bool has_type = false;
+		bool has_shells = false;
 		child_list_t<LogicalType> normalized;
 		normalized.reserve(child_types.size());
 		for (idx_t i = 0; i < child_types.size(); i++) {
 			auto &name = child_types[i].first;
 			auto normalized_type = child_types[i].second;
 			if (StringUtil::CIEquals(name, "shells")) {
-				shells_index = i;
+				has_shells = true;
 				// HUGEINT so every standard integer producer type (through UBIGINT)
 				// widens without a bind-time cast failure; the executor range-checks
 				// each value, so ST_3DTryFromWKB can turn an out-of-range count into
 				// NULL instead of raising during the (pre-executor) struct cast.
 				normalized_type = LogicalType::LIST(LogicalType::LIST(LogicalType::HUGEINT));
 			} else if (StringUtil::CIEquals(name, "type")) {
-				type_index = i;
-				has_type = true;
 				normalized_type = LogicalType::VARCHAR;
 			}
 			normalized.emplace_back(name, std::move(normalized_type));
 		}
-		if (shells_index == DConstants::INVALID_INDEX) {
+		if (!has_shells) {
 			throw BinderException("ST_3DFromWKB: geometry_properties metadata STRUCT must contain a `shells` "
 			                      "field; pass the metadata as a JSON VARCHAR otherwise");
 		}
 		bound_function.arguments[1] = LogicalType::STRUCT(std::move(normalized));
 		bound_function.function = struct_fn;
-		return make_uniq<FromWkbStructBindData>(shells_index, has_type, type_index);
+		// The executor resolves `type`/`shells` by name from the normalised type,
+		// so no bind data is needed.
+		return nullptr;
 	}
 	default:
 		throw BinderException("ST_3DFromWKB: metadata must be a geometry_properties STRUCT or a JSON VARCHAR, got " +
