@@ -295,107 +295,6 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 }
 
 // ──────────────────────────────────────────────────────────────
-// ST_3DFromWKB(wkb BLOB, geometry_properties VARCHAR) → SOLID_3D
-// ──────────────────────────────────────────────────────────────
-static void ST_3DFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &wkb_vec = args.data[0];
-	auto &meta_vec = args.data[1];
-	auto count = args.size();
-
-	UnifiedVectorFormat wkb_data, meta_data;
-	wkb_vec.ToUnifiedFormat(count, wkb_data);
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto wkb_idx = wkb_data.sel->get_index(i);
-		auto meta_idx = meta_data.sel->get_index(i);
-
-		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		using namespace duckdb_3d;
-		auto &wkb = wkb_strings[wkb_idx];
-		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
-
-		SolidModel model;
-		if (meta_data.validity.RowIsValid(meta_idx)) {
-			auto &meta_str = meta_strings[meta_idx];
-			auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-			model = BuildSolidModel(surfaces, metadata);
-		} else {
-			model = BuildSolidModel(surfaces);
-		}
-
-		auto payload = SerializePayload(model);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
-// ST_3DTryFromWKB(wkb BLOB, geometry_properties VARCHAR) → SOLID_3D or NULL
-// ──────────────────────────────────────────────────────────────
-static void ST_3DTryFromWKBWithMetaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &wkb_vec = args.data[0];
-	auto &meta_vec = args.data[1];
-	auto count = args.size();
-
-	UnifiedVectorFormat wkb_data, meta_data;
-	wkb_vec.ToUnifiedFormat(count, wkb_data);
-	meta_vec.ToUnifiedFormat(count, meta_data);
-	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
-	auto meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto wkb_idx = wkb_data.sel->get_index(i);
-		auto meta_idx = meta_data.sel->get_index(i);
-
-		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		try {
-			using namespace duckdb_3d;
-			auto &wkb = wkb_strings[wkb_idx];
-			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
-
-			SolidModel model;
-			if (meta_data.validity.RowIsValid(meta_idx)) {
-				auto &meta_str = meta_strings[meta_idx];
-				auto metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
-				model = BuildSolidModel(surfaces, metadata);
-			} else {
-				model = BuildSolidModel(surfaces);
-			}
-
-			auto payload = SerializePayload(model);
-			FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-		}
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
 // ST_3DFromWKB(wkb BLOB, geometry_properties STRUCT) → SOLID_3D
 //
 // A CityParquet package stores geometry_properties_lod* as a native STRUCT
@@ -486,6 +385,111 @@ static duckdb_3d::GeometryMetadata ReadStructRowMetadata(Vector *type_vec, Vecto
 }
 
 // ──────────────────────────────────────────────────────────────
+// ST_3DFromWKB / ST_3DTryFromWKB(wkb BLOB, geometry_properties) → SOLID_3D
+//
+// One executor covers all four metadata overloads: {plain, TRY} × {JSON
+// VARCHAR metadata, bind-normalised geometry_properties STRUCT}. The plain
+// variants propagate kernel errors; the TRY variants yield NULL per offending
+// row instead.
+// ──────────────────────────────────────────────────────────────
+
+//! Where the geometry_properties argument comes from.
+enum class MetaSource { JSON_TEXT, STRUCT_FIELDS };
+
+//! Shared executor for the four st_3dfromwkb/st_3dtryfromwkb metadata
+//! overloads. TRY_VARIANT wraps each row in a catch-all that yields NULL;
+//! SOURCE selects JSON-text parsing vs the bind-normalised STRUCT reader.
+template <bool TRY_VARIANT, MetaSource SOURCE>
+static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+	// Capture constness before Flatten mutates args.data[1]: a constant-folded
+	// call must return a constant result (DuckDB asserts this in debug builds).
+	bool all_constant = args.AllConstant();
+	auto &wkb_vec = args.data[0];
+	auto &meta_vec = args.data[1];
+
+	UnifiedVectorFormat wkb_data;
+	wkb_vec.ToUnifiedFormat(count, wkb_data);
+	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
+
+	UnifiedVectorFormat meta_data;
+	const string_t *meta_strings = nullptr;
+	Vector *shells_vec = nullptr;
+	Vector *type_vec = nullptr;
+	bool has_type = false;
+	if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+		auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
+		meta_vec.Flatten(count);
+		auto &children = StructVector::GetEntries(meta_vec);
+		shells_vec = children[info.shells_index].get();
+		shells_vec->Flatten(count);
+		has_type = info.has_type;
+		if (info.has_type) {
+			type_vec = children[info.type_index].get();
+			type_vec->Flatten(count);
+		}
+	} else {
+		meta_vec.ToUnifiedFormat(count, meta_data);
+		meta_strings = UnifiedVectorFormat::GetData<string_t>(meta_data);
+	}
+
+	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetData<string_t>(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto wkb_idx = wkb_data.sel->get_index(i);
+		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
+			result_validity.SetInvalid(i);
+			result_data[i] = string_t();
+			continue;
+		}
+		auto process_row = [&]() {
+			using namespace duckdb_3d;
+			auto &wkb = wkb_strings[wkb_idx];
+			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+
+			bool meta_valid;
+			if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+				meta_valid = FlatVector::Validity(meta_vec).RowIsValid(i);
+			} else {
+				meta_valid = meta_data.validity.RowIsValid(meta_data.sel->get_index(i));
+			}
+
+			SolidModel model;
+			if (meta_valid) {
+				GeometryMetadata metadata;
+				if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
+					metadata = ReadStructRowMetadata(type_vec, shells_vec, i, has_type);
+				} else {
+					auto &meta_str = meta_strings[meta_data.sel->get_index(i)];
+					metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+				}
+				model = BuildSolidModel(surfaces, metadata);
+			} else {
+				model = BuildSolidModel(surfaces);
+			}
+			auto payload = SerializePayload(model);
+			result_data[i] = StringVector::AddStringOrBlob(
+			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		};
+		if constexpr (TRY_VARIANT) {
+			try {
+				process_row();
+			} catch (...) {
+				result_validity.SetInvalid(i);
+				result_data[i] = string_t();
+			}
+		} else {
+			process_row();
+		}
+	}
+
+	if (all_constant) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
 // Second geometry_properties STRUCT reader, for the ARROW-NATIVE path.
 //
 // ReadStructRowMetadata above serves ST_3DFromWKB's (BLOB, ANY) overload,
@@ -512,8 +516,8 @@ static duckdb_3d::GeometryMetadata ReadStructRowMetadata(Vector *type_vec, Vecto
 // a STRUCT argument can arrive as a CONSTANT_VECTOR (e.g. a literal, as in a
 // simple `SELECT ... {...}` test query) whose children are not `FLAT_VECTOR`
 // either; `FlatVector::GetData`/`IsNull` assert genuine flat vectors at
-// every level, so flattening once up front (see
-// ST_3DFromWKBWithStructMetaFun below) is required before this can index
+// every level, so flattening once up front (as
+// FromWKBWithMetaExecutor above does) is required before this can index
 // `row` directly through `StructVector`/`ListVector`. The nested `shells`
 // list's own children (one level further down) are flattened inside this
 // function itself, per-level, for the same reason.
@@ -581,121 +585,6 @@ static duckdb_3d::GeometryMetadata ExtractGeometryPropertiesFromStruct(Vector &s
 	return result;
 }
 
-static void ST_3DFromWKBWithStructFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
-	auto count = args.size();
-	// Capture constness before Flatten mutates args.data[1]: a constant-folded
-	// call must return a constant result (DuckDB asserts this in debug builds).
-	bool all_constant = args.AllConstant();
-	auto &wkb_vec = args.data[0];
-	auto &meta_vec = args.data[1];
-
-	UnifiedVectorFormat wkb_data;
-	wkb_vec.ToUnifiedFormat(count, wkb_data);
-	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
-
-	meta_vec.Flatten(count);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &children = StructVector::GetEntries(meta_vec);
-	Vector *shells_vec = children[info.shells_index].get();
-	shells_vec->Flatten(count);
-	Vector *type_vec = nullptr;
-	if (info.has_type) {
-		type_vec = children[info.type_index].get();
-		type_vec->Flatten(count);
-	}
-
-	auto &result_validity = FlatVector::Validity(result);
-	auto result_data = FlatVector::GetData<string_t>(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto wkb_idx = wkb_data.sel->get_index(i);
-		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
-			result_validity.SetInvalid(i);
-			result_data[i] = string_t();
-			continue;
-		}
-		using namespace duckdb_3d;
-		auto &wkb = wkb_strings[wkb_idx];
-		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
-
-		SolidModel model;
-		if (meta_validity.RowIsValid(i)) {
-			auto md = ReadStructRowMetadata(type_vec, shells_vec, i, info.has_type);
-			model = BuildSolidModel(surfaces, md);
-		} else {
-			model = BuildSolidModel(surfaces);
-		}
-		auto payload = SerializePayload(model);
-		result_data[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
-static void ST_3DTryFromWKBWithStructFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &info = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<FromWkbStructBindData>();
-	auto count = args.size();
-	// Capture constness before Flatten mutates args.data[1]: a constant-folded
-	// call must return a constant result (DuckDB asserts this in debug builds).
-	bool all_constant = args.AllConstant();
-	auto &wkb_vec = args.data[0];
-	auto &meta_vec = args.data[1];
-
-	UnifiedVectorFormat wkb_data;
-	wkb_vec.ToUnifiedFormat(count, wkb_data);
-	auto wkb_strings = UnifiedVectorFormat::GetData<string_t>(wkb_data);
-
-	meta_vec.Flatten(count);
-	auto &meta_validity = FlatVector::Validity(meta_vec);
-	auto &children = StructVector::GetEntries(meta_vec);
-	Vector *shells_vec = children[info.shells_index].get();
-	shells_vec->Flatten(count);
-	Vector *type_vec = nullptr;
-	if (info.has_type) {
-		type_vec = children[info.type_index].get();
-		type_vec->Flatten(count);
-	}
-
-	auto &result_validity = FlatVector::Validity(result);
-	auto result_data = FlatVector::GetData<string_t>(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto wkb_idx = wkb_data.sel->get_index(i);
-		if (!wkb_data.validity.RowIsValid(wkb_idx)) {
-			result_validity.SetInvalid(i);
-			result_data[i] = string_t();
-			continue;
-		}
-		try {
-			using namespace duckdb_3d;
-			auto &wkb = wkb_strings[wkb_idx];
-			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
-
-			SolidModel model;
-			if (meta_validity.RowIsValid(i)) {
-				auto md = ReadStructRowMetadata(type_vec, shells_vec, i, info.has_type);
-				model = BuildSolidModel(surfaces, md);
-			} else {
-				model = BuildSolidModel(surfaces);
-			}
-			auto payload = SerializePayload(model);
-			result_data[i] = StringVector::AddStringOrBlob(
-			    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-		} catch (...) {
-			result_validity.SetInvalid(i);
-			result_data[i] = string_t();
-		}
-	}
-
-	if (all_constant) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-}
-
 // Bind for the (BLOB, ANY) metadata overload. Routes SQLNULL / VARCHAR / JSON
 // metadata to the JSON executor (`varchar_fn`) and a STRUCT to `struct_fn` after
 // normalising the struct's `type` → VARCHAR and `shells` → LIST(LIST(INTEGER)).
@@ -753,12 +642,14 @@ static unique_ptr<FunctionData> BindWkbMetaAny(ScalarFunction &bound_function,
 
 static unique_ptr<FunctionData> FromWkbAnyBind(ClientContext &, ScalarFunction &bound_function,
                                                vector<unique_ptr<Expression>> &arguments) {
-	return BindWkbMetaAny(bound_function, arguments, ST_3DFromWKBWithMetaFun, ST_3DFromWKBWithStructFun);
+	return BindWkbMetaAny(bound_function, arguments, FromWKBWithMetaExecutor<false, MetaSource::JSON_TEXT>,
+	                      FromWKBWithMetaExecutor<false, MetaSource::STRUCT_FIELDS>);
 }
 
 static unique_ptr<FunctionData> TryFromWkbAnyBind(ClientContext &, ScalarFunction &bound_function,
                                                   vector<unique_ptr<Expression>> &arguments) {
-	return BindWkbMetaAny(bound_function, arguments, ST_3DTryFromWKBWithMetaFun, ST_3DTryFromWKBWithStructFun);
+	return BindWkbMetaAny(bound_function, arguments, FromWKBWithMetaExecutor<true, MetaSource::JSON_TEXT>,
+	                      FromWKBWithMetaExecutor<true, MetaSource::STRUCT_FIELDS>);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -2836,14 +2727,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// ST_3DFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
 	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DFromWKBFun));
-	auto from_wkb_2arg =
-	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DFromWKBWithMetaFun);
+	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB,
+	                                    FromWKBWithMetaExecutor<false, MetaSource::JSON_TEXT>);
 	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_2arg);
 	// (BLOB, ANY): accept CityParquet's geometry_properties STRUCT directly; the
 	// bind routes VARCHAR/JSON/SQLNULL back to the JSON executor.
 	auto from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
-	                                   ST_3DFromWKBWithStructFun, FromWkbAnyBind);
+	                                   FromWKBWithMetaExecutor<false, MetaSource::STRUCT_FIELDS>, FromWkbAnyBind);
 	from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_any);
 	loader.RegisterFunction(from_wkb_set);
@@ -2851,12 +2742,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// ST_3DTryFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads
 	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
 	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DTryFromWKBFun));
-	auto try_from_wkb_2arg =
-	    ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB, ST_3DTryFromWKBWithMetaFun);
+	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::BLOB,
+	                                        FromWKBWithMetaExecutor<true, MetaSource::JSON_TEXT>);
 	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_2arg);
 	auto try_from_wkb_any = ScalarFunction({LogicalType::BLOB, LogicalType::ANY}, LogicalType::BLOB,
-	                                       ST_3DTryFromWKBWithStructFun, TryFromWkbAnyBind);
+	                                       FromWKBWithMetaExecutor<true, MetaSource::STRUCT_FIELDS>, TryFromWkbAnyBind);
 	try_from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_any);
 	loader.RegisterFunction(try_from_wkb_set);
