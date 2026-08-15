@@ -1,4 +1,5 @@
 #include "kernel/geom_wkb_parser.hpp"
+#include "kernel/geometry_math.hpp"
 #include "kernel/wkb_io.hpp"
 
 #include <stdexcept>
@@ -21,10 +22,6 @@ void ReadLineStringZ(WkbCursor &cur, GeomModel &model) {
 	for (uint32_t i = 0; i < point_count; i++) {
 		model.vertices.push_back(ReadPointZ(cur));
 	}
-}
-
-bool IsClosingVertex(const Vertex3D &a, const Vertex3D &b) {
-	return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
 //! Read a single ring: append its vertices (closing duplicate stripped) and

@@ -1,4 +1,5 @@
 #include "kernel/wkb_parser.hpp"
+#include "kernel/geometry_math.hpp"
 #include "kernel/wkb_io.hpp"
 #include <stdexcept>
 
@@ -16,11 +17,6 @@ public:
 		return static_cast<WKBGeometryType>(ReadU32());
 	}
 };
-
-//! Check if a closing vertex duplicates the first vertex of a ring
-bool IsClosingVertex(const Vertex3D &first, const Vertex3D &last) {
-	return first.x == last.x && first.y == last.y && first.z == last.z;
-}
 
 ParsedPolyhedralSurface ParsePolyhedralSurface(WKBReader &reader) {
 	ParsedPolyhedralSurface result;
