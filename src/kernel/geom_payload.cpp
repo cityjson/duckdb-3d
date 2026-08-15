@@ -40,8 +40,8 @@ struct Reader {
 	//! multiplication cannot overflow.
 	void RequireCount(uint64_t count, uint64_t elem_size, const char *what) const {
 		if (count * elem_size > size - pos) {
-			throw std::runtime_error(std::string("DeserializeGeomPayload: declared ") + what +
-			                         " count exceeds remaining payload size");
+			throw std::runtime_error(std::string("DeserializeGeomPayload: truncated payload (declared ") + what +
+			                         " count exceeds remaining payload size)");
 		}
 	}
 	uint16_t U16() {
@@ -65,6 +65,80 @@ struct Reader {
 		return v;
 	}
 };
+
+void ValidateGeomOffsets(const std::vector<uint32_t> &offsets, uint32_t expected_last, const char *name) {
+	if (offsets.empty()) {
+		throw std::runtime_error(std::string("GEOM_3D payload: missing ") + name + " offsets");
+	}
+	if (offsets.front() != 0) {
+		throw std::runtime_error(std::string("GEOM_3D payload: invalid ") + name + " offsets");
+	}
+	for (size_t i = 1; i < offsets.size(); i++) {
+		if (offsets[i] < offsets[i - 1]) {
+			throw std::runtime_error(std::string("GEOM_3D payload: non-monotonic ") + name + " offsets");
+		}
+	}
+	if (offsets.back() != expected_last) {
+		throw std::runtime_error(std::string("GEOM_3D payload: inconsistent ") + name + " offsets");
+	}
+}
+
+//! Structural validation mirroring the SOLID_3D path's ValidatePayloadModel
+//! (payload.cpp): ring_offsets/part_offsets are used as raw indices by every
+//! GEOM_3D reader (length, distance decomposition, footprint, WKT/GeoJSON/WKB
+//! writers), so a crafted payload must be rejected here, not deep inside a
+//! reader. The per-type shapes match what ParseGeomWKB emits.
+void ValidateGeomModel(const GeomModel &model) {
+	auto vertex_count = static_cast<uint32_t>(model.vertices.size());
+	switch (model.type) {
+	case GeomType::Point:
+	case GeomType::LineString:
+		if (!model.ring_offsets.empty() || !model.part_offsets.empty()) {
+			throw std::runtime_error("GEOM_3D payload: Point/LineString must not carry offsets");
+		}
+		break;
+	case GeomType::Polygon:
+		if (!model.part_offsets.empty()) {
+			throw std::runtime_error("GEOM_3D payload: Polygon must not carry part offsets");
+		}
+		if (!model.ring_offsets.empty()) {
+			ValidateGeomOffsets(model.ring_offsets, vertex_count, "ring-vertex");
+		}
+		break;
+	case GeomType::MultiPoint:
+	case GeomType::MultiLineString:
+		if (!model.ring_offsets.empty()) {
+			throw std::runtime_error("GEOM_3D payload: MultiPoint/MultiLineString must not carry ring offsets");
+		}
+		if (!model.part_offsets.empty()) {
+			ValidateGeomOffsets(model.part_offsets, vertex_count, "part-vertex");
+		}
+		break;
+	case GeomType::MultiPolygon:
+	case GeomType::PolyhedralSurface:
+		if (!model.ring_offsets.empty()) {
+			ValidateGeomOffsets(model.ring_offsets, vertex_count, "ring-vertex");
+		}
+		if (!model.part_offsets.empty()) {
+			// part_offsets holds ring indices; writers dereference
+			// ring_offsets[part_offsets[k] + 1], so rings must be fully partitioned.
+			if (model.ring_offsets.empty()) {
+				throw std::runtime_error("GEOM_3D payload: part offsets without ring offsets");
+			}
+			ValidateGeomOffsets(model.part_offsets, static_cast<uint32_t>(model.ring_offsets.size()) - 1, "part-ring");
+		}
+		break;
+	case GeomType::GeometryCollection:
+		// Not yet produced by ParseGeomWKB; accept only offset-free payloads so a
+		// crafted collection cannot smuggle unchecked indices past validation.
+		if (!model.ring_offsets.empty() || !model.part_offsets.empty()) {
+			throw std::runtime_error("GEOM_3D payload: GeometryCollection offsets are not supported");
+		}
+		break;
+	default:
+		throw std::runtime_error("GEOM_3D payload: unknown geometry type code");
+	}
+}
 
 } // namespace
 
@@ -169,6 +243,7 @@ GeomModel DeserializeGeomPayload(const uint8_t *data, size_t size) {
 	for (uint32_t i = 0; i < part_off_count; i++) {
 		model.part_offsets.push_back(r.U32());
 	}
+	ValidateGeomModel(model);
 	return model;
 }
 

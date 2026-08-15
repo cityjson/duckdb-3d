@@ -236,17 +236,6 @@ TEST_CASE("Geom3DFootprintArea: a closed PolyhedralSurface shell is halved", "[g
 	REQUIRE(Geom3DFootprintArea(m) == Approx(1.0));
 }
 
-TEST_CASE("Geom3DFootprintArea: malformed offsets do not read out of bounds", "[geom_analysis]") {
-	// A ring offset past the vertex array (DeserializeGeomPayload does not bound-
-	// check CSR offsets) must be guarded, not read out of bounds.
-	GeomModel m;
-	m.type = GeomType::Polygon;
-	m.vertices = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
-	m.ring_offsets = {0, 99}; // 99 > vertices.size()
-	REQUIRE_NOTHROW(Geom3DFootprintArea(m));
-	REQUIRE(Geom3DFootprintArea(m) == Approx(0.0));
-}
-
 TEST_CASE("Geom3DFootprintArea: non-areal geometries are zero", "[geom_analysis]") {
 	GeomModel pt;
 	pt.type = GeomType::Point;

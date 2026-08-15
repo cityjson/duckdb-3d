@@ -374,11 +374,6 @@ namespace {
 //! Signed XY shoelace area of the ring spanning vertex indices [begin,end),
 //! wrapping the closing edge. Sign encodes winding; magnitude is the area.
 double ShoelaceXY(const GeomModel &m, uint32_t begin, uint32_t end) {
-	// DeserializeGeomPayload does not bound-check CSR offsets, so guard against a
-	// ring that runs past the vertex array rather than reading out of bounds.
-	if (begin >= end || end > static_cast<uint32_t>(m.vertices.size())) {
-		return 0.0;
-	}
 	double a = 0.0;
 	for (uint32_t i = begin; i < end; i++) {
 		const auto &p = m.vertices[i];

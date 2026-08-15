@@ -40,6 +40,7 @@ set(TEST_SOURCES
     test_measurements.cpp
     test_metadata.cpp
     test_geom_wkb_parser.cpp
+    test_geom_payload.cpp
     test_geom_distance.cpp
     test_geom_construct.cpp
     test_geom_analysis.cpp
