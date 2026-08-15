@@ -23,6 +23,7 @@ set(EXTENSION_SOURCES
     src/functions/geom_accessors.cpp
     src/functions/distance.cpp
     src/functions/transforms.cpp
+    src/functions/arrow_native.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
