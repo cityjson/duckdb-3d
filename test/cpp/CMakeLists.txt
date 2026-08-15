@@ -16,6 +16,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/wkb_parser.cpp
     ${REPO_ROOT}/src/kernel/model_builder.cpp
     ${REPO_ROOT}/src/kernel/wkb_export.cpp
+    ${REPO_ROOT}/src/kernel/geometry_math.cpp
     ${REPO_ROOT}/src/kernel/validation.cpp
     ${REPO_ROOT}/src/kernel/triangulation.cpp
     ${REPO_ROOT}/src/kernel/measurements.cpp
@@ -38,6 +39,7 @@ set(TEST_SOURCES
     test_model_builder.cpp
     test_validation.cpp
     test_measurements.cpp
+    test_geometry_math.cpp
     test_metadata.cpp
     test_geom_wkb_parser.cpp
     test_geom_payload.cpp

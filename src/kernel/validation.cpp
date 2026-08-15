@@ -1,4 +1,5 @@
 #include "kernel/validation.hpp"
+#include "kernel/geometry_math.hpp"
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
@@ -39,29 +40,6 @@ double Magnitude(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-Vertex3D ComputeRingAreaVector(const SolidModel &model, uint32_t ring_idx) {
-	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-	uint32_t n = vi_end - vi_start;
-
-	Vertex3D area = {0, 0, 0};
-	if (n < 3) {
-		return area;
-	}
-
-	for (uint32_t i = 0; i < n; i++) {
-		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
-		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-		const auto &cur = model.vertices[idx_cur];
-		const auto &next = model.vertices[idx_next];
-		area.x += (cur.y - next.y) * (cur.z + next.z);
-		area.y += (cur.z - next.z) * (cur.x + next.x);
-		area.z += (cur.x - next.x) * (cur.y + next.y);
-	}
-
-	return area;
-}
-
 //! Check if a face is degenerate (area near zero).
 //! Uses the sum of all ring area vectors to account for faces with holes.
 bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
@@ -79,7 +57,7 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 			return true;
 		}
 
-		auto ring_area = ComputeRingAreaVector(model, ring_idx);
+		auto ring_area = NewellRingAreaVector(model, ring_idx);
 		if (Magnitude(ring_area) < EPSILON) {
 			return true;
 		}

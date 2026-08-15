@@ -30,6 +30,7 @@ set(EXTENSION_SOURCES
     src/kernel/wkb_parser.cpp
     src/kernel/model_builder.cpp
     src/kernel/wkb_export.cpp
+    src/kernel/geometry_math.cpp
     src/kernel/validation.cpp
     src/kernel/triangulation.cpp
     src/kernel/measurements.cpp

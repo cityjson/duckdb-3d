@@ -1,4 +1,5 @@
 #include "kernel/triangulation.hpp"
+#include "kernel/geometry_math.hpp"
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -8,25 +9,6 @@ namespace duckdb_3d {
 
 namespace {
 
-Vertex3D ComputeRingNormal(const SolidModel &model, uint32_t ring_idx) {
-	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-	uint32_t n = vi_end - vi_start;
-
-	Vertex3D normal = {0, 0, 0};
-	for (uint32_t i = 0; i < n; i++) {
-		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
-		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-		const auto &cur = model.vertices[idx_cur];
-		const auto &next = model.vertices[idx_next];
-		normal.x += (cur.y - next.y) * (cur.z + next.z);
-		normal.y += (cur.z - next.z) * (cur.x + next.x);
-		normal.z += (cur.x - next.x) * (cur.y + next.y);
-	}
-
-	return normal;
-}
-
 //! Compute face normal using Newell's method
 Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
 	uint32_t ring_start = model.face_ring_offsets[face_idx];
@@ -34,7 +16,7 @@ Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
 	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
 
 	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-		auto ring_normal = ComputeRingNormal(model, ring_idx);
+		auto ring_normal = NewellRingAreaVector(model, ring_idx);
 		nx += ring_normal.x;
 		ny += ring_normal.y;
 		nz += ring_normal.z;
