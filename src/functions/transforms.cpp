@@ -22,7 +22,7 @@ namespace duckdb {
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DTranslate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
-static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DTranslateSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 
 	UnifiedVectorFormat solid_data, dx_data, dy_data, dz_data;
@@ -82,7 +82,7 @@ static void ST_TranslateFun(DataChunk &args, ExpressionState &state, Vector &res
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DTranslate(geom GEOM_3D, dx, dy, dz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
-static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DTranslateGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 
 	UnifiedVectorFormat geom_data, dx_data, dy_data, dz_data;
@@ -140,7 +140,7 @@ static void ST_TranslateGeomFun(DataChunk &args, ExpressionState &state, Vector 
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DScale(geom GEOM_3D, sx, sy, sz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
-static void ST_ScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 
 	UnifiedVectorFormat geom_data, sx_data, sy_data, sz_data;
@@ -193,7 +193,7 @@ static void ST_ScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &res
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DScale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
-static void ST_ScaleFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 
 	UnifiedVectorFormat solid_data, sx_data, sy_data, sz_data;
@@ -287,19 +287,19 @@ static string_t RotateSolidBlob(Vector &result, string_t solid, double radians, 
 	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 }
 
-static void ST_RotateXFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateXSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::X); });
 }
 
-static void ST_RotateYFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateYSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Y); });
 }
 
-static void ST_RotateZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateZSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Z); });
@@ -338,19 +338,19 @@ static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, Ro
 	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 }
 
-static void ST_RotateXGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateXGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::X); });
 }
 
-static void ST_RotateYGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateYGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Y); });
 }
 
-static void ST_RotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DRotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(),
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Z); });
@@ -450,7 +450,7 @@ static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 // ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)
-static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DTransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
 	UnifiedVectorFormat src_data, tgt_data;
 	args.data[1].ToUnifiedFormat(count, src_data);
@@ -472,7 +472,7 @@ static void ST_TransformStrFun(DataChunk &args, ExpressionState &state, Vector &
 }
 
 // ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER)
-static void ST_TransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DTransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	using namespace duckdb_3d;
 	auto count = args.size();
 	UnifiedVectorFormat src_data, tgt_data;
@@ -500,39 +500,42 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	ScalarFunctionSet translate_set("st_3dtranslate");
 	translate_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_TranslateFun));
+	                   LogicalType::BLOB, ST_3DTranslateSolidFun));
 	translate_set.AddFunction(
 	    ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, solid_3d_type,
-	                   ST_TranslateFun));
+	                   ST_3DTranslateSolidFun));
 	translate_set.AddFunction(
 	    ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, geom_3d_type,
-	                   ST_TranslateGeomFun));
+	                   ST_3DTranslateGeomFun));
 	loader.RegisterFunction(translate_set);
 	ScalarFunctionSet scale_set("st_3dscale");
 	scale_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_ScaleFun));
+	                   LogicalType::BLOB, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                                     solid_3d_type, ST_ScaleFun));
+	                                     solid_3d_type, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                                     geom_3d_type, ST_ScaleGeomFun));
+	                                     geom_3d_type, ST_3DScaleGeomFun));
 	loader.RegisterFunction(scale_set);
 	ScalarFunctionSet rotatex_set("st_3drotatex");
-	rotatex_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateXFun));
-	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateXFun));
-	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateXGeomFun));
+	rotatex_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateXSolidFun));
+	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateXSolidFun));
+	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateXGeomFun));
 	loader.RegisterFunction(rotatex_set);
 
 	ScalarFunctionSet rotatey_set("st_3drotatey");
-	rotatey_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateYFun));
-	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateYFun));
-	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateYGeomFun));
+	rotatey_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateYSolidFun));
+	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateYSolidFun));
+	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateYGeomFun));
 	loader.RegisterFunction(rotatey_set);
 
 	ScalarFunctionSet rotatez_set("st_3drotatez");
-	rotatez_set.AddFunction(ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_RotateZFun));
-	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_RotateZFun));
-	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_RotateZGeomFun));
+	rotatez_set.AddFunction(
+	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateZSolidFun));
+	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateZSolidFun));
+	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateZGeomFun));
 	loader.RegisterFunction(rotatez_set);
 
 	// ST_3DTransform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
@@ -545,17 +548,17 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 		transform_set.AddFunction(std::move(fun));
 	};
 	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER}, LogicalType::BLOB,
-	                             ST_TransformIntFun));
+	                             ST_3DTransformIntFun));
 	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
-	                             ST_TransformStrFun));
+	                             ST_3DTransformStrFun));
+	add_transform(ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type,
+	                             ST_3DTransformIntFun));
 	add_transform(
-	    ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type, ST_TransformIntFun));
+	    ScalarFunction({geom_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, geom_3d_type, ST_3DTransformIntFun));
+	add_transform(ScalarFunction({solid_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, solid_3d_type,
+	                             ST_3DTransformStrFun));
 	add_transform(
-	    ScalarFunction({geom_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, geom_3d_type, ST_TransformIntFun));
-	add_transform(
-	    ScalarFunction({solid_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, solid_3d_type, ST_TransformStrFun));
-	add_transform(
-	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_TransformStrFun));
+	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_3DTransformStrFun));
 	loader.RegisterFunction(transform_set);
 }
 

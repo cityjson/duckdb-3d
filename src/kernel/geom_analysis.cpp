@@ -71,7 +71,7 @@ bool RingIsPlanar(const GeomModel &m, uint32_t begin, uint32_t end) {
 		scale = std::max({scale, std::fabs(a.x), std::fabs(a.y), std::fabs(a.z)});
 	}
 	double len = std::sqrt(nx * nx + ny * ny + nz * nz);
-	if (len < 1e-12) {
+	if (len < kEpsAbsolute) {
 		return true; // degenerate / collinear → treat as planar (a line)
 	}
 	nx /= len;
@@ -80,7 +80,7 @@ bool RingIsPlanar(const GeomModel &m, uint32_t begin, uint32_t end) {
 	cx /= n;
 	cy /= n;
 	cz /= n;
-	double tol = 1e-9 * scale;
+	double tol = kEpsRelative * scale;
 	for (uint32_t i = begin; i < end; i++) {
 		const auto &v = m.vertices[i];
 		double d = (v.x - cx) * nx + (v.y - cy) * ny + (v.z - cz) * nz;
@@ -126,7 +126,7 @@ void PlaneBasis(const Vec3 &n, Vec3 &u, Vec3 &v) {
 	}
 	u = Cross(n, candidate);
 	double len = Length(u);
-	if (len > 1e-12) {
+	if (len > kEpsAbsolute) {
 		u = Mul(u, 1.0 / len);
 	} else {
 		u = {0, 1, 0};
@@ -155,7 +155,7 @@ std::pair<double, Vertex3D> RingCentroid(const GeomModel &m, uint32_t begin, uin
 		nrm.z += (a.x - b.x) * (a.y + b.y);
 	}
 	double nlen = Length(nrm);
-	if (nlen < 1e-12) {
+	if (nlen < kEpsAbsolute) {
 		// Degenerate ring: fall back to vertex average.
 		Vec3 sum = {0, 0, 0};
 		for (uint32_t i = begin; i < end; i++) {
@@ -186,7 +186,7 @@ std::pair<double, Vertex3D> RingCentroid(const GeomModel &m, uint32_t begin, uin
 		cx += cross * (s_a + s_b);
 		cy += cross * (t_a + t_b);
 	}
-	if (std::fabs(area) < 1e-18) {
+	if (std::fabs(area) < kEpsArea) {
 		return std::make_pair(0.0, MakeVertex(origin));
 	}
 	double inv_area = 1.0 / (3.0 * area);

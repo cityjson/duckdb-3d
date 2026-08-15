@@ -23,7 +23,7 @@ Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
 	}
 
 	double len = std::sqrt(nx * nx + ny * ny + nz * nz);
-	if (len < EPSILON) {
+	if (len < kEpsAbsolute) {
 		return {0, 0, 1}; // fallback for degenerate faces
 	}
 	return {nx / len, ny / len, nz / len};

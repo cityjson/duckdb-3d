@@ -2,6 +2,7 @@
 
 #include "duckdb/function/scalar_function.hpp"
 
+#include "kernel/core_types.hpp"
 #include "kernel/geom_distance.hpp"
 #include "kernel/geom_model.hpp"
 
@@ -83,10 +84,9 @@ static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector
 // Two geometries intersect when their minimum 3D distance is zero (touching
 // counts as intersecting), tested within a small tolerance.
 static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	constexpr double kIntersectEps = 1e-9;
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    args.data[0], args.data[1], result, args.size(),
-	    [&](string_t g1, string_t g2) { return Geom3DWithinSQL(g1, g2, kIntersectEps); });
+	    [&](string_t g1, string_t g2) { return Geom3DWithinSQL(g1, g2, duckdb_3d::kEpsIntersect); });
 }
 
 // ST_3DClosestPoint(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D (Point)

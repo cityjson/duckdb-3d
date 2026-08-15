@@ -240,14 +240,14 @@ static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result)
 	                                          [](string_t solid) { return CoordinateDimension3D(); });
 }
 
-static void ST_HasZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DHasZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
 		// v1 geometries always carry a Z ordinate.
 		return true;
 	});
 }
 
-static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
 		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
@@ -264,7 +264,7 @@ static void ST_ZMinFun(DataChunk &args, ExpressionState &state, Vector &result) 
 	});
 }
 
-static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
 		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
@@ -282,7 +282,7 @@ static void ST_ZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) 
 
 // ST_3DFootprintArea accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
-static void ST_AreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DFootprintAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
 		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
@@ -388,9 +388,9 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	// ST_3DFootprintArea dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
 	// raw BLOB) — same pattern as ST_3DZMin/ST_3DZMax.
 	ScalarFunctionSet area_set("st_3dfootprintarea");
-	area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_AreaFun));
-	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
-	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_AreaFun));
+	area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
+	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
+	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
 	loader.RegisterFunction(area_set);
 	ScalarFunctionSet perimeter_set("st_3dperimeter");
 	perimeter_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
@@ -405,24 +405,24 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	loader.RegisterFunction(ndims_set);
 
 	ScalarFunctionSet hasz_set("st_3dhasz");
-	hasz_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_HasZFun));
-	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
-	hasz_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::BOOLEAN, ST_HasZFun));
+	hasz_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DHasZFun));
+	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DHasZFun));
+	hasz_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::BOOLEAN, ST_3DHasZFun));
 	loader.RegisterFunction(hasz_set);
 
 	// ST_3DZMin / ST_3DZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
 	// and plain BLOB values. Multiple overloads are needed because DuckDB treats
 	// named type aliases as distinct for function resolution.
 	ScalarFunctionSet zmin_set("st_3dzmin");
-	zmin_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMinFun));
-	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
-	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMinFun));
+	zmin_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DZMinFun));
+	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
+	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
 	loader.RegisterFunction(zmin_set);
 
 	ScalarFunctionSet zmax_set("st_3dzmax");
-	zmax_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_ZMaxFun));
-	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
-	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_ZMaxFun));
+	zmax_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DZMaxFun));
+	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
+	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
 	loader.RegisterFunction(zmax_set);
 }
 

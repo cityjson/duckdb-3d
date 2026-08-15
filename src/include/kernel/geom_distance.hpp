@@ -1,7 +1,7 @@
 #pragma once
 
+#include "kernel/core_types.hpp"
 #include "kernel/geom_model.hpp"
-#include "kernel/solid_model.hpp" // Vertex3D
 
 namespace duckdb_3d {
 

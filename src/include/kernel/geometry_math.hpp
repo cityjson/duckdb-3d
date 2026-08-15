@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kernel/core_types.hpp"
 #include "kernel/solid_model.hpp"
 
 namespace duckdb_3d {

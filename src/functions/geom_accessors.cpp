@@ -77,7 +77,7 @@ static const char *GeomTypeName(duckdb_3d::GeomType type) {
 }
 
 // ST_3DGeometryType(geom GEOM_3D) → VARCHAR
-static void ST_GeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DGeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
 		// Only the type code is needed — read the O(1) front header. Magic, major
@@ -111,15 +111,15 @@ static double PointOrdinate(string_t geom, Ordinate ord) {
 	}
 }
 
-static void ST_XFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DXFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
 	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::X); });
 }
-static void ST_YFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DYFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
 	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::Y); });
 }
-static void ST_ZFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(),
 	                                         [](string_t geom) { return PointOrdinate(geom, Ordinate::Z); });
 }
@@ -191,7 +191,7 @@ static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ST_3DAsText(geom GEOM_3D) → VARCHAR
-static void ST_AsTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DAsTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -201,7 +201,7 @@ static void ST_AsTextFun(DataChunk &args, ExpressionState &state, Vector &result
 }
 
 // ST_3DAsGeoJSON(geom GEOM_3D) → VARCHAR
-static void ST_AsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DAsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -211,7 +211,7 @@ static void ST_AsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 // ST_3DAsBinary(geom GEOM_3D) → BLOB
-static void ST_AsBinaryFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DAsBinaryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -261,7 +261,7 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 
 // ST_3DConvexHull(geom GEOM_3D) → GEOM_3D
 // 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
-static void ST_ConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -292,11 +292,11 @@ static int32_t GeomDimension(duckdb_3d::GeomType type) {
 	}
 }
 
-static void ST_DimensionFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DDimensionFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
 		using namespace duckdb_3d;
 		// Only the type code is needed — read the O(1) front header (see the
-		// header-only contract noted on ST_GeometryTypeFun).
+		// header-only contract noted on ST_3DGeometryTypeFun).
 		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		return GeomDimension(ValidatedGeomType(info.type));
 	});
@@ -316,7 +316,7 @@ static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 	}
 }
 
-static void ST_NumGeometriesFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void ST_3DNumGeometriesFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
 		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -330,22 +330,22 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
 
 	loader.RegisterFunction(
-	    ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_GeometryTypeFun));
-	loader.RegisterFunction(ScalarFunction("st_3dx", {geom_3d_type}, LogicalType::DOUBLE, ST_XFun));
-	loader.RegisterFunction(ScalarFunction("st_3dy", {geom_3d_type}, LogicalType::DOUBLE, ST_YFun));
-	loader.RegisterFunction(ScalarFunction("st_3dz", {geom_3d_type}, LogicalType::DOUBLE, ST_ZFun));
+	    ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_3DGeometryTypeFun));
+	loader.RegisterFunction(ScalarFunction("st_3dx", {geom_3d_type}, LogicalType::DOUBLE, ST_3DXFun));
+	loader.RegisterFunction(ScalarFunction("st_3dy", {geom_3d_type}, LogicalType::DOUBLE, ST_3DYFun));
+	loader.RegisterFunction(ScalarFunction("st_3dz", {geom_3d_type}, LogicalType::DOUBLE, ST_3DZFun));
 	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
-	loader.RegisterFunction(ScalarFunction("st_3ddimension", {geom_3d_type}, LogicalType::INTEGER, ST_DimensionFun));
+	loader.RegisterFunction(ScalarFunction("st_3ddimension", {geom_3d_type}, LogicalType::INTEGER, ST_3DDimensionFun));
 	loader.RegisterFunction(
-	    ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_NumGeometriesFun));
+	    ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_3DNumGeometriesFun));
 	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
-	loader.RegisterFunction(ScalarFunction("st_3dastext", {geom_3d_type}, LogicalType::VARCHAR, ST_AsTextFun));
-	loader.RegisterFunction(ScalarFunction("st_3dasgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_AsGeoJSONFun));
-	loader.RegisterFunction(ScalarFunction("st_3dasbinary", {geom_3d_type}, LogicalType::BLOB, ST_AsBinaryFun));
+	loader.RegisterFunction(ScalarFunction("st_3dastext", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsTextFun));
+	loader.RegisterFunction(ScalarFunction("st_3dasgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsGeoJSONFun));
+	loader.RegisterFunction(ScalarFunction("st_3dasbinary", {geom_3d_type}, LogicalType::BLOB, ST_3DAsBinaryFun));
 	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
 	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
 	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));
-	loader.RegisterFunction(ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_ConvexHullFun));
+	loader.RegisterFunction(ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_3DConvexHullFun));
 	// Solid-producing constructors: return the SOLID_3D alias (like st_3dfromwkb) so
 	// the typed measurement/introspection overloads compose directly on the result.
 	loader.RegisterFunction(

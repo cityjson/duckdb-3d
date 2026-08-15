@@ -58,7 +58,7 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 		}
 
 		auto ring_area = NewellRingAreaVector(model, ring_idx);
-		if (Magnitude(ring_area) < EPSILON) {
+		if (Magnitude(ring_area) < kEpsAbsolute) {
 			return true;
 		}
 
@@ -67,7 +67,7 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 		face_area.z += ring_area.z;
 	}
 
-	return Magnitude(face_area) < EPSILON;
+	return Magnitude(face_area) < kEpsAbsolute;
 }
 
 //! Collect directed edges from a shell's faces
@@ -246,7 +246,6 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 //! assumes closed, consistently-oriented shells (validated separately) and is a
 //! no-op for single-shell solids. Returns the number of orientation errors found.
 uint32_t CheckInteriorShellWinding(const SolidModel &model) {
-	constexpr double kRelEps = 1e-9; // relative degeneracy tolerance
 	uint32_t errors = 0;
 	uint32_t solid_count = model.SolidCount();
 
@@ -262,7 +261,7 @@ uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 		// topology/degeneracy checks rather than guessing here. Degeneracy is
 		// measured against the shell's own bbox scale, so a valid concave shell
 		// (small volume, large surface) is not misjudged as degenerate.
-		if (!ext.has_geometry || ext.scale == 0.0 || std::abs(ext.signed_vol) < kRelEps * ext.scale) {
+		if (!ext.has_geometry || ext.scale == 0.0 || std::abs(ext.signed_vol) < kEpsRelative * ext.scale) {
 			continue;
 		}
 		bool ext_positive = ext.signed_vol > 0.0;
@@ -270,7 +269,7 @@ uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 
 		for (uint32_t s = shell_start + 1; s < shell_end; s++) {
 			auto in = ComputeShellSignedVolume(model, s);
-			if (!in.has_geometry || in.scale == 0.0 || std::abs(in.signed_vol) < kRelEps * in.scale) {
+			if (!in.has_geometry || in.scale == 0.0 || std::abs(in.signed_vol) < kEpsRelative * in.scale) {
 				continue; // degenerate interior shell — sign is noise, skip
 			}
 			bool in_positive = in.signed_vol > 0.0;

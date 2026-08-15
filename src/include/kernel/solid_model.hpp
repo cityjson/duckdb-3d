@@ -1,28 +1,12 @@
 #pragma once
 
+#include "kernel/core_types.hpp"
+
 #include <cstdint>
 #include <vector>
 #include <array>
 
 namespace duckdb_3d {
-
-//! Epsilon for floating-point comparisons (dedup, near-zero area, etc.)
-constexpr double EPSILON = 1e-12;
-
-struct Vertex3D {
-	double x;
-	double y;
-	double z;
-
-	bool operator==(const Vertex3D &other) const {
-		return x == other.x && y == other.y && z == other.z;
-	}
-};
-
-struct BBox3D {
-	double min_x, min_y, min_z;
-	double max_x, max_y, max_z;
-};
 
 //! Validation flags cached in the payload
 struct ValidationCache {
