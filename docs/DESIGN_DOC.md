@@ -130,6 +130,15 @@ Rationale:
 - A versioned opaque payload gives strong control over topology preservation and forward compatibility.
 - The type remains efficient for vectorized execution and cached materialization.
 
+**Consequence of the typed constructor return.** `SOLID_3D` and `GEOM_3D` are *alias* types
+over `BLOB`, and the constructors return the alias rather than plain `BLOB`
+([§5.1](#51-constructor-and-export-functions)), so generic `BLOB` consumers
+(`octet_length`, `length`, …) no longer bind against constructor output, and no
+`SOLID_3D`/`GEOM_3D` → `BLOB` cast is registered — `… ::BLOB` raises a conversion error
+rather than reinterpreting the payload; use `ST_3DAsWKB` when a `BLOB` is genuinely wanted.
+For the same reason a bare `NULL` is ambiguous for every function carrying both a typed and
+a `BLOB` overload and must be written `NULL::SOLID_3D`.
+
 **Experimental (`arrow-native-type` branch):** `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`
 ([§8.3](#83-arrow-native-import)) ingest nested `LIST`/`STRUCT` columns directly, bypassing WKB
 entirely — but they still produce exactly this same `SOLID_3D` binary payload. The payload format

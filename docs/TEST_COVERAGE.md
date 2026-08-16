@@ -5,8 +5,9 @@ gaps. Generated as part of the test-comprehensiveness pass.
 
 ## Method
 
-- **Function inventory:** every `ST_*` name registered in `src/three_d_extension.cpp`
-  (60 names, counting the `st_aswkb*` SQL test-helpers). The helpers are not part of the
+- **Function inventory:** every `ST_*` name registered by the `src/functions/*.cpp`
+  registration units — `src/three_d_extension.cpp` only registers the two types and calls
+  them — (60 names, counting the `st_aswkb*` SQL test-helpers). The helpers are not part of the
   public surface: they are registered only when `THREE_D_TEST_FIXTURES` is set in the
   environment (see `src/functions/fixtures.cpp`), which the `Makefile` exports for
   `make test`, and each test file using them declares `require-env THREE_D_TEST_FIXTURES`.

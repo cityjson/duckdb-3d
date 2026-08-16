@@ -178,7 +178,7 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 	    });
 }
 
-// ST_MakeSolid(surface GEOM_3D) → SOLID_3D (BLOB)
+// ST_MakeSolid(surface GEOM_3D) → SOLID_3D
 static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		using namespace duckdb_3d;
