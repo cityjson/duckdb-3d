@@ -1,4 +1,5 @@
 #include "kernel/measurements.hpp"
+#include "kernel/geometry_math.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -8,25 +9,6 @@
 namespace duckdb_3d {
 
 namespace {
-
-Vertex3D ComputeRingAreaVector(const SolidModel &model, uint32_t ring_idx) {
-	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-	uint32_t n = vi_end - vi_start;
-
-	Vertex3D area = {0, 0, 0};
-	for (uint32_t i = 0; i < n; i++) {
-		uint32_t idx_cur = model.ring_vertex_indices[vi_start + i];
-		uint32_t idx_next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-		const auto &cur = model.vertices[idx_cur];
-		const auto &next = model.vertices[idx_next];
-		area.x += (cur.y - next.y) * (cur.z + next.z);
-		area.y += (cur.z - next.z) * (cur.x + next.x);
-		area.z += (cur.x - next.x) * (cur.y + next.y);
-	}
-
-	return area;
-}
 
 double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx) {
 	uint32_t i0 = model.triangle_vertex_indices[triangle_idx * 3 + 0];
@@ -62,7 +44,7 @@ double ComputeSurfaceArea(const SolidModel &model) {
 		Vertex3D face_area = {0, 0, 0};
 
 		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			auto ring_area = ComputeRingAreaVector(model, ring_idx);
+			auto ring_area = NewellRingAreaVector(model, ring_idx);
 			face_area.x += ring_area.x;
 			face_area.y += ring_area.y;
 			face_area.z += ring_area.z;
@@ -133,7 +115,7 @@ double ComputeFootprintArea(const SolidModel &model) {
 		double face_area_z = 0.0;
 
 		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			face_area_z += ComputeRingAreaVector(model, ring_idx).z;
+			face_area_z += NewellRingAreaVector(model, ring_idx).z;
 		}
 
 		total_projected += std::abs(face_area_z) * 0.5;

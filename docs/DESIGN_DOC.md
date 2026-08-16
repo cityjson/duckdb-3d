@@ -130,6 +130,15 @@ Rationale:
 - A versioned opaque payload gives strong control over topology preservation and forward compatibility.
 - The type remains efficient for vectorized execution and cached materialization.
 
+**Consequence of the typed constructor return.** `SOLID_3D` and `GEOM_3D` are *alias* types
+over `BLOB`, and the constructors return the alias rather than plain `BLOB`
+([§5.1](#51-constructor-and-export-functions)), so generic `BLOB` consumers
+(`octet_length`, `length`, …) no longer bind against constructor output, and no
+`SOLID_3D`/`GEOM_3D` → `BLOB` cast is registered — `… ::BLOB` raises a conversion error
+rather than reinterpreting the payload; use `ST_3DAsWKB` when a `BLOB` is genuinely wanted.
+For the same reason a bare `NULL` is ambiguous for every function carrying both a typed and
+a `BLOB` overload and must be written `NULL::SOLID_3D`.
+
 **Experimental (`arrow-native-type` branch):** `ST_3DFromArrowNative`/`ST_3DTryFromArrowNative`
 ([§8.3](#83-arrow-native-import)) ingest nested `LIST`/`STRUCT` columns directly, bypassing WKB
 entirely — but they still produce exactly this same `SOLID_3D` binary payload. The payload format
@@ -1086,8 +1095,8 @@ The proximity primitives for building-to-building queries.
 | `ST_3DRotateZ` | `(geom GEOM_3D, radians DOUBLE) → GEOM_3D` | should | kernel | ✅ implemented on `SOLID_3D` and `GEOM_3D`. Rotate about Z axis. |
 | `ST_3DTransform` | `(geom, source_srid INT, target_srid INT) → same type` and `(geom, source_crs VARCHAR, target_crs VARCHAR) → same type` | should | **PROJ** | ✅ implemented on `SOLID_3D` and `GEOM_3D`. **Horizontal (2D) only**: reprojects X/Y, preserves Z (no vertical datum), matching PostGIS default. Axis order normalised to easting/northing (lon/lat). bbox recomputed; solids re-validated. The only function with an external backend (PROJ); confined to `src/kernel/crs_transform.cpp`. Remaining CRS work (stored SRID, vertical datum, `proj.db` bundling) in [FUTURE_WORK.md §3](./FUTURE_WORK.md#3-coordinate-reference-system-support-st_3dtransform-srid). |
 | `ST_Force3D` / `ST_Force3DZ` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. Identity on GEOM_3D (already XYZ); future 2D inputs would gain Z=0. |
-| `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | ✅ implemented. **Vertical** prism extrusion (footprint → LoD1 box); footprint normalised to CCW, result validated closed+oriented. Returns plain BLOB. |
-| `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | ✅ implemented. Cast a closed/oriented/manifold `PolyhedralSurface` to a solid; raises if not solid-eligible (no repair). Returns plain BLOB. |
+| `ST_3DExtrude` | `(polygon GEOM_3D, height DOUBLE) → SOLID_3D` | should | kernel | ✅ implemented. **Vertical** prism extrusion (footprint → LoD1 box); footprint normalised to CCW, result validated closed+oriented. Returns the `SOLID_3D` alias type. |
+| `ST_MakeSolid` | `(geom GEOM_3D) → SOLID_3D` | should | kernel | ✅ implemented. Cast a closed/oriented/manifold `PolyhedralSurface` to a solid; raises if not solid-eligible (no repair). Returns the `SOLID_3D` alias type. |
 | `ST_3DCentroid` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. Dimension-aware centroid: vertex average (points), length-weighted (lines), area-weighted (surfaces). |
 | `ST_3DConvexHull` | `(geom GEOM_3D) → GEOM_3D` | should | kernel | ✅ implemented. **2D** monotone-chain convex hull (XY); returns Polygon Z / LineString Z / Point Z at min Z. |
 | `ST_IsPlanar` | `(geom GEOM_3D) → BOOLEAN` | should | kernel | ✅ implemented. Whether all faces/rings are planar within tolerance (§9.5). City-model QA. |

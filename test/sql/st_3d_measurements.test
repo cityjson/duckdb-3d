@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Create a tetrahedron solid
 statement ok
 CREATE TABLE solids AS
@@ -44,14 +46,15 @@ SELECT ST_3DPerimeter(solid) FROM solids;
 
 # Test: ST_3DPerimeter NULL propagation
 query I
-SELECT ST_3DPerimeter(NULL);
+SELECT ST_3DPerimeter(NULL::SOLID_3D);
 ----
 NULL
 
-# Test: NULL propagation. ST_3DFootprintArea is overloaded over SOLID_3D / GEOM_3D / BLOB
-# (like ST_3DZMin/ST_3DZMax), so an untyped NULL is ambiguous and must be cast.
+# Test: NULL propagation. Every measurement is overloaded over SOLID_3D / BLOB
+# (ST_3DFootprintArea also over GEOM_3D), like ST_3DZMin/ST_3DZMax, so an untyped
+# NULL is ambiguous and must be cast.
 query III
-SELECT ST_3DSurfaceArea(NULL), ST_3DVolume(NULL), ST_3DFootprintArea(NULL::SOLID_3D);
+SELECT ST_3DSurfaceArea(NULL::SOLID_3D), ST_3DVolume(NULL::SOLID_3D), ST_3DFootprintArea(NULL::SOLID_3D);
 ----
 NULL	NULL	NULL
 

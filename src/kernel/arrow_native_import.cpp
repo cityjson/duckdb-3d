@@ -198,9 +198,8 @@ GeomModel BuildGeomModelFromArrowNative(const ArrowNativeBoundaries &boundaries,
                                         const std::vector<Vertex3D> &vertices) {
 	// Padding-dimension invariant (design doc): a surface value is a Solid
 	// value with solid-count and shell-count both padded to 1 — asserted, not
-	// branched on, per this plan's dispatch-by-caller-choice architecture
-	// note (a caller that reaches this function has already committed to the
-	// surface family by calling ST_Geom3DFromArrowNative, not
+	// branched on: callers commit to the surface family before calling this
+	// function (by calling ST_Geom3DFromArrowNative, not
 	// ST_3DFromArrowNative).
 	if (boundaries.solid_shell_offsets.size() != 2) {
 		throw std::runtime_error("arrow-native geometry: expected a padded (solid-count 1) surface-type value — "

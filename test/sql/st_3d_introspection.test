@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Create a tetrahedron solid
 statement ok
 CREATE TABLE solids AS
@@ -34,9 +36,11 @@ FROM (SELECT ST_3DBounds(solid) AS b FROM solids);
 ----
 0.0	0.0	0.0	1.0	1.0	1.0
 
-# Test: NULL propagation for all introspection functions
+# Test: NULL propagation for all introspection functions. Each is overloaded over
+# SOLID_3D / BLOB, so an untyped NULL is ambiguous and must be cast.
 query IIII
-SELECT ST_3DNumSolids(NULL), ST_3DNumShells(NULL), ST_3DNumFaces(NULL), ST_3DBounds(NULL) IS NULL;
+SELECT ST_3DNumSolids(NULL::SOLID_3D), ST_3DNumShells(NULL::SOLID_3D), ST_3DNumFaces(NULL::SOLID_3D),
+       ST_3DBounds(NULL::SOLID_3D) IS NULL;
 ----
 NULL	NULL	NULL	true
 

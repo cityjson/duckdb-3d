@@ -1,0 +1,50 @@
+# name: test/sql/solid_3d_typed.test
+# description: SOLID_3D constructors return the SOLID_3D alias type and typed overloads bind without casts
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+query I
+SELECT typeof(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()));
+----
+SOLID_3D
+
+query I
+SELECT typeof(ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra()));
+----
+SOLID_3D
+
+# Typed measurement/introspection overloads compose directly on constructor output.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBPolyhedralTetra())) > 0;
+----
+true
+
+query I
+SELECT ST_3DNumFaces(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()));
+----
+4
+
+query I
+SELECT ST_3DIsClosed(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()));
+----
+true
+
+# st_3dextrude / st_makesolid now feed typed consumers too.
+query I
+SELECT typeof(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
+----
+SOLID_3D
+
+query I
+SELECT ST_3DVolume(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)) = 24.0;
+----
+true
+
+# Round-trip through the typed st_3daswkb overload.
+query I
+SELECT ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra())) IS NOT NULL;
+----
+true

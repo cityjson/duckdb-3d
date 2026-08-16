@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.15)
 
 # Standalone C++ unit test executable for the three_d kernel
 project(three_d_unit_tests)
@@ -16,6 +16,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/wkb_parser.cpp
     ${REPO_ROOT}/src/kernel/model_builder.cpp
     ${REPO_ROOT}/src/kernel/wkb_export.cpp
+    ${REPO_ROOT}/src/kernel/geometry_math.cpp
     ${REPO_ROOT}/src/kernel/validation.cpp
     ${REPO_ROOT}/src/kernel/triangulation.cpp
     ${REPO_ROOT}/src/kernel/measurements.cpp
@@ -35,11 +36,14 @@ set(TEST_SOURCES
     test_main.cpp
     test_payload.cpp
     test_wkb_parser.cpp
+    test_wkb_io.cpp
     test_model_builder.cpp
     test_validation.cpp
     test_measurements.cpp
+    test_geometry_math.cpp
     test_metadata.cpp
     test_geom_wkb_parser.cpp
+    test_geom_payload.cpp
     test_geom_distance.cpp
     test_geom_construct.cpp
     test_geom_analysis.cpp

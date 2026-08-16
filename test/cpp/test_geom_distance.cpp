@@ -205,3 +205,15 @@ TEST_CASE("Geom3DWithin: bbox-separated pair is rejected", "[geom_distance]") {
 TEST_CASE("Geom3DWithin: touching geometries are within any non-negative threshold", "[geom_distance]") {
 	REQUIRE(Geom3DWithin(Point(2, 2, 0), Square(0, 0, 0, 4), 0.0) == true);
 }
+
+TEST_CASE("BBoxDistance computes the gap between boxes", "[geom_distance]") {
+	BBox3D a {0, 0, 0, 1, 1, 1};
+	BBox3D b {4, 0, 0, 5, 1, 1}; // 3 apart along x only
+	REQUIRE(BBoxDistance(a, b) == Approx(3.0));
+
+	BBox3D c {3, 4, 0, 4, 5, 1}; // gaps: 2 along x, 3 along y, 0 along z
+	REQUIRE(BBoxDistance(a, c) == Approx(std::sqrt(2.0 * 2.0 + 3.0 * 3.0)));
+
+	BBox3D d {0.5, 0.5, 0.5, 2, 2, 2}; // overlapping
+	REQUIRE(BBoxDistance(a, d) == 0.0);
+}

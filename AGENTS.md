@@ -76,6 +76,8 @@ Use the standard DuckDB extension workflow unless the repo evolves away from the
 
 The loadable extension is built under `build/debug/extension/three_d/` (and `build/release/extension/three_d/`).
 
+The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` test-helper functions most of the SQL suite depends on, so every `make` target inherits it. Export it yourself when running a built binary directly (`build/release/test/unittest`, `build/release/duckdb`) — otherwise the helpers are not registered and every test file declaring `require-env THREE_D_TEST_FIXTURES` is silently skipped.
+
 ## Coding Guidance
 
 - Keep the SQL/vectorized execution layer separate from the geometry kernel.

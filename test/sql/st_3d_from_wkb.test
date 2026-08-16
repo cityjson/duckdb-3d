@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Helper: create a valid PolyhedralSurface Z WKB for a tetrahedron
 # WKB little-endian, type 1015 (PolyhedralSurface Z), 4 triangular faces
 # Each face: 1 ring, 4 points (3 + closing vertex)
@@ -19,11 +21,11 @@ SELECT ST_3DFromWKB(wkb) IS NOT NULL FROM test_wkb;
 ----
 true
 
-# Test: typeof returns BLOB (SOLID_3D is alias over BLOB)
+# Test: typeof returns the SOLID_3D alias type
 query I
 SELECT typeof(ST_3DFromWKB(wkb)) FROM test_wkb;
 ----
-BLOB
+SOLID_3D
 
 # Test: NULL input returns NULL (standard null propagation)
 query I

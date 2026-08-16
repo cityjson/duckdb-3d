@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Fixture (ST_AsWKBHollowCube): outer cube [0,4]^3 enclosing inner cube [1,3]^3
 # as a 12-face PolyhedralSurface. With shell metadata it is one solid, two shells.
 # Volume = 64 - 8 = 56; surface area = 96 + 24 = 120 (cavity walls included).

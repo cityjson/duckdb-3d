@@ -2,10 +2,8 @@
 #include "kernel/validation.hpp"
 #include "kernel/triangulation.hpp"
 #include <unordered_map>
-#include <cmath>
 #include <functional>
 #include <stdexcept>
-#include <numeric>
 
 namespace duckdb_3d {
 
@@ -124,9 +122,8 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	// With `shells`, one per-shell-count array must map to one WKB member (solid).
 	// A Solid gives a single member; a MultiSolid/CompositeSolid one per solid.
 	if (metadata.shells.size() != surfaces.size()) {
-		throw std::runtime_error("geometry_properties: shells solid count (" +
-		                         std::to_string(metadata.shells.size()) + ") does not match WKB member count (" +
-		                         std::to_string(surfaces.size()) + ")");
+		throw std::runtime_error("geometry_properties: shells solid count (" + std::to_string(metadata.shells.size()) +
+		                         ") does not match WKB member count (" + std::to_string(surfaces.size()) + ")");
 	}
 
 	SolidModel model;

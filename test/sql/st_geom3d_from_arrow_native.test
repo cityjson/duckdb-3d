@@ -133,3 +133,22 @@ SELECT ST_3DFootprintArea(ST_Geom3DFromArrowNative(
 ));
 ----
 0.5
+
+# Row-varying STRUCT metadata through the arrow-native surface path: two rows
+# (MultiSurface and CompositeSurface) in one chunk, exercising non-constant
+# struct/list vectors in the positionally-bound STRUCT overload.
+query II
+SELECT id, ST_3DGeometryType(ST_Geom3DFromArrowNative(boundaries, vertices, geometry_properties)) AS gtype
+FROM (
+    VALUES
+        (1, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         {'type': 'MultiSurface', 'surfaces': NULL, 'face_semantics': NULL, 'shells': NULL}),
+        (2, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         {'type': 'CompositeSurface', 'surfaces': NULL, 'face_semantics': NULL, 'shells': NULL})
+) t(id, boundaries, vertices, geometry_properties)
+ORDER BY id;
+----
+1	ST_MultiPolygon
+2	ST_MultiPolygon

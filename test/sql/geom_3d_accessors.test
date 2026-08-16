@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 statement ok
 CREATE TABLE pts AS
 SELECT ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)) AS p;
@@ -116,3 +118,38 @@ NULL
 
 statement ok
 DROP TABLE pts;
+
+# ──────────────────────────────────────────────────────────────────────────
+# ST_3DGeometryType / ST_3DDimension read the type code from the O(1) front
+# header instead of deserialising the whole payload. Crafted payload layout:
+#   "D3DG" | u16 major=1 | u16 minor=0 | u32 type | 6×f64 bbox | u32 vertex_count | vertices…
+
+# A body that is truncated after the vertex count is not rejected here: these
+# accessors never touch the body. (Every body-consuming function still does.)
+query II
+SELECT ST_3DGeometryType(g), ST_3DDimension(g) FROM (SELECT
+    ('D3DG' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' ||
+     repeat('\x00', 48) || '\x01\x00\x00\x00')::GEOM_3D AS g);
+----
+ST_Point	0
+
+# A type code outside the GEOM_3D enum (1-7, 15) is rejected, not laundered into
+# a plausible generic answer: these accessors read exactly that field, so a
+# crafted code must not pass. The body below is well-formed — only the code is junk.
+statement error
+SELECT ST_3DGeometryType(('D3DG' || '\x01\x00\x00\x00' || '\xe7\x03\x00\x00' || repeat('\x00', 48) ||
+    '\x01\x00\x00\x00' || repeat('\x00', 24) || repeat('\x00', 8))::GEOM_3D);
+----
+unknown geometry type code
+
+statement error
+SELECT ST_3DDimension(('D3DG' || '\x01\x00\x00\x00' || '\xe7\x03\x00\x00' || repeat('\x00', 48) ||
+    '\x01\x00\x00\x00' || repeat('\x00', 24) || repeat('\x00', 8))::GEOM_3D);
+----
+unknown geometry type code
+
+# The magic and major-version checks still apply on the header-only path.
+statement error
+SELECT ST_3DGeometryType(('XXXX' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' || repeat('\x00', 48))::GEOM_3D);
+----
+bad magic

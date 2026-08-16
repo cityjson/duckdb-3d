@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.15)
 
 # Set extension name here
 set(TARGET_NAME three_d)
@@ -17,11 +17,20 @@ include_directories(src/include)
 
 set(EXTENSION_SOURCES
     src/three_d_extension.cpp
+    src/functions/fixtures.cpp
+    src/functions/solid_io.cpp
+    src/functions/solid_accessors.cpp
+    src/functions/geom_accessors.cpp
+    src/functions/distance.cpp
+    src/functions/transforms.cpp
+    src/functions/arrow_native.cpp
+    src/functions/struct_metadata.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
     src/kernel/model_builder.cpp
     src/kernel/wkb_export.cpp
+    src/kernel/geometry_math.cpp
     src/kernel/validation.cpp
     src/kernel/triangulation.cpp
     src/kernel/measurements.cpp

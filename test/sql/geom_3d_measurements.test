@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # A LineString Z is recognised by ST_3DGeometryType
 query I
 SELECT ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBLineZ()));

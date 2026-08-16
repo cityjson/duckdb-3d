@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # The GEOM_3D type is registered and usable in casts
 query I
 SELECT NULL::GEOM_3D IS NULL;

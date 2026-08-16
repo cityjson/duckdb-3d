@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Test: round-trip - import and export should produce valid WKB
 query I
 SELECT ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra())) IS NOT NULL;
@@ -16,8 +18,9 @@ SELECT ST_3DFromWKB(ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()))) IS NOT 
 ----
 true
 
-# Test: NULL input returns NULL
+# Test: NULL input returns NULL. ST_3DAsWKB is overloaded over SOLID_3D / BLOB,
+# so an untyped NULL is ambiguous and must be cast (like ST_3DZMin/ST_3DZMax).
 query I
-SELECT ST_3DAsWKB(NULL) IS NULL;
+SELECT ST_3DAsWKB(NULL::SOLID_3D) IS NULL;
 ----
 true

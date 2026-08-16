@@ -7,6 +7,11 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
+# The SQL test suite depends on the st_aswkb* fixture generators, which are
+# only registered when this is set (see src/functions/fixtures.cpp). Exported
+# so `make test` / `make test_debug` / `make test_all` pass it to the runner.
+export THREE_D_TEST_FIXTURES=1
+
 # ──────────────────────────────────────────────────────────────────────────
 # Standalone C++ kernel unit tests (Catch2).
 #

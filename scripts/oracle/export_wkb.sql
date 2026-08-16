@@ -9,6 +9,11 @@
 --
 -- Analytic fixtures come first (tetra = valid, open_tetra = invalid open shell),
 -- then every geometry-bearing 3DBAG solid at LoD 2.2.
+--
+-- The ST_AsWKB* fixture generators are registered only when THREE_D_TEST_FIXTURES
+-- is set in the environment (see src/functions/fixtures.cpp); gen_golden.py sets
+-- it for us, so run this script through gen_golden.py --reexport rather than by
+-- hand, or export the variable first.
 
 INSTALL cityjson FROM community;
 LOAD cityjson;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "kernel/solid_model.hpp" // Vertex3D, BBox3D
+#include "kernel/core_types.hpp"
 #include <cstdint>
 #include <vector>
 

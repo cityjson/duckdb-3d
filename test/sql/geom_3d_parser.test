@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Polygon Z parses as a single 2D surface geometry
 query III
 SELECT
