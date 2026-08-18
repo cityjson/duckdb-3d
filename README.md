@@ -136,7 +136,9 @@ Artifacts:
 
 ```sh
 make test          # SQL tests against the release build
-make test_debug    # SQL + C++ tests against the debug build
+make test_debug    # SQL tests against the debug build
+make test_cpp      # C++ kernel tests
+make test_all      # both
 ```
 
 Full build, test, and distribution notes: [docs/README.md](docs/README.md).

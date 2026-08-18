@@ -23,6 +23,17 @@ The kernel must not learn about DuckDB, and must not learn about CityJSON. That 
 what keeps the geometry logic testable without a database and replaceable behind the SQL
 surface.
 
+**The extension loads as `three_d`, not `duckdb-3d`.** The DuckDB entry macro expands the
+name into a C++ symbol, so it must be a valid identifier: the repository is `duckdb-3d`, the
+build target / entrypoint / `LOAD` name is `three_d`, and the SQL functions are `ST_3D*`.
+Targets DuckDB **v1.5.x**.
+
+```sh
+git clone --recurse-submodules …   # DuckDB itself is a submodule
+make                               # first build compiles DuckDB too; then incremental
+GEN=ninja make                     # much faster, with ninja + ccache installed
+```
+
 ## Which document says what
 
 | Document | Owns | Update it when |
@@ -65,12 +76,21 @@ apply, write the unit test first.
 
 ```sh
 make test          # SQL tests, release
-make test_debug    # SQL + C++ tests, debug
-GEN=ninja make     # much faster incremental builds
+make test_debug    # SQL tests, debug
+make test_cpp      # C++ kernel tests (Catch2)
+make test_all      # everything: test_debug + test_cpp
 ```
+
+**`make test_debug` does not run the C++ tests** — it is SQL-only, just in debug. Use
+`test_cpp` or `test_all` when you have touched the kernel.
+
+Run one file: `./build/release/test/unittest "test/sql/<name>.test"`.
 
 The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` test helpers.
 Running a built binary directly without it silently skips every test that requires them.
+
+Tests gated on `require cityjson` / `require spatial` skip when those extensions are not
+registered with the runner. Skips are expected, not failures.
 
 ## Writing style for docs
 

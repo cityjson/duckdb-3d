@@ -64,8 +64,13 @@ The project follows strict TDD (see [../AGENTS.md](../AGENTS.md)). SQL tests liv
 
 ```sh
 make test          # SQL tests, release build
-make test_debug    # SQL + C++ tests, debug build
+make test_debug    # SQL tests, debug build
+make test_cpp      # C++ kernel tests (Catch2, standalone)
+make test_all      # test_debug + test_cpp
 ```
+
+`make test_debug` is SQL-only — it does **not** run the C++ kernel tests. Use `test_cpp` or
+`test_all` after touching `src/kernel/`.
 
 Run a single test file:
 
