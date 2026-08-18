@@ -5,7 +5,7 @@
 > [EXAMPLE.md](./EXAMPLE.md). This file covers the composition mechanics and how
 > to run the interop tests.
 
-The design doc §12 specifies that `duckdb-3d` integrates with the
+The design doc §7 specifies that `duckdb-3d` integrates with the
 [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) community
 extension via plain SQL composition: `cityjson` produces WKB plus
 `geometry_properties` JSON, and `duckdb-3d` consumes both through the 2-arg
@@ -121,7 +121,7 @@ LOAD three_d;
 WITH solids AS (
   SELECT id, ST_3DTryFromWKB(geometry, geometry_properties) AS solid
   FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
     lod => '2.2'
   )
   WHERE geometry IS NOT NULL

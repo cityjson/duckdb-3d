@@ -2,7 +2,7 @@
 
 `golden.csv` holds **frozen reference values** computed by PostGIS + SFCGAL for
 the duckdb-3d differential test (`test/sql/postgis_oracle.test`, design doc
-§9.5.1). It is the *only* place PostGIS is involved: it runs offline, dev-time
+§8.4). It is the *only* place PostGIS is involved: it runs offline, dev-time
 only. `make test` reads the frozen values and never needs PostGIS, a container,
 or the network.
 

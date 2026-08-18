@@ -234,7 +234,7 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 }
 
 //! Enforce CityGML §9.3's interior-opposite-exterior winding within each solid
-//! (DESIGN_DOC §9.3 / §10.2.1). Shell 0 is the exterior (CityJSON writes the
+//! (DESIGN_DOC §8.1 / §8.2). Shell 0 is the exterior (CityJSON writes the
 //! outer shell first, §7.1); every interior shell MUST be wound opposite to it,
 //! else its volume would silently add instead of subtract. Two error classes:
 //!   * an interior shell wound the SAME way as the exterior;

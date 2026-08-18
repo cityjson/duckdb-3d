@@ -148,7 +148,7 @@ TEST_CASE("BuildSolidModelFromArrowNative flags a degenerate (zero-length) ring,
 	// A face whose only ring has 0 indices (offset delta 0) — passes straight
 	// through to the same TriangulateSolidModel/ValidateSolidModel the WKB
 	// path already uses, so it must be flagged as degenerate exactly like a
-	// degenerate WKB ring is (DESIGN_DOC.md §9.4), not throw or crash here.
+	// degenerate WKB ring is (DESIGN_DOC.md §8.1), not throw or crash here.
 	ArrowNativeBoundaries boundaries;
 	boundaries.solid_shell_offsets = {0, 1};
 	boundaries.shell_face_offsets = {0, 1};

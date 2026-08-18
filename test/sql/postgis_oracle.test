@@ -1,5 +1,5 @@
 # name: test/sql/postgis_oracle.test
-# description: differential validation of three_d against frozen PostGIS/SFCGAL golden values (design doc §9.5)
+# description: differential validation of three_d against frozen PostGIS/SFCGAL golden values (design doc §8.4)
 # group: [sql]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -158,7 +158,7 @@ FROM golden WHERE feature_id = 'NL.IMBAG.Pand.0703100000035935-0';
 # ── Invalid geometry: the extension is the oracle of record ──
 # The open shell (tetra missing a face) is 'rejected' by SFCGAL for volume; the
 # extension likewise refuses ST_3DVolume with the documented precondition error
-# (it flags, it does not repair — design doc §9).
+# (it flags, it does not repair — design doc §8.1).
 query I
 SELECT pg_volume_status FROM golden WHERE feature_id = 'fixture:open_tetra';
 ----

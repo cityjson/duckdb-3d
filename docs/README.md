@@ -1,7 +1,8 @@
 # Building & Developing `duckdb-3d`
 
-Detailed build, test, and distribution notes for contributors. For the project overview and
-function reference, see the [top-level README](../README.md).
+Detailed build, test, and distribution notes for contributors. For the project overview see
+the [top-level README](../README.md); for the function reference see
+[FUNCTIONS.md](./FUNCTIONS.md).
 
 ## Prerequisites
 

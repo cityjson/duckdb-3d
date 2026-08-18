@@ -12,10 +12,6 @@ DuckDB's built-in geometry surface is 2D / simple-features centric. `duckdb-3d` 
 solid-aware types and functions that 3D workflows need, without pulling in a heavyweight
 geometry backend.
 
-> Status: the core is implemented and tested. It is not CityJSON-specific — CityJSON is one
-> upstream producer, consumed through plain SQL composition with the
-> [`cityjson`](https://github.com/cityjson/duckdb-cityjson) extension.
-
 ## Highlights
 
 - **`SOLID_3D`** — a dedicated type for closed polyhedral solids, backed by a compact,
@@ -25,112 +21,112 @@ geometry backend.
   surfaces) for the class-generic accessor, distance, and serialization functions.
 - **Validation, not repair** — `duckdb-3d` reports closedness, manifoldness, orientation, and
   degeneracy; it never silently "fixes" geometry.
-- **`ST_3D*` namespace, coexists with `spatial`** — 3D operations use `ST_3D*` names
-  (PostGIS's convention for 3D variants), so `three_d` and DuckDB's `spatial` extension load
-  together in one session, in any order: `spatial` owns the generic 2D `ST_*` vocabulary,
-  `three_d` owns `ST_3D*`. A curated 3D subset, not full PostGIS parity.
-- **Self-contained kernel** — no CGAL/SFCGAL dependency; the current function set runs on a
-  pure C++ geometry kernel.
+- **Coexists with `spatial`** — 3D operations use `ST_3D*` names (PostGIS's convention for 3D
+  variants), so `three_d` and DuckDB's `spatial` extension load together in one session, in
+  any order. A curated 3D subset, not full PostGIS parity.
+- **Self-contained kernel** — no CGAL/SFCGAL dependency.
 
 ## Quick start
 
-Build the extension (see [Building](#building)), then in the DuckDB shell:
-
 ```sql
+INSTALL cityjson FROM community;   -- one-time; reads CityJSON into WKB
+LOAD cityjson;
 LOAD three_d;
 
--- Build a solid from WKB (e.g. produced by the cityjson extension), then measure it.
-SELECT ST_3DVolume(solid)          AS volume_m3,
-       ST_3DZMax(solid) - ST_3DZMin(solid) AS height_m,
-       ST_3DIsClosed(solid)        AS closed
-FROM (SELECT ST_3DFromWKB(geometry, geometry_properties) AS solid FROM my_buildings);
+-- Measure real buildings straight from a remote CityJSONSeq server
+SELECT id,
+       ROUND(ST_3DVolume(solid), 1)                  AS volume_m3,
+       ROUND(ST_3DFootprintArea(solid), 1)           AS footprint_m2,
+       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m
+FROM (
+  SELECT id, ST_3DTryFromWKB(geometry, geometry_properties) AS solid
+  FROM read_cityjsonseq(
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
+  WHERE geometry IS NOT NULL
+)
+WHERE ST_3DValidationReport(solid).is_valid
+LIMIT 5;
 ```
 
-`geometry_properties` may be JSON text (as `cityjson` emits it) **or** a CityParquet
-`geometry_properties_lod*` STRUCT read straight from a Parquet file — the STRUCT is
-accepted directly, with no `to_json(...)` round-trip:
+```
+┌──────────────────────────────────┬───────────┬──────────────┬──────────┐
+│                id                │ volume_m3 │ footprint_m2 │ height_m │
+├──────────────────────────────────┼───────────┼──────────────┼──────────┤
+│ NL.IMBAG.Pand.0503100000012869-0 │ 19.5      │ 7.2          │ 2.75     │
+│ NL.IMBAG.Pand.0503100000016459-0 │ 27.8      │ 10.3         │ 2.73     │
+│ NL.IMBAG.Pand.0503100000005156-0 │ 637.0     │ 99.2         │ 10.43    │
+│ NL.IMBAG.Pand.0503100000019786-0 │ 151.3     │ 48.6         │ 3.13     │
+│ NL.IMBAG.Pand.0503100000018426-0 │ 881.3     │ 87.3         │ 10.15    │
+└──────────────────────────────────┴───────────┴──────────────┴──────────┘
+```
+
+Geometry can equally come from a CityParquet file — the `geometry_properties_lod*` `STRUCT`
+is accepted directly, with no `to_json(...)` round-trip:
 
 ```sql
--- geometry_lod2_2 (BLOB) + geometry_properties_lod2_2 (STRUCT) from a CityParquet file
 SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
 FROM read_parquet('building.parquet')
 WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
-Reading real 3D buildings straight from a remote CityJSONSeq server, with the `cityjson`
-extension:
+**Sample data.** The examples throughout the docs use the 3DBAG Delft tile:
+[`delft.city.jsonl`](https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl) (CityJSONSeq)
+and [`delft.city.json`](https://cityjson.open3d.city/cityjson/delft.city.json) (CityJSON).
 
-```sql
-INSTALL cityjson FROM community;   -- one-time
-LOAD cityjson;
-LOAD three_d;
+## Representative functions
 
-SELECT id,
-       ROUND(ST_3DVolume(solid), 1) AS volume_m3
-FROM (
-  SELECT id, ST_3DFromWKB(geometry, geometry_properties) AS solid
-  FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl', lod => '2.2')
-  WHERE geometry IS NOT NULL
-)
-WHERE ST_3DValidationReport(solid).is_valid
-LIMIT 10;
-```
+A digest — the **[full reference with runnable examples is in docs/FUNCTIONS.md](docs/FUNCTIONS.md)**
+(55 functions).
 
-A full, ground-truth-validated walkthrough against the 3DBAG Delft dataset is in
-**[docs/EXAMPLE.md](docs/EXAMPLE.md)**.
-
-## Function reference
-
-All functions use PostGIS-style names. `SOLID_3D`-only functions take the solid payload;
-class-generic ones also accept `GEOM_3D` (built with `ST_Geom3DFromWKB`).
-
-| Category | Functions |
+| Function | Does |
 | --- | --- |
-| **Import / export** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_3DAsWKB`, `ST_Geom3DFromWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
-| **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DGeometryType`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_3DZMin`, `ST_3DZMax` |
-| **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport`, `ST_IsPlanar` |
-| **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea` / `ST_3DArea`, `ST_3DFootprintArea` (footprint), `ST_3DPerimeter`, `ST_3DLength` |
-| **Distance** | `ST_3DDistance`, `ST_3DDWithin`, `ST_3DMaxDistance`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
-| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_Force3D`, `ST_3DConvexHull`, `ST_3DCentroid`, `ST_3DExtrude`, `ST_MakeSolid` |
+| `ST_3DFromWKB(wkb [, props])` | Build a `SOLID_3D` from WKB, optionally using a shell-grouping sidecar. `ST_3DTryFromWKB` returns `NULL` instead of raising. |
+| `ST_Geom3DFromWKB(wkb)` | Build a `GEOM_3D` — the entry point for distance and serialization. |
+| `ST_3DValidationReport(solid)` | Full validity struct: closed, manifold, oriented, plus per-check counters and a diagnostic message. |
+| `ST_3DVolume(solid)` | Enclosed volume. Interior shells (cavities) subtract automatically. Raises on invalid solids. |
+| `ST_3DFootprintArea(solid)` | 2D ground area of the XY projection. |
+| `ST_3DArea(solid)` | Total 3D surface area of all faces. |
+| `ST_3DBounds(solid)` | Cached 3D bounding box as a struct — height is `ST_3DZMax − ST_3DZMin`. |
+| `ST_3DDistance(a, b)` | Minimum 3D distance. `ST_3DDWithin(a, b, d)` is the cheap bbox-pruned predicate. |
+| `ST_3DTransform(geom, src, tgt)` | CRS reprojection via PROJ — X/Y reprojected, **Z preserved**. |
+| `ST_3DExtrude(polygon, height)` | Extrude a footprint into a closed LoD1 prism. |
+| `ST_3DAsText` / `ST_3DAsGeoJSON` / `ST_3DAsWKB` | Serialize to WKT, GeoJSON, or WKB. |
 
-Signatures, preconditions, and the binary payload format are specified in
-[docs/DESIGN_DOC.md](docs/DESIGN_DOC.md).
+Also available: shell/face counts, `ST_3DIsClosed` / `ST_3DIsManifold` / `ST_3DIsOriented`,
+`ST_3DCentroid`, `ST_3DConvexHull`, `ST_MakeSolid`, `ST_3DTranslate` / `ST_3DScale` /
+`ST_3DRotateX/Y/Z`, `ST_3DClosestPoint`, `ST_3DShortestLine`, and more — see
+[docs/FUNCTIONS.md](docs/FUNCTIONS.md).
+
+## Verified against real data
+
+`duckdb-3d`'s measurements are cross-checked against 3DBAG's own independently computed
+attributes for the Delft tile: **median volume error 0.017 %** across ~1100 buildings, with
+footprint areas matching exactly. The math is additionally cross-checked offline against
+PostGIS + SFCGAL as a differential oracle (never a build or runtime dependency).
 
 ## Using with DuckDB `spatial`
 
-Because 3D operations live under `ST_3D*` — every name that would otherwise collide with
-`spatial` is prefixed (a few genuinely 3D-only names like `ST_MakeSolid` / `ST_Force3D`
-stay bare) — `three_d` never clashes with the
-[`spatial`](https://duckdb.org/docs/extensions/spatial) extension. Load both in one
-session, in any order. `spatial` handles the generic 2D `GEOMETRY` vocabulary; `three_d`
-handles the 3D solids:
+Load both in one session, in any order. `spatial` handles the generic 2D `GEOMETRY`
+vocabulary; `three_d` handles the 3D solids:
 
 ```sql
 LOAD spatial;
 LOAD three_d;
 
-SELECT ST_Area(footprint)                             AS ground_area_m2,   -- spatial, 2D
-       ST_3DVolume(ST_3DFromWKB(solid_wkb, solid_props)) AS volume_m3       -- three_d, 3D
+SELECT ST_Area(footprint)                                 AS ground_area_m2, -- spatial, 2D
+       ST_3DVolume(ST_3DFromWKB(solid_wkb, solid_props))  AS volume_m3       -- three_d, 3D
 FROM buildings;
 ```
 
 ## Building
 
-The extension targets DuckDB `v1.5.x` and builds with the standard DuckDB extension
-toolchain. Clone with submodules (DuckDB is a submodule), then build:
+Targets DuckDB `v1.5.x`. Clone with submodules, then build:
 
 ```sh
 git clone --recurse-submodules <repo-url>
 cd duckdb-3d
 make                 # first build compiles DuckDB too; subsequent builds are incremental
-```
-
-For much faster incremental builds, install [ccache](https://ccache.dev) and
-[ninja](https://ninja-build.org):
-
-```sh
-GEN=ninja make
+GEN=ninja make       # much faster, with ninja + ccache installed
 ```
 
 Artifacts:
@@ -138,28 +134,22 @@ Artifacts:
 - `build/release/duckdb` — a DuckDB shell with `three_d` preloaded
 - `build/release/extension/three_d/three_d.duckdb_extension` — the loadable extension
 
-## Testing
-
-The project follows strict test-driven development (see [AGENTS.md](AGENTS.md)).
-
 ```sh
 make test          # SQL tests against the release build
 make test_debug    # SQL + C++ tests against the debug build
 ```
 
-- SQL tests live in `test/sql/`, C++ kernel tests in `test/cpp/`.
-- The CityJSON interop tests (`test/sql/cityjson_interop.test`,
-  `test/sql/cityjson_delft_remote.test`) are gated on the `cityjson` community extension and
-  skip automatically when it is not registered with the test runner — see
-  [docs/CITYJSON_INTEROP.md](docs/CITYJSON_INTEROP.md) to run them.
+Full build, test, and distribution notes: [docs/README.md](docs/README.md).
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
+| [docs/FUNCTIONS.md](docs/FUNCTIONS.md) | **Function reference** — every function, with signatures and runnable examples |
 | [docs/EXAMPLE.md](docs/EXAMPLE.md) | Hands-on walkthrough against real 3DBAG data |
-| [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md) | Reference spec: SQL contract, `SOLID_3D` payload, validation & measurement semantics, roadmap |
+| [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md) | Architecture & design philosophy: type model, layering, invariants |
 | [docs/CITYJSON_INTEROP.md](docs/CITYJSON_INTEROP.md) | Composing with the `cityjson` extension; running the interop tests |
+| [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) | Deferred design decisions |
 | [docs/README.md](docs/README.md) | Build & development notes |
 | [docs/UPDATING.md](docs/UPDATING.md) | Keeping the DuckDB submodule current |
 | [AGENTS.md](AGENTS.md) | Contributor / coding-agent guide (TDD workflow, layering) |

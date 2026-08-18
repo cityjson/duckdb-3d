@@ -16,7 +16,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterType("SOLID_3D", solid_3d_type);
 
 	// Register GEOM_3D type: a general 3D geometry (point/line/polygon/multi/
-	// polyhedral-surface), also an alias over BLOB with its own payload (§16.2).
+	// polyhedral-surface), also an alias over BLOB with its own payload (DESIGN_DOC §4).
 	auto geom_3d_type = LogicalType(LogicalTypeId::BLOB);
 	geom_3d_type.SetAlias("GEOM_3D");
 	loader.RegisterType("GEOM_3D", geom_3d_type);

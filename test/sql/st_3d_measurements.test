@@ -66,7 +66,7 @@ DROP TABLE solids;
 # ──────────────────────────────────────────────────────────────
 
 # An open shell (tetrahedron missing one face) imports successfully but
-# is_closed = false → ST_3DVolume must raise per design doc §5.3.1.
+# is_closed = false → ST_3DVolume must raise per design doc §8.1.
 statement ok
 CREATE TABLE open_solid AS
 SELECT ST_3DFromWKB(ST_AsWKBOpenTetra()) AS solid;

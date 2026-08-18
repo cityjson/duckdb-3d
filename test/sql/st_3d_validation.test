@@ -63,7 +63,7 @@ DROP TABLE solids;
 # ──────────────────────────────────────────────────────────────
 # Invalid solid: an open shell (tetrahedron missing one face) imports
 # successfully but is reported invalid — the extension is the oracle of
-# record for invalid geometry (it flags, it does not repair; design doc §9).
+# record for invalid geometry (it flags, it does not repair; design doc §8.1).
 # ──────────────────────────────────────────────────────────────
 statement ok
 CREATE TABLE open_solids AS

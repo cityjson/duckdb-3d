@@ -1,110 +1,122 @@
-# C++ Agent Guide
+# Agent & Contributor Guide
 
-This document provides repository-specific guidance for coding agents and contributors working on the `duckdb-3d` extension.
+Workflow and conventions for `duckdb-3d`. **This file holds only rules.** Anything
+descriptive — what the functions are, how the payload is laid out, why the architecture is
+shaped the way it is — lives in `docs/` and must not be duplicated here.
 
-## Repository Context
+## Where things are
 
-- This repository is for a reusable DuckDB extension focused on 3D solid processing.
-- The extension is not CityJSON-specific. CityJSON is an upstream integration, not the core architectural boundary.
-- The extension is implemented: it loads as `three_d` and exposes the `SOLID_3D` and `GEOM_3D` types with the `ST_*` / `ST_3D*` function family. The template `quack` scaffold has been fully replaced. For usage against real data see [docs/EXAMPLE.md](docs/EXAMPLE.md).
-- `three_d` is the legal internal DuckDB extension target and entrypoint name; the repository/product name remains `duckdb-3d`. Unless a later packaging alias proves cleaner, keep using `three_d`.
+```
+src/
+  three_d_extension.cpp   registration: types + scalar functions
+  functions/              SQL layer: bind, decode, vectorized execution
+  kernel/                 geometry: WKB, topology, triangulation, measurement, CRS
+  include/                headers mirroring functions/ and kernel/
+test/
+  cpp/                    kernel unit tests (no database)
+  sql/                    SQL-surface tests (sqllogic)
+  data/                   fixtures and frozen oracle values
+docs/                     see the map below
+```
 
-## Required Reading
+The kernel must not learn about DuckDB, and must not learn about CityJSON. That boundary is
+what keeps the geometry logic testable without a database and replaceable behind the SQL
+surface.
 
-You should read [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md) before changing:
+## Which document says what
 
-- public SQL APIs
-- the `SOLID_3D` binary payload format
-- validation semantics
-- measurement semantics
-- the CityJSON interoperability contract
+| Document | Owns | Update it when |
+| --- | --- | --- |
+| `docs/FUNCTIONS.md` | Signatures, overloads, return types, null/error behaviour, examples | **Any** change to a public function's shape or behaviour |
+| `docs/DESIGN_DOC.md` | Architecture, invariants, type model, payload contract, validation/measurement semantics | An architectural decision or documented invariant changes |
+| `docs/EXAMPLE.md` | Narrative walkthrough on real data | The end-to-end story changes |
+| `docs/CITYJSON_INTEROP.md` | Composing with the `cityjson` extension; running gated tests | Interop mechanics change |
+| `docs/TEST_COVERAGE.md` | Verification strategy: which oracle is authoritative for what | An oracle or fixture changes |
+| `docs/FUTURE_WORK.md` | Deferred design decisions and what "done" needs | Something is deferred or picked up |
+| `docs/README.md` | Build, test, distribution mechanics | Tooling changes |
+| `README.md` | Project overview, a digest of representative functions | The pitch or headline surface changes |
 
-Treat the design doc as the architectural source of truth.
+`docs/index.html` publishes `FUNCTIONS.md` as the GitHub Pages site (docsify, no build step —
+serve `docs/` and it renders). Point Pages at the `docs/` folder on the default branch.
 
-## Development Workflow
+**Never put function signatures or algorithm listings in `DESIGN_DOC.md`.** That duplication
+is what goes stale. Signatures belong in `FUNCTIONS.md`, reasoning belongs in the design doc.
 
-This repository follows strict test-driven development.
+Read `docs/DESIGN_DOC.md` before changing public SQL APIs, the payload format, validation or
+measurement semantics, or the interoperability contract.
 
-Every feature and bug fix must use this order:
+## Test-driven development
 
-1. write a failing test
-2. implement the smallest change needed to make the test pass
-3. refactor while keeping tests green
+Mandatory, not aspirational. Red, green, refactor:
 
-This is mandatory, not optional.
+1. Write a failing test.
+2. Write the smallest change that makes it pass.
+3. Refactor while green.
 
-### TDD Rules
+- No new public function starts until a failing test exists.
+- Every bug fix starts with a regression test that fails first.
+- One behaviour per test change; no speculative test bundles.
+- Refactors stay behaviour-preserving and covered.
 
-- Do not start implementing a new public function until a failing test exists.
-- For bugs, add a regression test first and confirm it fails for the current behavior.
-- Prefer one behavior per test change. Avoid large speculative test bundles.
-- Keep refactors behavior-preserving and covered by tests.
+**Placement.** Geometry logic — WKB parsing, model construction, payload round-trips,
+validation, triangulation, area/volume math — goes in `test/cpp/`. SQL-surface behaviour —
+binding, nulls, `TRY` semantics, result contracts, interop — goes in `test/sql/`. When both
+apply, write the unit test first.
 
-### Preferred Test Ordering
+```sh
+make test          # SQL tests, release
+make test_debug    # SQL + C++ tests, debug
+GEN=ninja make     # much faster incremental builds
+```
 
-1. unit test first
-2. SQL integration test second
-3. implementation third
-4. refactor last
+The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` test helpers.
+Running a built binary directly without it silently skips every test that requires them.
 
-## Test Placement
+## Writing style for docs
 
-- Use `test/cpp/` for:
-  - WKB parsing
-  - canonical solid model construction
-  - binary payload round-trips
-  - validation logic
-  - triangulation, area, and volume math
-- Use `test/sql/` for:
-  - function binding and naming
-  - null handling
-  - `TRY` behavior
-  - SQL-level result contracts
-  - integration behavior with `SOLID_3D`
+- **Document the present, never the past.** No "fixed", "previously broken", "used to be",
+  "now correctly handles", "✅ Done". A reader needs to know how it works today, not its
+  biography. Put history in commit messages, where it belongs.
+- **No status decoration.** Don't annotate sections with progress markers or gap trackers.
+- **Verify before you write.** Every example in `docs/FUNCTIONS.md` is executed against a
+  real build and its actual output pasted in. Re-run any example you touch; never paste a
+  plausible-looking result. Examples use the 3DBAG Delft tile:
+  `https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl`.
+- **Don't cite section numbers across files** unless the anchor is stable — prefer naming the
+  document and the concept.
 
-When both are needed, start with the unit test.
+## Coding guidance
 
-## Build And Tooling
+- Keep the SQL/vectorized layer separate from the geometry kernel.
+- Preserve original polygon topology; triangulation is a derived cache, never the truth.
+- Never silently repair geometry. Fail clearly when topology is unsupported or invalid.
+- Keep CityJSON assumptions out of the kernel, outside the documented interop layer.
 
-Use the standard DuckDB extension workflow unless the repo evolves away from the template:
+## Breaking changes
 
-1. Run `make` once to prepare the DuckDB build environment.
-2. Prefer `GEN=ninja make` when available for faster incremental builds.
-3. Use `make test_debug` for debug-oriented development and extension testing.
-4. Use `make test` for standard SQL test coverage.
-5. Add focused C++ tests under `test/cpp/` when introducing kernel logic.
+**Breaking changes are welcome.** This is a research prototype with no back-compatibility
+burden — prefer a clean design over a compatible one, and don't add deprecation shims or
+legacy aliases.
 
-The loadable extension is built under `build/debug/extension/three_d/` (and `build/release/extension/three_d/`).
+Two obligations remain:
 
-The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` test-helper functions most of the SQL suite depends on, so every `make` target inherits it. Export it yourself when running a built binary directly (`build/release/test/unittest`, `build/release/duckdb`) — otherwise the helpers are not registered and every test file declaring `require-env THREE_D_TEST_FIXTURES` is silently skipped.
+- Bump the payload version when the binary layout changes, so readers reject what they cannot
+  parse.
+- Update `docs/FUNCTIONS.md` and any affected tests in the **same** change.
 
-## Coding Guidance
+## Formatting
 
-- Keep the SQL/vectorized execution layer separate from the geometry kernel.
-- Preserve original polygon topology in the canonical model. Triangulation is a derived cache, not the source of truth.
-- Avoid silent geometry repair in v1.
-- Fail clearly when topology is unsupported or invalid.
-- Preserve binary payload compatibility unless the design doc is intentionally updated and the version is bumped.
-- Keep CityJSON-specific assumptions out of the core kernel unless they are explicitly part of the documented interoperability layer.
+A pre-commit hook formats staged C++ (`clang-format`) and trims markdown whitespace. Enable
+it once per clone:
 
-## Contribution Workflow
+```sh
+git config core.hooksPath .githooks
+```
 
-- Update tests before implementation.
-- Update the design doc when changing architecture or public behavior.
-- Keep SQL docs, code, and tests aligned.
-- Add round-trip tests for any import or export logic.
-- Add regression tests for every bug fix.
+It runs on every commit; bypass with `git commit --no-verify` only when you must.
 
-## Current Status And Roadmap
+## Model roles
 
-The v1 baseline (import/export, introspection, validation, measurement) and the
-class-generic `GEOM_3D` accessor/transform/distance/serialization surface are implemented.
-Remaining work — the `want`-tier functions and the deferred CGAL/SFCGAL backend cluster — is
-tracked in [docs/DESIGN_DOC.md §14 and §16](docs/DESIGN_DOC.md). Follow the same
-red-green-refactor discipline for every addition.
-
-## References
-
-- [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md)
-- DuckDB extension development docs
-- DuckDB `v1.5.x` APIs and type registration behavior
+- **Advisor: Fable.** Consult it before committing to an approach and before declaring work
+  complete.
+- **Executor: Sonnet or Opus.** Implementation, tests, and edits.

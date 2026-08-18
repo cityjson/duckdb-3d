@@ -1,5 +1,5 @@
 # name: test/sql/cityjson_delft_remote.test
-# description: real-world validation of three_d against the remote 3DBAG Delft CityJSONSeq (design doc §12; walkthrough in docs/EXAMPLE.md)
+# description: real-world validation of three_d against the remote 3DBAG Delft CityJSONSeq (design doc §7; walkthrough in docs/EXAMPLE.md)
 # group: [sql]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@
 #   1. the `cityjson` community extension registered with the sqllogic runner,
 #      and
 #   2. network access to
-#      https://storage.googleapis.com/cityjson/delft.city.jsonl
+#      https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl
 #
 # `require cityjson` makes the runner skip this test when cityjson is not
 # pre-registered (the default under `make test`), so it never breaks offline
@@ -35,7 +35,7 @@ CREATE TABLE feats AS
 SELECT id, parents, children, geometry, geometry_properties,
        b3_volume_lod22, b3_opp_grond
 FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
     lod => '2.2')
 LIMIT 400;
 

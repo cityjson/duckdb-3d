@@ -5,7 +5,7 @@ models**: the [3DBAG](https://3dbag.nl) reconstruction of Delft, streamed straig
 from a remote server as CityJSONSeq and turned into queryable solids with the
 [`cityjson`](https://github.com/cityjson/duckdb-cityjson) community extension.
 
-For the formal contract of every function, see [DESIGN_DOC.md](./DESIGN_DOC.md). For the
+For the formal contract of every function, see [FUNCTIONS.md](./FUNCTIONS.md). For the
 extension-composition mechanics and troubleshooting, see
 [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md).
 
@@ -77,7 +77,7 @@ CREATE TABLE feats AS
 SELECT id, parents, children, geometry, geometry_properties,
        b3_volume_lod22, b3_opp_grond, b3_h_maaiveld     -- 3DBAG ground-truth attributes
 FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
     lod => '2.2');
 ```
 
@@ -161,7 +161,7 @@ WHERE ST_3DValidationReport(solid).is_valid;
 
 3DBAG ships each building's own computed volume (`b3_volume_lod22`) and ground-surface
 area (`b3_opp_grond`). `three_d`'s independent kernel agrees with them almost exactly —
-for single-part, valid buildings the volumes match within ~0.02% for the vast majority:
+for single-part, valid buildings the median volume error is 0.017 %:
 
 ```sql
 SELECT ROUND(median(
@@ -171,7 +171,7 @@ FROM parts
 WHERE n_parts = 1
   AND ST_3DValidationReport(solid).is_valid
   AND b3_volume_lod22 > 0;
--- ≈ 0.02 %
+-- 0.017 %
 ```
 
 This double-checks both the data and the extension. The automated version of this check
@@ -214,7 +214,7 @@ Related functions on `GEOM_3D`: `ST_3DMaxDistance`, `ST_3DDFullyWithin`,
 ```sql
 SELECT ST_3DGeometryType(g)        AS gtype,        -- ST_PolyhedralSurface
        ST_NDims(g)               AS dims,         -- 3
-       ST_3DAsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.38 446461.18 1.83)
+       ST_3DAsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.382 446461.183 1.82874289)
 FROM (SELECT ST_Geom3DFromWKB(geometry) AS g
       FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0');
 ```

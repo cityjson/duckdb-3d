@@ -1,114 +1,76 @@
-# Test Coverage Audit
+# Test Coverage
 
-Snapshot of test coverage for the `duckdb-3d` extension, and the plan for closing
-gaps. Generated as part of the test-comprehensiveness pass.
+What the suites cover, and what each oracle is authoritative for.
 
-## Method
+Suite layout and the TDD workflow are in [AGENTS.md](../AGENTS.md); this file records the
+**verification strategy** — which independent source each claim is checked against.
 
-- **Function inventory:** every `ST_*` name registered by the `src/functions/*.cpp`
-  registration units — `src/three_d_extension.cpp` only registers the two types and calls
-  them — (60 names, counting the `st_aswkb*` SQL test-helpers). The helpers are not part of the
-  public surface: they are registered only when `THREE_D_TEST_FIXTURES` is set in the
-  environment (see `src/functions/fixtures.cpp`), which the `Makefile` exports for
-  `make test`, and each test file using them declares `require-env THREE_D_TEST_FIXTURES`.
-- **SQL coverage:** whether the name appears in any `test/sql/*.test` (excluding the oracle).
-- **Oracle coverage:** whether the function is cross-checked in the PostGIS/SFCGAL differential
-  oracle (`test/sql/postgis_oracle.test` + `scripts/oracle/gen_golden.py`).
-- **C++ coverage:** whether the backing kernel unit has a dedicated `test/cpp/test_*.cpp`.
+## Suites
 
-## Headline results
+| Suite | Runs | Covers |
+| --- | --- | --- |
+| `test/cpp/` | `make test_debug`, `make test_cpp` | Kernel logic with no database: WKB parsing, model construction, payload round-trips, validation, triangulation, area/volume math |
+| `test/sql/` | `make test`, `make test_debug` | SQL surface: binding, null propagation, `TRY` semantics, result contracts, interop |
 
-- **SQL integration: 60 / 60 functions have at least one SQL test.** No function is entirely
-  untested at the SQL level.
-- **PostGIS oracle: partial by design.** The oracle covers the measurement/distance core
-  (area, volume, surface area, `ST_3DDistance` family, intersects, closest/shortest point,
-  length, `ST_IsClosed`, convex-hull area). It does **not** cover accessors, transforms,
-  introspection counts, perimeter, centroid, or serialization — see gaps below.
-- **C++ kernel: most units have direct tests.** Direct-test gaps: `wkb_export`,
-  `triangulation` (both currently covered only indirectly).
+Tests gated on `require cityjson` skip unless the community extension is registered with the
+sqllogic runner — see [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md). Tests declaring
+`require-env THREE_D_TEST_FIXTURES` skip unless that variable is exported; the `Makefile`
+exports it.
 
-## What this pass added
+## Oracles
 
-| Area | Added |
-|---|---|
-| Inner shells (Gap 1) | `test/cpp/test_inner_shell.cpp` (hollow cube, vol 56 / area 120; shell-grouping invariance; §9.3 gap pin) + `test/sql/st_3d_hollow_solid.test` via new `ST_AsWKBHollowCube()` helper. **Done.** |
-| Multi-solid (Gap 3) | `ST_AsWKBMultiCube()` + `test/sql/st_3d_multisolid.test` (ungated); real `msol`/`csol` datasets + `test/sql/cityjson_multisolid.test` (gated, verified against live cityjson). **Done.** |
-| Transform oracle (part of Gap 2) | `test/sql/metamorphic_transforms.test` — dependency-free invariance (translation/rotation preserve volume+area; scaling laws) over controlled fixtures **and** real 3DBAG golden solids. Covers the transform family the PostGIS oracle structurally cannot. **Done.** |
-| C++ units (Gap 4) | `test/cpp/test_wkb_export.cpp` (round-trip) and `test/cpp/test_triangulation.cpp` (quad, n-gon, concave L-face, tilted face). **Done.** |
-| Docs | This file; `DESIGN_DOC §10.2.1` corrected (Finding B); `FUTURE_WORK §4` (cross-shell orientation check). |
+Three independent sources, each authoritative for a different class of claim.
 
-C++ suite 153/153; SQL suite green (cityjson + oracle-container tests skip locally).
+### 3DBAG published attributes — real-geometry measurement
 
-## Gap 1 — Inner-shell (hollow solid) end-to-end test is missing
+`test/sql/cityjson_delft_remote.test` streams the 3DBAG Delft tile and compares
+`ST_3DVolume` against `b3_volume_lod22` and `ST_3DFootprintArea` against `b3_opp_grond`.
+This is the oracle of record for measurement on **real reconstructed geometry**, because
+SFCGAL rejects most real roofs for non-planarity while this extension measures them by
+triangulation.
 
-The most material gap. The signed-volume subtraction for a solid with an interior shell
-(cavity) — documented in [DESIGN_DOC §10.2.1](./DESIGN_DOC.md#1021-interior-inner-shell-handling--mechanism-and-rationale)
-— is **not** exercised end-to-end:
+Requires network access and the `cityjson` extension.
 
-- `test/cpp/test_metadata.cpp::MakeTwoShellWKB` builds a 2-shell solid but asserts only
-  `ShellCount()==2` / `FaceCount()==8` — it never validates the model or checks volume.
-- The SQL multi-shell cases (`test/sql/st_3d_metadata.test`) are all **error** cases
-  (conflicting `shellFaceCounts`, malformed JSON). There is no positive hollow-solid test.
+### PostGIS + SFCGAL — analytic measurement math
 
-**Plan:** add a hollow-solid fixture with a known analytic volume (V_outer − V_inner) and test
-it at both cpp (`ComputeVolume` passes closed/manifold/oriented preconditions and returns the
-expected value) and SQL levels. No PostGIS needed.
+A differential harness, and **never** a build, runtime, or CI dependency.
+`scripts/oracle/gen_golden.py` feeds identical WKB bytes to both engines offline and freezes
+SFCGAL's answers into `test/data/postgis_oracle/`; `test/sql/postgis_oracle.test` replays
+those frozen values with no PostGIS present. Feeding the same bytes to both isolates the math
+from ingestion differences.
 
-## Gap 2 — PostGIS oracle does not cover all functions
+Golden values carry their provenance (`pg_version`, `sfcgal` version). Regenerating against a
+different PostGIS/SFCGAL build churns every value, so it must be run on the provisioned
+container.
 
-Functions **not** in the oracle, split by whether PostGIS is a *valid* oracle for them:
+Where PostGIS is *not* a valid oracle:
 
-| Not oracled | PostGIS a valid oracle? | Note |
-|---|---|---|
-| `ST_3DX/Y/Z`, `ST_3DZMin/ZMax`, `ST_NDims`, `ST_CoordDim`, `ST_3DDimension`, `ST_3DNumGeometries` | **Yes** | Direct PostGIS analogues; add to generator. |
-| `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX/Y/Z` | **Yes** | PostGIS computes identical affine maps. |
-| `ST_3DTransform` | **Yes** (with PROJ) | PostGIS `ST_Transform`; 2D only here. |
-| `ST_3DPerimeter`, `ST_3DCentroid` | Partly | Analogues exist; centroid definition must match. |
-| `ST_3DAsText`, `ST_3DAsBinary`, `ST_3DAsGeoJSON` | **Yes** | WKT/WKB/GeoJSON serialisation. |
-| `ST_3DNumSolids/Shells/Faces`, `ST_3DBounds` | Weak | Shell/patch counting differs; PostGIS not a clean oracle. |
-| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | **No** | three_d-specific "fail clearly, no repair" semantics; PostGIS repairs/rejects (design doc §9.5.1). three_d's own report is the oracle of record. |
+| Functions | Valid? | Why |
+| --- | --- | --- |
+| Accessors, affine transforms, serialization | Yes | Direct analogues; not all are wired into the generator yet |
+| `ST_3DPerimeter`, `ST_3DCentroid` | Partly | Analogues exist, but the centroid definition must be matched deliberately |
+| `ST_3DNumSolids/Shells/Faces`, `ST_3DBounds` | Weak | Shell and patch counting differ |
+| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | **No** | PostGIS repairs or rejects; this extension flags without repairing. Its own report is authoritative |
 
-**Status — DEFERRED (needs your environment).** The oracle is a *differential* harness: its
-golden values are produced by a live PostGIS + SFCGAL container (`just oracle-regen`), frozen
-with provenance (`pg_version 3.4.3`, `sfcgal 1.3.8`). This environment has no running Docker /
-PostGIS, and regenerating with a *different* PostGIS/SFCGAL version would churn every golden
-value — defeating the frozen-file design. Expanding the oracle therefore needs to be run on
-the maintainer's provisioned `pg_oracle` container. Concrete turnkey plan for when it is:
+### Metamorphic properties — dependency-free invariants
 
-1. Extend `scripts/oracle/gen_golden.py` to emit the "Yes"-row columns above (accessors,
-   affine transforms, serialisation) for the existing fixtures + accepted 3DBAG geometry.
-2. Add the matching assertions to `test/sql/postgis_oracle.test`.
-3. `just oracle-regen` on the container, commit the refreshed `golden.csv`.
+`test/sql/metamorphic_transforms.test` asserts relationships that hold regardless of any
+external engine: translation and rotation preserve volume and area, scaling follows the cube
+law. This covers the transform family, which the differential oracle structurally cannot.
 
-## Gap 3 — Real multisolid / compositesolid datasets
+## Notable fixtures
 
-**Done.** The CityJSON `msol` (MultiSolid) and `csol` (CompositeSolid) example datasets from
-<https://www.cityjson.org/datasets/#simple-geometries> are committed as
-`test/data/multisolid.city.json` / `compositesolid.city.json` and exercised by
-`test/sql/cityjson_multisolid.test` (gated `require cityjson`). Because metadata-aware import
-**raises** for `MultiSolid`/`CompositeSolid` (`model_builder.cpp`; interior-shell grouping is
-deferred, [FUTURE_WORK §1](./FUTURE_WORK.md#1-composite--multi-solid-support-with-interior-shells)),
-the test pins both the supported fallback (plain path → 2 solids, volume 2.0, area 12.0,
-closed) and the documented boundary (metadata import raises; TRY → NULL). An ungated
-`ST_AsWKBMultiCube()` covers the collection-of-solids maths in every CI run.
+| Fixture | Pins |
+| --- | --- |
+| `ST_AsWKBHollowCube()` + `test/cpp/test_inner_shell.cpp` | Interior-shell subtraction (volume 56, area 120), shell-grouping invariance, and rejection of a same-wound cavity |
+| `ST_AsWKBMultiCube()` | Collection-of-solids math in every CI run, ungated |
+| `test/data/multisolid.city.json`, `compositesolid.city.json` | `MultiSolid` / `CompositeSolid` import with per-solid shell grouping (`test/sql/cityjson_multisolid.test`) |
+| `test/data/unit_cube.city.json` | End-to-end `cityjson` → `three_d` smoke test |
 
-## Gap 4 — C++ direct-test gaps — **Done**
+## Open work
 
-- `wkb_export` — now `test/cpp/test_wkb_export.cpp` (model → WKB → model round-trip: counts,
-  bbox, volume; PolyhedralSurface type code).
-- `triangulation` — now `test/cpp/test_triangulation.cpp` (convex quad, n-gon count, concave
-  L-face area via ear-clipping, tilted-plane true area).
-
-## Remaining deferrals (need maintainer action)
-
-1. **Oracle golden expansion (Gap 2 core).** Adding accessor / bounds / serialisation columns
-   to the PostGIS oracle requires editing `scripts/oracle/gen_golden.py` **and** regenerating
-   `golden.csv` on the provisioned PostGIS+SFCGAL container (`just oracle-regen`) to keep the
-   frozen provenance (`pg_version 3.4.3`, `sfcgal 1.3.8`) consistent. Not possible in this
-   environment (no Docker/PostGIS). Highest-value first addition: 3D bounds / Z-extent columns
-   (`ST_3DZMin/ZMax/3DBounds`) — exact comparison, works on every row including SFCGAL-rejected
-   roofs. The transform family is already covered dependency-free by
-   `metamorphic_transforms.test`, so the oracle need not.
-2. **Cross-shell orientation check** ([FUTURE_WORK §4](./FUTURE_WORK.md#4-enforce-the-interior-opposite-exterior-orientation-invariant))
-   — a kernel behaviour change (validation), not just a test. The "same-wound interior shell"
-   case in `test_inner_shell.cpp` is pre-written to flip into its regression test.
+**Expand the PostGIS oracle** to the "Yes" rows above — accessors, affine transforms, and
+serialization — for the existing fixtures and accepted 3DBAG geometry. Highest value first:
+3D bounds and Z-extent, which compare exactly on every row including SFCGAL-rejected roofs.
+This requires editing `scripts/oracle/gen_golden.py` and regenerating `golden.csv` on the
+provisioned PostGIS + SFCGAL container so the frozen provenance stays consistent.

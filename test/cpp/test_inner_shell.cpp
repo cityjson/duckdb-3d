@@ -9,7 +9,7 @@
 #include <cstring>
 
 // End-to-end coverage for a SOLID with an interior shell (a hollow solid).
-// The signed-volume subtraction documented in DESIGN_DOC §10.2.1 was previously
+// The signed-volume subtraction documented in DESIGN_DOC §8.2 was previously
 // unverified: the existing MakeTwoShellWKB test only checked ShellCount. Here we
 // build a hollow cube with analytically known volume and surface area and verify
 // the full pipeline (build -> validate -> measure), plus two subtler properties:
@@ -18,7 +18,7 @@
 //    path (one merged shell) yields the same volume as the metadata path — the
 //    subtraction is driven by the interior shell's WINDING, not by grouping.
 //    (Grouping only changes ST_3DNumShells.)
-//  * validation does NOT yet enforce §9.3's "interior oriented opposite the
+//  * validation does NOT yet enforce CityGML's "interior oriented opposite the
 //    exterior": a same-wound inner shell passes as valid and yields V_outer +
 //    V_inner. That gap is tracked in docs/FUTURE_WORK.md; the test below pins
 //    the current behaviour and will flip into a regression test once the
@@ -26,7 +26,7 @@
 //
 // Fixture: outer cube [0,4]^3 (V=64, SA=96) enclosing inner cube [1,3]^3
 // (V=8, SA=24). Expected hollow volume = 64 - 8 = 56; surface area (all faces,
-// shell-agnostic per §10.2.1) = 96 + 24 = 120. All intermediates are small
+// shell-agnostic per DESIGN_DOC §8.3) = 96 + 24 = 120. All intermediates are small
 // integers, so the results are exact in doubles.
 
 using namespace duckdb_3d;
@@ -168,10 +168,10 @@ TEST_CASE("Hollow solid: volume is shell-grouping invariant for a disjoint cavit
 	REQUIRE(ComputeVolume(plain) == Approx(56.0).epsilon(1e-12));
 }
 
-TEST_CASE("Hollow solid: a same-wound interior shell is REJECTED (§9.3 enforced)", "[inner_shell]") {
+TEST_CASE("Hollow solid: a same-wound interior shell is REJECTED (CityGML orientation enforced)", "[inner_shell]") {
 	// The interior shell wound OUTWARD (same as exterior) instead of inward. Its
 	// signed volume would ADD (64 + 8 = 72) rather than subtract, so DESIGN_DOC
-	// §9.3 requires interior shells to be wound opposite the exterior. The
+	// CityGML requires interior shells to be wound opposite the exterior. The
 	// cross-shell orientation check now enforces this: the model is not oriented,
 	// hence not valid, and ComputeVolume refuses to run (it would be wrong).
 	auto wkb = MakeHollowCubeWKB(/*inner_inward=*/false);

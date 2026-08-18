@@ -2,7 +2,7 @@
 # description: a hollow Solid (interior shell) read from CityJSON through three_d
 # group: [sql]
 
-# End-to-end of the design-doc §12 composition for the capability this stack
+# End-to-end of the design-doc §7 composition for the capability this stack
 # exists to serve: computing the volume of a solid with an interior shell
 # (a cavity), where the shell partition the WKB flattens away is recovered from
 # the spec §8 `geometry_properties` `shells` key.
@@ -15,7 +15,7 @@
 # the metadata path recovers two shells and the winding check applies; an older
 # `cityjson` that emits no `shells` falls back to one merged shell. Either way
 # the volume is 56 — signed-volume subtraction is shell-grouping invariant for a
-# disjoint cavity (DESIGN_DOC §10.2.1). This asserts the value; the shells-driven
+# disjoint cavity (DESIGN_DOC §8.2). This asserts the value; the shells-driven
 # two-shell path and the winding enforcement are pinned CI-independently by
 # test/sql/st_3d_hollow_solid.test and test/cpp/test_inner_shell.cpp.
 require cityjson

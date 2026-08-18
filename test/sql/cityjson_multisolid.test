@@ -2,7 +2,7 @@
 # description: real CityJSON MultiSolid / CompositeSolid datasets through three_d
 # group: [sql]
 
-# Exercises the design-doc §12 composition on the canonical cityjson.org example
+# Exercises the design-doc §7 composition on the canonical cityjson.org example
 # datasets (https://www.cityjson.org/datasets/#simple-geometries):
 #   test/data/multisolid.city.json      — one MultiSolid, 2 non-adjacent unit cubes
 #   test/data/compositesolid.city.json  — one CompositeSolid, 2 adjacent unit cubes
