@@ -7,6 +7,9 @@ require. The implemented surface is catalogued in [FUNCTIONS.md](./FUNCTIONS.md)
 
 Each item follows the repository's TDD discipline: failing `test/cpp/` + `test/sql/` first,
 then implementation, then a design-doc update in the same change.
+
+---
+
 ## 1. Move CityJSON-aware Interpretation Out Of `duckdb-3d`
 
 ### The concern (separation of concerns)
@@ -39,8 +42,8 @@ lives in `duckdb-cityjson`; `duckdb-3d` receives pre-interpreted topology. The
 interoperability contract (DESIGN_DOC §7) should be restated in these neutral terms, and
 `metadata_parser.cpp` reduced to the neutral schema.
 
-This also keeps multi-solid interior-shell grouping becomes an upstream
-concern producing neutral grouping counts, not a CityJSON special case inside the kernel.
+This also makes multi-solid interior-shell grouping an upstream concern producing neutral
+grouping counts, rather than a CityJSON special case inside the kernel.
 
 ---
 
