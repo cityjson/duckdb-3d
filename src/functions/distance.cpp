@@ -10,9 +10,15 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::DeserializeGeomPayload;
+using duckdb_3d::GeomModel;
+using duckdb_3d::GeomType;
+using duckdb_3d::ReadGeomPayloadHeader;
+
 // ST_3DDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
 static double Geom3DDistanceSQL(string_t g1, string_t g2) {
-	using namespace duckdb_3d;
 	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 	return Geom3DDistance(m1, m2);
@@ -26,7 +32,6 @@ static void ST_3DDistanceFun(DataChunk &args, ExpressionState &state, Vector &re
 
 // ST_3DDWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
 static bool Geom3DWithinSQL(string_t g1, string_t g2, double dist) {
-	using namespace duckdb_3d;
 	auto d1 = reinterpret_cast<const uint8_t *>(g1.GetData());
 	auto d2 = reinterpret_cast<const uint8_t *>(g2.GetData());
 	// The bbox lives in the fixed front header: reject far-apart pairs in O(1)
@@ -57,7 +62,6 @@ static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &res
 
 // ST_3DMaxDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
 static double Geom3DMaxDistanceSQL(string_t g1, string_t g2) {
-	using namespace duckdb_3d;
 	auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 	auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 	return Geom3DMaxDistance(m1, m2);
@@ -94,7 +98,6 @@ static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &
 static void ST_3DClosestPointFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
-		    using namespace duckdb_3d;
 		    auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 		    auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 		    auto pair = Geom3DClosestPoints(m1, m2);
@@ -113,7 +116,6 @@ static void ST_3DClosestPointFun(DataChunk &args, ExpressionState &state, Vector
 static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
-		    using namespace duckdb_3d;
 		    auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 		    auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 		    auto pair = Geom3DClosestPoints(m1, m2);

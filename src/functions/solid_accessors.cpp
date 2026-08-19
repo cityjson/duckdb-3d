@@ -13,6 +13,13 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::DeserializeGeomPayload;
+using duckdb_3d::DeserializePayload;
+using duckdb_3d::ReadGeomPayloadHeader;
+using duckdb_3d::ReadSolidPayloadHeader;
+
 // ──────────────────────────────────────────────────────────────
 // Introspection: ST_3DNumSolids, ST_3DNumShells, ST_3DNumFaces
 // ──────────────────────────────────────────────────────────────
@@ -20,7 +27,6 @@ namespace duckdb {
 // header, so they read the header rather than deserialising the whole solid.
 static void ST_3DNumSolidsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.solid_count);
 	});
@@ -28,7 +34,6 @@ static void ST_3DNumSolidsFun(DataChunk &args, ExpressionState &state, Vector &r
 
 static void ST_3DNumShellsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.shell_count);
 	});
@@ -36,7 +41,6 @@ static void ST_3DNumShellsFun(DataChunk &args, ExpressionState &state, Vector &r
 
 static void ST_3DNumFacesFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.face_count);
 	});
@@ -70,7 +74,6 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = input_strings[idx];
 		// Bounds live in the front header; no need to materialise the body.
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
@@ -91,7 +94,6 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 // read the header rather than re-running validation or parsing the body.
 static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_closed;
 	});
@@ -99,7 +101,6 @@ static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &re
 
 static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_manifold;
 	});
@@ -107,7 +108,6 @@ static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &
 
 static void ST_3DIsOrientedFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_oriented;
 	});
@@ -147,7 +147,6 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = input_strings[idx];
 		// Both the validation summary and counts are header/trailer data, so the
 		// report is served without materialising vertices or topology.
@@ -173,19 +172,24 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 			msg_str = "Valid solid";
 		} else {
 			std::vector<string> issues;
-			if (!vc.is_closed)
-				issues.push_back("not closed");
-			if (!vc.is_manifold)
-				issues.push_back("non-manifold edges");
-			if (!vc.is_oriented)
-				issues.push_back("orientation inconsistent");
-			if (vc.degenerate_face_count > 0)
-				issues.push_back("degenerate faces");
+			if (!vc.is_closed) {
+				issues.emplace_back("not closed");
+			}
+			if (!vc.is_manifold) {
+				issues.emplace_back("non-manifold edges");
+			}
+			if (!vc.is_oriented) {
+				issues.emplace_back("orientation inconsistent");
+			}
+			if (vc.degenerate_face_count > 0) {
+				issues.emplace_back("degenerate faces");
+			}
 			code_str = "INVALID";
 			msg_str = "Invalid solid: ";
 			for (size_t j = 0; j < issues.size(); j++) {
-				if (j > 0)
+				if (j > 0) {
 					msg_str += ", ";
+				}
 				msg_str += issues[j];
 			}
 		}
@@ -199,7 +203,6 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 // ──────────────────────────────────────────────────────────────
 static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
@@ -210,7 +213,6 @@ static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector 
 
 static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
@@ -221,7 +223,6 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 
 static void ST_3DPerimeterFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		using namespace duckdb_3d;
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return ComputePerimeter(model);
 	});
@@ -249,7 +250,6 @@ static void ST_3DHasZFun(DataChunk &args, ExpressionState &state, Vector &result
 
 static void ST_3DZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
-		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
@@ -266,7 +266,6 @@ static void ST_3DZMinFun(DataChunk &args, ExpressionState &state, Vector &result
 
 static void ST_3DZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
-		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
@@ -284,7 +283,6 @@ static void ST_3DZMaxFun(DataChunk &args, ExpressionState &state, Vector &result
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
 static void ST_3DFootprintAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
-		using namespace duckdb_3d;
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
