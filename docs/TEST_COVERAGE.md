@@ -9,11 +9,12 @@ Suite layout and the TDD workflow are in [AGENTS.md](../AGENTS.md); this file re
 
 | Suite | Runs | Covers |
 | --- | --- | --- |
-| `test/cpp/` | `make test_debug`, `make test_cpp` | Kernel logic with no database: WKB parsing, model construction, payload round-trips, validation, triangulation, area/volume math |
-| `test/sql/` | `make test`, `make test_debug` | SQL surface: binding, null propagation, `TRY` semantics, result contracts, interop |
+| `test/cpp/` | `make test_cpp`, `make test_full` | Kernel logic with no database: WKB parsing, model construction, payload round-trips, validation, triangulation, area/volume math |
+| `test/sql/` | `make test`, `make test_debug`, `make test_full` | SQL surface: binding, null propagation, `TRY` semantics, result contracts, interop |
 
 Tests gated on `require cityjson` skip unless the community extension is registered with the
-sqllogic runner — see [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md). Tests declaring
+sqllogic runner. `make test_full` registers it; see
+[CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md) for the mechanics. Tests declaring
 `require-env THREE_D_TEST_FIXTURES` skip unless that variable is exported; the `Makefile`
 exports it.
 

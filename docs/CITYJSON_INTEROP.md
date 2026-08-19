@@ -18,8 +18,8 @@ unit-cube fixture (`test/data/unit_cube.city.json`).
 
 The test is gated on `require cityjson`. The DuckDB sqllogic-test runner
 treats community extensions as "excluded from autoloading", so under
-`make test_debug` the test gracefully skips unless extra setup is in
-place.
+`make test_debug` the test gracefully skips. `make test_full` does the setup
+that makes it run — see [below](#running-the-smoke-test-under-sqllogic).
 
 ## Running the smoke test manually
 
@@ -138,24 +138,36 @@ LIMIT 10;
 
 ## Running the smoke test under sqllogic
 
-To make `test/sql/cityjson_interop.test` run under `make test_debug`, two
-things must hold simultaneously when the runner starts:
+```sh
+make test_full
+```
+
+That target builds the debug extension and establishes everything the gated
+tests need, so `test/sql/cityjson_interop.test` and its siblings execute
+rather than skip. It needs network access — the community download on the
+first run, and the remote Delft fixture on every run.
+
+Three things must hold simultaneously when the runner starts, and `test_full`
+arranges all three:
 
 1. `DUCKDB_TEST_AUTOLOADING=available` (or `=all`) — flips the runner from
    the default "no autoload" mode.
-2. The cityjson extension binary must be discoverable by the runner. The
-   runner looks at `${LOCAL_EXTENSION_REPO}` (env override) or otherwise at
-   `build/debug/repository`. Either copy
-   `~/.duckdb/extensions/<duckdb-version>/<platform>/cityjson.duckdb_extension*`
-   into `build/debug/repository/<duckdb-version>/<platform>/`, or set
-   `LOCAL_EXTENSION_REPO` to a directory laid out the same way.
+2. The `cityjson` and `spatial` binaries must be discoverable by the runner.
+   It looks at `${LOCAL_EXTENSION_REPO}` (env override) or otherwise at
+   `build/debug/repository/<duckdb-version>/<platform>/`.
+3. `httpfs` must already be installed in the runner's DuckDB home. The remote
+   Delft test autoloads it, and autoinstall resolves against the official
+   repository rather than the local one — so staging it alongside `cityjson`
+   in `build/debug/repository` does *not* satisfy this. Without it the run
+   fails at `cityjson_delft_remote.test` with `Extension Autoloading Error`.
 
-Note that DuckDB refuses to re-`INSTALL` an extension whose origin doesn't
-match the previously installed copy. If you've already
-`INSTALL cityjson FROM community`, the runner's `INSTALL ... FROM '<path>'`
-step will fail with "origin is different" and the test will skip. The
-practical workaround is to run with a clean DuckDB home dir, for example
-by exporting `HOME=$(mktemp -d)` for the test invocation.
+Requirements 2 and 3 pull against each other: DuckDB refuses to re-`INSTALL`
+an extension whose origin doesn't match the installed copy, so if the runner's
+home already holds a `cityjson` installed `FROM community`, the runner's
+`INSTALL ... FROM '<path>'` step fails with "origin is different" and the test
+skips. `test_full` resolves this with two homes — `build/ext_cache` holds the
+downloaded copies, and `build/test_home` is wiped and reseeded with `httpfs`
+alone before each run.
 
 ## Caveats
 

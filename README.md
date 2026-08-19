@@ -135,11 +135,16 @@ Artifacts:
 - `build/release/extension/three_d/three_d.duckdb_extension` — the loadable extension
 
 ```sh
+make test_full     # configure + build + every test, no skips
 make test          # SQL tests against the release build
 make test_debug    # SQL tests against the debug build
 make test_cpp      # C++ kernel tests
-make test_all      # both
+make test_all      # test_debug + test_cpp
 ```
+
+`make test_full` is the self-contained one: it builds, stages the `cityjson` / `spatial`
+extensions the gated tests need, and runs both suites. The others run against whatever build
+already exists.
 
 Full build, test, and distribution notes: [docs/README.md](docs/README.md).
 

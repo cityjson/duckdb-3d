@@ -75,11 +75,20 @@ binding, nulls, `TRY` semantics, result contracts, interop — goes in `test/sql
 apply, write the unit test first.
 
 ```sh
+make test_full     # configure + build + every test, no skips
 make test          # SQL tests, release
 make test_debug    # SQL tests, debug
 make test_cpp      # C++ kernel tests (Catch2)
-make test_all      # everything: test_debug + test_cpp
+make test_all      # test_debug + test_cpp
 ```
+
+**`make test_full` is the target to verify against.** It builds, stages the gated extensions,
+and runs both suites, so `require cityjson` / `require spatial` tests execute instead of
+skipping. It needs network access.
+
+**`make test`, `test_debug`, and `test_all` do not build.** The ci-tools targets run whatever
+binary `build/release` / `build/debug` already holds, so a stale build reports results for
+stale code. Build first, or use `test_full`.
 
 **`make test_debug` does not run the C++ tests** — it is SQL-only, just in debug. Use
 `test_cpp` or `test_all` when you have touched the kernel.
@@ -89,8 +98,9 @@ Run one file: `./build/release/test/unittest "test/sql/<name>.test"`.
 The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` test helpers.
 Running a built binary directly without it silently skips every test that requires them.
 
-Tests gated on `require cityjson` / `require spatial` skip when those extensions are not
-registered with the runner. Skips are expected, not failures.
+Under the narrower targets, tests gated on `require cityjson` / `require spatial` skip when
+those extensions are not registered with the runner. Those skips are expected, not failures —
+but a skip under `test_full` means the staging failed and is worth investigating.
 
 ## Writing style for docs
 

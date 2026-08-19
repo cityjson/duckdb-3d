@@ -22,13 +22,21 @@ build-debug:
 test:
     make test
 
-# Run SQL + C++ tests against the debug build.
+# Run the SQL test suite against the debug build (SQL only — see test-cpp).
 test-debug:
     make test_debug
 
 # Run only the C++ kernel tests.
 test-cpp:
     make test_cpp
+
+# Stages the cityjson/spatial extensions the sqllogic runner needs, so the gated
+# tests run instead of skipping. Needs network: the community download on the
+# first run, and the remote Delft fixture on every run.
+
+# Configure + build + every test, no skips.
+test-full:
+    {{gen}} make test_full
 
 # Auto-format C++ sources in place (clang-format).
 format:
