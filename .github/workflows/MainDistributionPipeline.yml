@@ -31,4 +31,39 @@ jobs:
       duckdb_version: v1.5.4
       ci_tools_version: v1.5.4
       extension_name: three_d
-      format_checks: 'format;tidy'
+      # Format only — the tidy pass runs in the local job below.
+      format_checks: 'format'
+
+  # ST_3DTransform links PROJ (CMakeLists.txt find_package(PROJ CONFIG REQUIRED)),
+  # declared in vcpkg.json. The distribution workflow builds under the vcpkg
+  # toolchain and resolves it; _extension_code_quality.yml's tidy job installs
+  # only ninja and clang-tidy, runs no vcpkg step, and exposes no input to add a
+  # dependency — so `make tidy-check` cannot get past CMake configure there.
+  # Running it here lets us install PROJ first. Keep the environment in step with
+  # upstream's tidy job when bumping ci_tools_version.
+  tidy-check:
+    name: Tidy Check
+    runs-on: ubuntu-24.04
+
+    env:
+      CC: gcc
+      CXX: g++
+      GEN: ninja
+      TIDY_THREADS: 4
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          submodules: 'recursive'
+
+      - name: Install
+        shell: bash
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build clang-tidy libproj-dev
+          sudo pip3 install pybind11[global] --break-system-packages
+
+      - name: Tidy Check Diff
+        shell: bash
+        run: make tidy-check
