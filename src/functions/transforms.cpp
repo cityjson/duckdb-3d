@@ -19,6 +19,13 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::CrsTransform;
+using duckdb_3d::DeserializeGeomPayload;
+using duckdb_3d::DeserializePayload;
+using duckdb_3d::EpsgToAuthString;
+
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DTranslate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
@@ -50,7 +57,6 @@ static void ST_3DTranslateSolidFun(DataChunk &args, ExpressionState &state, Vect
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = solid_strings[solid_idx];
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
@@ -110,7 +116,6 @@ static void ST_3DTranslateGeomFun(DataChunk &args, ExpressionState &state, Vecto
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = geom_strings[geom_idx];
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
@@ -168,7 +173,6 @@ static void ST_3DScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &r
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = geom_strings[geom_idx];
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
@@ -221,7 +225,6 @@ static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &
 			continue;
 		}
 
-		using namespace duckdb_3d;
 		auto &blob = solid_strings[solid_idx];
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
@@ -255,7 +258,6 @@ static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &
 enum class RotationAxis { X, Y, Z };
 
 static string_t RotateSolidBlob(Vector &result, string_t solid, double radians, RotationAxis axis) {
-	using namespace duckdb_3d;
 	auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 
 	double c = std::cos(radians);
@@ -309,7 +311,6 @@ static void ST_3DRotateZSolidFun(DataChunk &args, ExpressionState &state, Vector
 // Transforms: ST_3DRotateX / ST_3DRotateY / ST_3DRotateZ(geom, radians) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, RotationAxis axis) {
-	using namespace duckdb_3d;
 	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 
 	double c = std::cos(radians);
@@ -365,7 +366,6 @@ static void ST_3DRotateZGeomFun(DataChunk &args, ExpressionState &state, Vector 
 //! Reproject one payload BLOB using an already-built transform. Recomputes the
 //! bbox; re-validates solids because reprojection can invert winding.
 static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t size, const duckdb_3d::CrsTransform &tf) {
-	using namespace duckdb_3d;
 	switch (GetPayloadKind(data, size)) {
 	case PayloadKind::Solid: {
 		auto model = DeserializePayload(data, size);
@@ -407,7 +407,6 @@ TransformInitLocalState(ExpressionState &state, const BoundFunctionExpression &e
 //! and, via the local state, across every chunk this executor sees.
 template <class GetCrs>
 static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &result, GetCrs get_crs) {
-	using namespace duckdb_3d;
 	auto count = args.size();
 
 	UnifiedVectorFormat geom_data;
@@ -473,7 +472,6 @@ static void ST_3DTransformStrFun(DataChunk &args, ExpressionState &state, Vector
 
 // ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER)
 static void ST_3DTransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	using namespace duckdb_3d;
 	auto count = args.size();
 	UnifiedVectorFormat src_data, tgt_data;
 	args.data[1].ToUnifiedFormat(count, src_data);

@@ -14,6 +14,13 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::ArrowNativeBoundaries;
+using duckdb_3d::GeometryMetadata;
+using duckdb_3d::ParseGeometryProperties;
+using duckdb_3d::Vertex3D;
+
 // ──────────────────────────────────────────────────────────────
 // geometry_properties STRUCT("type" VARCHAR, surfaces JSON, face_semantics
 // INTEGER[], shells INTEGER[][]) → the kernel's plain GeometryMetadata.
@@ -68,7 +75,6 @@ LogicalType ArrowNativeVerticesType() {
 //! not a raw buffer cast: DuckDB ListVectors are list_entry_t pairs into a
 //! shared child, with possible non-flat intermediate children).
 static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &boundaries_vec, idx_t row) {
-	using namespace duckdb_3d;
 	ArrowNativeBoundaries result;
 
 	// CSR construction mirrors model_builder.cpp exactly: push a leading 0 for
@@ -165,7 +171,6 @@ static duckdb_3d::ArrowNativeBoundaries ExtractArrowNativeBoundaries(Vector &bou
 
 //! Walks one row of the vertices Vector into a plain vertex pool.
 static std::vector<duckdb_3d::Vertex3D> ExtractArrowNativeVertices(Vector &vertices_vec, idx_t row) {
-	using namespace duckdb_3d;
 	auto vert_entry = FlatVector::GetData<list_entry_t>(vertices_vec)[row];
 	auto &struct_vec = ListVector::GetEntry(vertices_vec);
 	auto &children = StructVector::GetEntries(struct_vec);
@@ -221,7 +226,6 @@ static bool IsSurfaceFamilyType(const std::string &type) {
 //! CheckInteriorShellWinding.
 static std::string BuildSolidPayloadForRow(Vector &boundaries_vec, Vector &vertices_vec, idx_t row,
                                            const duckdb_3d::GeometryMetadata &metadata) {
-	using namespace duckdb_3d;
 	if (!IsSolidFamilyType(metadata.type)) {
 		throw InvalidInputException("geometry_properties.type '" + metadata.type +
 		                            "' is not a solid-family type (Solid/MultiSolid/CompositeSolid) — "
@@ -240,7 +244,6 @@ static std::string BuildSolidPayloadForRow(Vector &boundaries_vec, Vector &verti
 //! metadata-driven regrouping applies here.
 static std::string BuildGeomPayloadForRow(Vector &boundaries_vec, Vector &vertices_vec, idx_t row,
                                           const duckdb_3d::GeometryMetadata &metadata) {
-	using namespace duckdb_3d;
 	if (!IsSurfaceFamilyType(metadata.type)) {
 		throw InvalidInputException("geometry_properties.type '" + metadata.type +
 		                            "' is not a surface-family type (MultiSurface/CompositeSurface) — "
@@ -320,7 +323,6 @@ static void FromArrowNativeExecutor(DataChunk &args, ExpressionState &state, Vec
 			continue;
 		}
 		auto process_row = [&]() {
-			using namespace duckdb_3d;
 			GeometryMetadata metadata;
 			if constexpr (SOURCE == MetaSource::STRUCT_FIELDS) {
 				metadata = ReadGeometryPropertiesStructRow(meta_vec, count, i);

@@ -15,13 +15,20 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::DeserializePayload;
+using duckdb_3d::GeometryMetadata;
+using duckdb_3d::ParseGeometryProperties;
+using duckdb_3d::ParseWKB;
+using duckdb_3d::SolidModel;
+
 // ──────────────────────────────────────────────────────────────
 // ST_3DFromWKB(wkb BLOB) → SOLID_3D (BLOB)
 // ──────────────────────────────────────────────────────────────
 static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &wkb_vec = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, args.size(), [&](string_t wkb) {
-		using namespace duckdb_3d;
 		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto model = BuildSolidModel(surfaces);
 		auto payload = SerializePayload(model);
@@ -37,7 +44,6 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 	auto &wkb_vec = args.data[0];
 	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
 	    wkb_vec, result, args.size(), [&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
-		    using namespace duckdb_3d;
 		    try {
 			    auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 			    auto model = BuildSolidModel(surfaces);
@@ -113,7 +119,6 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 			continue;
 		}
 		auto process_row = [&]() {
-			using namespace duckdb_3d;
 			auto &wkb = wkb_strings[wkb_idx];
 			auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 
@@ -173,7 +178,7 @@ static unique_ptr<FunctionData> BindWkbMetaAny(ScalarFunction &bound_function,
 	case LogicalTypeId::VARCHAR:
 		// Plain / JSON-alias / NULL metadata: reuse the JSON executor unchanged.
 		bound_function.arguments[1] = LogicalType::VARCHAR;
-		bound_function.function = varchar_fn;
+		bound_function.function = std::move(varchar_fn);
 		return nullptr;
 	case LogicalTypeId::STRUCT: {
 		auto &child_types = StructType::GetChildTypes(meta_type);
@@ -200,7 +205,7 @@ static unique_ptr<FunctionData> BindWkbMetaAny(ScalarFunction &bound_function,
 			                      "field; pass the metadata as a JSON VARCHAR otherwise");
 		}
 		bound_function.arguments[1] = LogicalType::STRUCT(std::move(normalized));
-		bound_function.function = struct_fn;
+		bound_function.function = std::move(struct_fn);
 		// The executor resolves `type`/`shells` by name from the normalised type,
 		// so no bind data is needed.
 		return nullptr;
@@ -229,7 +234,6 @@ static unique_ptr<FunctionData> TryFromWkbAnyBind(ClientContext &, ScalarFunctio
 static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &solid_vec = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(solid_vec, result, args.size(), [&](string_t solid) {
-		using namespace duckdb_3d;
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		auto wkb = ExportWKB(model);
 		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size()));

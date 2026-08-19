@@ -14,6 +14,14 @@
 
 namespace duckdb {
 
+// Kernel names this file uses unqualified. Using-declarations rather than a
+// using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::DeserializeGeomPayload;
+using duckdb_3d::GeomModel;
+using duckdb_3d::GeomType;
+using duckdb_3d::ParseGeomWKB;
+using duckdb_3d::ReadGeomPayloadHeader;
+
 // ──────────────────────────────────────────────────────────────
 // GEOM_3D: general geometry construction and accessors
 // ──────────────────────────────────────────────────────────────
@@ -22,7 +30,6 @@ namespace duckdb {
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t wkb) {
-		using namespace duckdb_3d;
 		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto payload = SerializeGeomPayload(model);
 		return StringVector::AddStringOrBlob(result,
@@ -36,7 +43,6 @@ static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector 
 //! bbox-only and never looks at the code. The codes are non-contiguous (1-7, 15),
 //! hence an explicit whitelist rather than a range check.
 static duckdb_3d::GeomType ValidatedGeomType(duckdb_3d::GeomType type) {
-	using namespace duckdb_3d;
 	switch (type) {
 	case GeomType::Point:
 	case GeomType::LineString:
@@ -53,7 +59,6 @@ static duckdb_3d::GeomType ValidatedGeomType(duckdb_3d::GeomType type) {
 }
 
 static const char *GeomTypeName(duckdb_3d::GeomType type) {
-	using namespace duckdb_3d;
 	switch (type) {
 	case GeomType::Point:
 		return "ST_Point";
@@ -79,7 +84,6 @@ static const char *GeomTypeName(duckdb_3d::GeomType type) {
 // ST_3DGeometryType(geom GEOM_3D) → VARCHAR
 static void ST_3DGeometryTypeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		// Only the type code is needed — read the O(1) front header. Magic, major
 		// version and the type code itself are still checked; a corrupt *body* is
 		// not, since it is never touched.
@@ -92,7 +96,6 @@ static void ST_3DGeometryTypeFun(DataChunk &args, ExpressionState &state, Vector
 enum class Ordinate { X, Y, Z };
 
 static double PointOrdinate(string_t geom, Ordinate ord) {
-	using namespace duckdb_3d;
 	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 	if (model.type != GeomType::Point) {
 		throw InvalidInputException("ST_3DX/ST_3DY/ST_3DZ: argument is not a Point");
@@ -125,7 +128,6 @@ static void ST_3DZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 }
 
 static double Geom3DLength(string_t geom) {
-	using namespace duckdb_3d;
 	auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 	auto sum_segments = [&](size_t begin, size_t end) {
 		double length = 0.0;
@@ -169,7 +171,6 @@ static void ST_CoordDimFun(DataChunk &args, ExpressionState &state, Vector &resu
 static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
 	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, double height) {
-		    using namespace duckdb_3d;
 		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		    auto solid = BuildExtrudedSolid(poly, height);
 		    auto payload = SerializePayload(solid);
@@ -181,7 +182,6 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 // ST_MakeSolid(surface GEOM_3D) → SOLID_3D
 static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto solid = BuildSolidFromSurface(surface);
 		auto payload = SerializePayload(solid);
@@ -193,7 +193,6 @@ static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &res
 // ST_3DAsText(geom GEOM_3D) → VARCHAR
 static void ST_3DAsTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto text = Geom3DAsText(model);
 		return StringVector::AddString(result, text);
@@ -203,7 +202,6 @@ static void ST_3DAsTextFun(DataChunk &args, ExpressionState &state, Vector &resu
 // ST_3DAsGeoJSON(geom GEOM_3D) → VARCHAR
 static void ST_3DAsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto text = Geom3DAsGeoJSON(model);
 		return StringVector::AddString(result, text);
@@ -213,7 +211,6 @@ static void ST_3DAsGeoJSONFun(DataChunk &args, ExpressionState &state, Vector &r
 // ST_3DAsBinary(geom GEOM_3D) → BLOB
 static void ST_3DAsBinaryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto binary = Geom3DAsBinary(model);
 		return StringVector::AddStringOrBlob(result,
@@ -224,7 +221,6 @@ static void ST_3DAsBinaryFun(DataChunk &args, ExpressionState &state, Vector &re
 // ST_IsPlanar(geom GEOM_3D) → BOOLEAN
 static void ST_IsPlanarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		return Geom3DIsPlanar(model);
 	});
@@ -233,7 +229,6 @@ static void ST_IsPlanarFun(DataChunk &args, ExpressionState &state, Vector &resu
 // ST_3DCentroid(geom GEOM_3D) → GEOM_3D (Point)
 static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto centroid = Geom3DCentroid(model);
 		GeomModel point;
@@ -251,7 +246,6 @@ static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &re
 // inputs would have Z set to 0 here.
 static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto payload = SerializeGeomPayload(model);
 		return StringVector::AddStringOrBlob(result,
@@ -263,7 +257,6 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 // 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
 static void ST_3DConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto hull = Geom3DConvexHull(model);
 		auto payload = SerializeGeomPayload(hull);
@@ -274,7 +267,6 @@ static void ST_3DConvexHullFun(DataChunk &args, ExpressionState &state, Vector &
 
 // ST_3DDimension(geom GEOM_3D) → INTEGER
 static int32_t GeomDimension(duckdb_3d::GeomType type) {
-	using namespace duckdb_3d;
 	switch (type) {
 	case GeomType::Point:
 	case GeomType::MultiPoint:
@@ -294,7 +286,6 @@ static int32_t GeomDimension(duckdb_3d::GeomType type) {
 
 static void ST_3DDimensionFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
-		using namespace duckdb_3d;
 		// Only the type code is needed — read the O(1) front header (see the
 		// header-only contract noted on ST_3DGeometryTypeFun).
 		auto info = ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
@@ -304,7 +295,6 @@ static void ST_3DDimensionFun(DataChunk &args, ExpressionState &state, Vector &r
 
 // ST_3DNumGeometries(geom GEOM_3D) → INTEGER
 static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
-	using namespace duckdb_3d;
 	switch (model.type) {
 	case GeomType::MultiPoint:
 	case GeomType::MultiLineString:
@@ -318,7 +308,6 @@ static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 
 static void ST_3DNumGeometriesFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [](string_t geom) {
-		using namespace duckdb_3d;
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		return GeomNumGeometries(model);
 	});
