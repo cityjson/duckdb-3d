@@ -134,16 +134,26 @@ Two obligations remain:
   parse.
 - Update `docs/FUNCTIONS.md` and any affected tests in the **same** change.
 
-## Formatting
+## Git hooks
 
-A pre-commit hook formats staged C++ (`clang-format`) and trims markdown whitespace. Enable
-it once per clone:
+Two hooks in `.githooks/`. Enable both once per clone:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-It runs on every commit; bypass with `git commit --no-verify` only when you must.
+**pre-commit** formats staged C++ (`clang-format`) and trims markdown whitespace. It runs on
+every commit; bypass with `git commit --no-verify` only when you must.
+
+**pre-push** gates the push on what CI checks: a format check, a debug build, and
+`make test_all`. CI triggers on push, so this is where a red pipeline gets caught. A push
+carrying no buildable source skips straight through, and the format check is skipped with a
+warning when `clang-format` or `black` is missing rather than failing the push. Gated
+`cityjson` / `spatial` tests skip here exactly as they do in CI — run `make test_full` by hand
+when you want them to execute. Bypass with `git push --no-verify`.
+
+Neither hook runs `clang-tidy`; CI's tidy pass is too heavy for a hook. Run `just tidy`
+before a push you expect to be scrutinised.
 
 ## Model roles
 
