@@ -1,5 +1,6 @@
 #include "kernel/metadata_parser.hpp"
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -87,6 +88,9 @@ public:
 			case 't':
 				result.push_back('\t');
 				break;
+			// KNOWN LIMITATION: \uXXXX escapes are validated then replaced with '?' — non-ASCII
+			// geometry_properties strings are corrupted. Follow-up: decode to UTF-8 or swap in a
+			// real JSON parser.
 			case 'u':
 				for (int i = 0; i < 4; i++) {
 					if (pos >= input.size() || !std::isxdigit(static_cast<unsigned char>(input[pos]))) {
@@ -140,12 +144,54 @@ public:
 			if (value < 0) {
 				throw std::runtime_error("geometry_properties JSON: expected non-negative integer");
 			}
+			if (value > std::numeric_limits<uint32_t>::max()) {
+				throw std::runtime_error("geometry_properties JSON: shell face count out of range");
+			}
 			result.push_back(static_cast<uint32_t>(value));
 			if (Consume(']')) {
 				return result;
 			}
 			Expect(',', "','");
 		}
+	}
+
+	//! Parse a spec §8 `shells` value: a flat array of per-shell face counts for a
+	//! Solid (wrapped as a single solid), or a nested array-of-arrays with one
+	//! per-shell array per solid for MultiSolid/CompositeSolid.
+	std::vector<std::vector<uint32_t>> ParseShells() {
+		Expect('[', "'['");
+		std::vector<std::vector<uint32_t>> result;
+		if (Consume(']')) {
+			return result; // empty
+		}
+		if (PeekChar() == '[') {
+			// Nested form: one per-shell array per solid.
+			while (true) {
+				result.push_back(ParseUIntArray());
+				if (Consume(']')) {
+					return result;
+				}
+				Expect(',', "','");
+			}
+		}
+		// Flat form: a single solid's per-shell counts (outer '[' already consumed).
+		std::vector<uint32_t> flat;
+		while (true) {
+			int64_t value = ParseInteger();
+			if (value < 0) {
+				throw std::runtime_error("geometry_properties JSON: expected non-negative integer");
+			}
+			if (value > std::numeric_limits<uint32_t>::max()) {
+				throw std::runtime_error("geometry_properties JSON: shell face count out of range");
+			}
+			flat.push_back(static_cast<uint32_t>(value));
+			if (Consume(']')) {
+				break;
+			}
+			Expect(',', "','");
+		}
+		result.push_back(std::move(flat));
+		return result;
 	}
 
 	void SkipValue() {
@@ -265,10 +311,6 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 	}
 
 	JSONParser parser(json_text);
-	std::string type;
-	std::string cityjson_type;
-	bool has_shell_count = false;
-	bool has_solid_count = false;
 
 	parser.Expect('{', "'{'");
 	if (!parser.Consume('}')) {
@@ -277,33 +319,20 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 			parser.Expect(':', "':'");
 
 			if (key == "type") {
-				// Upstream encoders (e.g. duckdb-cityjson) may emit the WKB
-				// numeric type code in this field. The CityJSON-side name
-				// lives in `cityjsonType`. Accept either form.
+				// Spec §8: `type` is the CityJSON geometry type string. It is now
+				// purely informational (shell grouping is driven entirely by
+				// `shells`), so a non-string `type` from a pre-spec producer is
+				// tolerated by skipping it rather than failing the whole import.
 				if (parser.PeekChar() == '"') {
-					type = parser.ParseString();
+					meta.type = parser.ParseString();
 				} else {
 					parser.SkipValue();
 				}
-			} else if (key == "cityjsonType") {
-				cityjson_type = parser.ParseString();
-			} else if (key == "shellCount") {
-				int64_t value = parser.ParseInteger();
-				if (value < 1) {
-					throw std::runtime_error("geometry_properties JSON: shellCount must be >= 1");
-				}
-				meta.shell_count = static_cast<uint32_t>(value);
-				has_shell_count = true;
-			} else if (key == "solidCount") {
-				int64_t value = parser.ParseInteger();
-				if (value < 1) {
-					throw std::runtime_error("geometry_properties JSON: solidCount must be >= 1");
-				}
-				meta.solid_count = static_cast<uint32_t>(value);
-				has_solid_count = true;
-			} else if (key == "shellFaceCounts") {
-				meta.shell_face_counts = parser.ParseUIntArray();
+			} else if (key == "shells") {
+				meta.shells = parser.ParseShells();
 			} else {
+				// surfaces, face_semantics, lod, and any producer extras (spec §8
+				// permits additional keys) are irrelevant to shell grouping.
 				parser.SkipValue();
 			}
 
@@ -319,13 +348,6 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 		throw std::runtime_error("geometry_properties JSON: unexpected trailing content");
 	}
 
-	if (!type.empty() && !cityjson_type.empty() && type != cityjson_type) {
-		throw std::runtime_error("geometry_properties JSON: conflicting type fields");
-	}
-
-	meta.type = !type.empty() ? type : cityjson_type;
-	(void)has_shell_count;
-	(void)has_solid_count;
 	return meta;
 }
 

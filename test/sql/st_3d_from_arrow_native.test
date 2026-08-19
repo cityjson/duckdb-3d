@@ -1,0 +1,258 @@
+# name: test/sql/st_3d_from_arrow_native.test
+# description: ST_3DFromArrowNative / ST_3DTryFromArrowNative ingest nested-List/Struct solids, dispatching per-row on geometry_properties.type
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# Fixture: 1 solid, 2 shells, 1 triangular face each (mirrors
+# test/cpp/test_arrow_native_import.cpp's basic two-shell case) — not a
+# closed/valid solid, just enough to prove the ingestion pipeline binds and
+# reconstructs the right topology end to end.
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
+        [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+         {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+        '{"type": "Solid"}'
+    ) AS s
+) q;
+----
+1	2	2
+
+# Fixture: the hollow-cube topology (outer cube [0,4]^3, inner cube [1,3]^3,
+# 6 quad faces per shell, opposite winding) — the exact same corner ordering
+# WkbCubeFaces() (three_d_extension.cpp) uses for ST_AsWKBHollowCube(),
+# expressed as arrow-native boundaries/vertices (a shared 16-vertex pool,
+# indices 0-7 outer corners, 8-15 inner corners) instead of WKB, to prove
+# ST_3DVolume/ST_3DSurfaceArea agree with the WKB path's known values
+# (56.0 / 120.0 — see ST_AsWKBHollowCube's own doc comment).
+query II
+SELECT ST_3DVolume(s), ST_3DSurfaceArea(s)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[
+            [ [[0,1,2,3]], [[4,5,6,7]], [[0,3,5,4]], [[1,7,6,2]], [[0,4,7,1]], [[3,2,6,5]] ],
+            [ [[11,10,9,8]], [[15,14,13,12]], [[12,13,11,8]], [[10,14,15,9]], [[9,15,12,8]], [[13,14,10,11]] ]
+        ]],
+        [{'x':0,'y':0,'z':0}, {'x':0,'y':4,'z':0}, {'x':4,'y':4,'z':0}, {'x':4,'y':0,'z':0},
+         {'x':0,'y':0,'z':4}, {'x':4,'y':0,'z':4}, {'x':4,'y':4,'z':4}, {'x':0,'y':4,'z':4},
+         {'x':1,'y':1,'z':1}, {'x':1,'y':3,'z':1}, {'x':3,'y':3,'z':1}, {'x':3,'y':1,'z':1},
+         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}],
+        '{"type": "Solid"}'
+    ) AS s
+) q;
+----
+56.0	120.0
+
+# NULL propagation: NULL boundaries, vertices, or geometry_properties -> NULL result.
+query I
+SELECT ST_3DFromArrowNative(NULL, [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}') IS NULL;
+----
+true
+
+query I
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], NULL, '{"type": "Solid"}') IS NULL;
+----
+true
+
+query I
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], NULL) IS NULL;
+----
+true
+
+# ST_3DTryFromArrowNative: out-of-range vertex-pool index returns NULL rather
+# than raising (only 1 vertex provided, index 2 is out of range).
+query I
+SELECT ST_3DTryFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}') IS NULL;
+----
+true
+
+# ST_3DFromArrowNative: the same out-of-range case raises in non-TRY mode.
+statement error
+SELECT ST_3DFromArrowNative([[[[[0,1,2]]]]], [{'x':0.0,'y':0.0,'z':0.0}], '{"type": "Solid"}');
+----
+out of range
+
+# ──────────────────────────────────────────────────────────────
+# Per-row type dispatch (design doc "critical invariant": dispatch on
+# geometry_properties.type, never on physical shape — a single column may
+# mix Solid-family and surface-family rows sharing the identical padded
+# shape). ST_3DFromArrowNative must reject a surface-family row even though
+# its physical shape (solid-count 1, shell-count 1) looks like a valid
+# degenerate solid.
+# ──────────────────────────────────────────────────────────────
+
+# A MultiSurface-typed row rejected by ST_3DTryFromArrowNative (NULL), even
+# though the padded shape is physically identical to a valid single-shell Solid.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "MultiSurface"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[ [ [[0,1,2]] ] ]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "MultiSurface"}'
+);
+----
+not a solid-family type
+
+# MultiSolid/CompositeSolid are also accepted (solid-family, not just "Solid").
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+) IS NOT NULL;
+----
+true
+
+# The actual mixed-column proof: one query, two rows sharing the identical
+# padded (solid-count 1, shell-count 1) physical shape, differing only in
+# geometry_properties.type — ST_3DFromArrowNative must ingest the Solid row
+# and reject the MultiSurface row, in the same SELECT.
+query II
+SELECT id, ST_3DTryFromArrowNative(boundaries, vertices, geometry_properties) IS NOT NULL AS ingested
+FROM (
+    VALUES
+        (1, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "Solid"}'),
+        (2, [[ [ [[0,1,2]] ] ]],
+         [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+         '{"type": "MultiSurface"}')
+) t(id, boundaries, vertices, geometry_properties)
+ORDER BY id;
+----
+1	true
+2	false
+
+# ──────────────────────────────────────────────────────────────
+# Nullability invariants (design doc: "within a non-null geometry cell, no
+# nested list element is itself null — every solid/shell/face/ring entry and
+# every vertex index is present"; "no Struct<x,y,z> entry is null and none of
+# x/y/z is null within a present entry"). A NULL nested element must be
+# rejected deterministically (NULL in TRY mode, a stable error otherwise) —
+# not silently reinterpreted as an empty ring, and not dependent on whatever
+# unspecified bytes happen to sit behind the null slot.
+# ──────────────────────────────────────────────────────────────
+
+# A NULL ring (shell 0's only face's only ring) is rejected, not silently
+# treated as an empty ring.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[NULL]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[[[NULL]], [[ [3,4,5] ]]]],
+    [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+     {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+    '{"type": "MultiSolid"}'
+);
+----
+null
+
+# A NULL x coordinate in the vertex pool is rejected, not read as garbage.
+query I
+SELECT ST_3DTryFromArrowNative(
+    [[[[ [0,1,2] ]]]],
+    [{'x': NULL, 'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+) IS NULL;
+----
+true
+
+statement error
+SELECT ST_3DFromArrowNative(
+    [[[[ [0,1,2] ]]]],
+    [{'x': NULL, 'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0}],
+    '{"type": "Solid"}'
+);
+----
+null
+
+# ──────────────────────────────────────────────────────────────
+# STRUCT geometry_properties overload (cityparquet-rs's real
+# geometry_properties_lod* column type — confirmed STRUCT, same as its WKB
+# rows) must bind directly, without an explicit to_json() cast.
+# ──────────────────────────────────────────────────────────────
+
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[[[ [0,1,2] ]], [[ [3,4,5] ]]]],
+        [{'x':0.0,'y':0.0,'z':0.0}, {'x':1.0,'y':0.0,'z':0.0}, {'x':0.0,'y':1.0,'z':0.0},
+         {'x':0.0,'y':0.0,'z':1.0}, {'x':1.0,'y':0.0,'z':1.0}, {'x':0.0,'y':1.0,'z':1.0}],
+        {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': NULL}
+    ) AS s
+) q;
+----
+1	2	2
+
+# ──────────────────────────────────────────────────────────────
+# Shells regrouping (design doc + confirmed cityparquet-rs behavior):
+# real producers pad a Solid's boundaries to exactly one physical shell,
+# flattening interior shells into geometry_properties.shells — the same
+# hollow-cube fixture as test/cpp's parity test, expressed in that padded
+# shape, must still recover 2 shells / volume 56 / area 120, and the winding
+# check must actually run (proven by st_3d_hollow_solid.test's WKB-side
+# sibling case, not re-litigated here — this only proves shell recovery).
+# ──────────────────────────────────────────────────────────────
+
+query III
+SELECT ST_3DNumShells(s), ROUND(ST_3DVolume(s), 6), ROUND(ST_3DSurfaceArea(s), 6)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[
+            [ [[0,1,2,3]], [[4,5,6,7]], [[0,3,5,4]], [[1,7,6,2]], [[0,4,7,1]], [[3,2,6,5]],
+              [[11,10,9,8]], [[15,14,13,12]], [[12,13,11,8]], [[10,14,15,9]], [[9,15,12,8]], [[13,14,10,11]] ]
+        ]],
+        [{'x':0,'y':0,'z':0}, {'x':0,'y':4,'z':0}, {'x':4,'y':4,'z':0}, {'x':4,'y':0,'z':0},
+         {'x':0,'y':0,'z':4}, {'x':4,'y':0,'z':4}, {'x':4,'y':4,'z':4}, {'x':0,'y':4,'z':4},
+         {'x':1,'y':1,'z':1}, {'x':1,'y':3,'z':1}, {'x':3,'y':3,'z':1}, {'x':3,'y':1,'z':1},
+         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}],
+        '{"type": "Solid", "shells": [[6, 6]]}'
+    ) AS s
+) q;
+----
+2	56.0	120.0
+
+# The same regrouping through the STRUCT geometry_properties overload, whose
+# `shells` child binds as INTEGER[][] — the arm of struct_metadata.cpp's
+# per-row face-count reader that the (BLOB, ANY) HUGEINT[][] normalisation
+# never reaches, and the JSON-text case above bypasses entirely.
+query II
+SELECT ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (
+    SELECT ST_3DFromArrowNative(
+        [[
+            [ [[0,1,2,3]], [[4,5,6,7]], [[0,3,5,4]], [[1,7,6,2]], [[0,4,7,1]], [[3,2,6,5]],
+              [[11,10,9,8]], [[15,14,13,12]], [[12,13,11,8]], [[10,14,15,9]], [[9,15,12,8]], [[13,14,10,11]] ]
+        ]],
+        [{'x':0,'y':0,'z':0}, {'x':0,'y':4,'z':0}, {'x':4,'y':4,'z':0}, {'x':4,'y':0,'z':0},
+         {'x':0,'y':0,'z':4}, {'x':4,'y':0,'z':4}, {'x':4,'y':4,'z':4}, {'x':0,'y':4,'z':4},
+         {'x':1,'y':1,'z':1}, {'x':1,'y':3,'z':1}, {'x':3,'y':3,'z':1}, {'x':3,'y':1,'z':1},
+         {'x':1,'y':1,'z':3}, {'x':3,'y':1,'z':3}, {'x':3,'y':3,'z':3}, {'x':1,'y':3,'z':3}],
+        {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]}
+    ) AS s
+) q;
+----
+2	12

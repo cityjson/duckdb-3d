@@ -1,38 +1,40 @@
 # name: test/sql/geom_3d_serialize.test
-# description: GEOM_3D serialization functions (ST_AsText / ST_AsGeoJSON / ST_AsBinary)
+# description: GEOM_3D serialization functions (ST_3DAsText / ST_3DAsGeoJSON / ST_3DAsBinary)
 # group: [sql]
 
 require three_d
 
-# ST_AsText: Point Z
+require-env THREE_D_TEST_FIXTURES
+
+# ST_3DAsText: Point Z
 query I
-SELECT ST_AsText(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
+SELECT ST_3DAsText(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
 ----
 POINT Z (1 2 3)
 
-# ST_AsText: Polygon Z
+# ST_3DAsText: Polygon Z
 query I
-SELECT ST_AsText(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+SELECT ST_3DAsText(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 POLYGON Z ((0 0 5, 4 0 5, 4 3 5, 0 3 5, 0 0 5))
 
-# ST_AsGeoJSON: Point
+# ST_3DAsGeoJSON: Point
 query I
-SELECT ST_AsGeoJSON(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
+SELECT ST_3DAsGeoJSON(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)));
 ----
 {"type":"Point","coordinates":[1,2,3]}
 
-# ST_AsBinary: round-trip Point Z through ST_Geom3DFromWKB
+# ST_3DAsBinary: round-trip Point Z through ST_Geom3DFromWKB
 query III
 SELECT
-    ST_X(ST_Geom3DFromWKB(ST_AsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))))),
-    ST_Y(ST_Geom3DFromWKB(ST_AsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))))),
-    ST_Z(ST_Geom3DFromWKB(ST_AsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))));
+    ST_3DX(ST_Geom3DFromWKB(ST_3DAsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))))),
+    ST_3DY(ST_Geom3DFromWKB(ST_3DAsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0))))),
+    ST_3DZ(ST_Geom3DFromWKB(ST_3DAsBinary(ST_Geom3DFromWKB(ST_AsWKBPointZ(1.0, 2.0, 3.0)))));
 ----
 1.0	2.0	3.0
 
-# ST_AsText: NULL propagation
+# ST_3DAsText: NULL propagation
 query I
-SELECT ST_AsText(NULL::GEOM_3D);
+SELECT ST_3DAsText(NULL::GEOM_3D);
 ----
 NULL

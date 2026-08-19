@@ -1,7 +1,8 @@
 # Building & Developing `duckdb-3d`
 
-Detailed build, test, and distribution notes for contributors. For the project overview and
-function reference, see the [top-level README](../README.md).
+Detailed build, test, and distribution notes for contributors. For the project overview see
+the [top-level README](../README.md); for the function reference see
+[FUNCTIONS.md](./FUNCTIONS.md).
 
 ## Prerequisites
 
@@ -43,7 +44,7 @@ extensions to build alongside it there (for example `duckdb_extension_load(json)
 ```
 
 ```sql
-D SELECT ST_GeometryType(ST_Geom3DFromWKB(wkb)) FROM …;
+D SELECT ST_3DGeometryType(ST_Geom3DFromWKB(wkb)) FROM …;
 ```
 
 To load a distributed binary into a stock DuckDB, start it with unsigned extensions allowed
@@ -62,9 +63,24 @@ The project follows strict TDD (see [../AGENTS.md](../AGENTS.md)). SQL tests liv
 `test/sql/`, C++ kernel tests in `test/cpp/`.
 
 ```sh
+make test_full     # configure + build + every test, no skips  ← the one to reach for
 make test          # SQL tests, release build
-make test_debug    # SQL + C++ tests, debug build
+make test_debug    # SQL tests, debug build
+make test_cpp      # C++ kernel tests (Catch2, standalone)
+make test_all      # test_debug + test_cpp
 ```
+
+`make test_full` is the only target that covers the whole surface on its own. It builds the
+debug extension, stages `cityjson`, `spatial`, and `httpfs` where the sqllogic runner can
+reach them, and runs the SQL and C++ suites — so the gated tests execute instead of
+skipping. It needs network access: the community download on the first run (cached in
+`build/ext_cache`), and the remote Delft fixture on every run.
+
+The narrower targets carry two sharp edges. `make test`, `test_debug`, and `test_all` run
+whatever binary `build/release` or `build/debug` already holds — the ci-tools targets have no
+build dependency, so a stale build passes or fails on stale code. Build first, or use
+`test_full`. And `make test_debug` is SQL-only: it does **not** run the C++ kernel tests, so
+reach for `test_cpp` or `test_all` after touching `src/kernel/`.
 
 Run a single test file:
 
@@ -72,9 +88,10 @@ Run a single test file:
 ./build/release/test/unittest "test/sql/geom_3d_measurements.test"
 ```
 
-The `cityjson` interop tests are gated on the community `cityjson` extension and skip when it
-is not registered with the runner — see [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md) for how
-to run them (including the remote-data test against 3DBAG Delft).
+Under `test`/`test_debug`/`test_all` the `cityjson` and `spatial` tests are gated on those
+extensions being registered with the runner, and skip when they are not. `test_full`
+establishes that registration; [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md) documents the
+mechanics, and how to compose the two extensions by hand.
 
 ## Managing dependencies (vcpkg)
 

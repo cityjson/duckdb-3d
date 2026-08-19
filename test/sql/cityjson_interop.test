@@ -1,8 +1,8 @@
 # name: test/sql/cityjson_interop.test
-# description: smoke test composing duckdb-cityjson with three_d (design doc §12)
+# description: smoke test composing duckdb-cityjson with three_d (design doc §7)
 # group: [sql]
 
-# This test exercises the design-doc §12 composition: read CityJSON via the
+# This test exercises the design-doc §7 composition: read CityJSON via the
 # `cityjson` community extension, then run `ST_3D*` over the resulting
 # (geometry, geometry_properties) pair.
 #

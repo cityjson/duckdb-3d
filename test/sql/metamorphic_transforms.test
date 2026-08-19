@@ -1,0 +1,94 @@
+# name: test/sql/metamorphic_transforms.test
+# description: metamorphic invariance coverage for the transform family (dependency-free)
+# group: [sql]
+
+# A dependency-free oracle for ST_3DTranslate / ST_3DRotateZ / ST_3DScale.
+# The PostGIS differential oracle cannot cover the affine transforms (it would
+# require round-tripping geometry, which the harness forbids). Metamorphic
+# relations are the dependency-free substitute and, run over the frozen 3DBAG
+# golden WKB, they cover REAL geometry too:
+#   * rigid motions (translation, rotation) preserve volume and surface area;
+#   * scaling multiplies volume by |sx·sy·sz| and area (uniform) by s².
+# Tolerances were measured, not guessed (see the golden section).
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# ── Controlled fixtures: exact to machine precision (small integer coords) ─────
+
+# Unit tetrahedron, volume 1/6: invariant under translation & rotation; volume
+# scales by 2·3·4 = 24 under ST_3DScale.
+query I
+SELECT abs(ST_3DVolume(ST_3DTranslate(t, 10, 20, 30)) - ST_3DVolume(t)) < 1e-12
+   AND abs(ST_3DVolume(ST_3DRotateZ(t, 0.5)) - ST_3DVolume(t)) < 1e-12
+   AND abs(ST_3DVolume(ST_3DScale(t, 2, 3, 4)) - 24 * ST_3DVolume(t)) < 1e-12
+FROM (SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS t) q;
+----
+true
+
+# Hollow cube (volume 56): the interior-shell subtraction survives rigid motions,
+# and scales with the solid.
+query I
+SELECT abs(ST_3DVolume(ST_3DTranslate(h, 5, 5, 5)) - 56.0) < 1e-9
+   AND abs(ST_3DVolume(ST_3DScale(h, 2, 2, 2)) - 8 * 56.0) < 1e-9
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS h) q;
+----
+true
+
+# Surface area is a rigid-motion invariant (unit tetra area = 3·0.5 + √3/2).
+query I
+SELECT abs(ST_3DSurfaceArea(ST_3DRotateZ(t, 1.3)) - ST_3DSurfaceArea(t)) < 1e-12
+   AND abs(ST_3DSurfaceArea(ST_3DTranslate(t, 9, 9, 9)) - ST_3DSurfaceArea(t)) < 1e-12
+FROM (SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS t) q;
+----
+true
+
+# ── Real 3DBAG golden solids: invariants at RD coordinate magnitudes ──────────
+# Rotation and metamorphic scaling hold near machine precision; translation is
+# looser because ST_3DVolume sums origin-based signed tetrahedra, so shifting
+# already-large RD coordinates (~1e5) costs a few ULPs of cancellation (measured
+# ~3.5e-5; see FUTURE_WORK on recentring). Boolean predicates over the whole
+# corpus, so a regression in any solid fails the test.
+
+statement ok
+CREATE TABLE _golden AS
+SELECT ST_3DFromWKB(unhex(wkb_hex)) AS s
+FROM read_csv('test/data/postgis_oracle/golden.csv', header = true)
+WHERE geom_role = 'solid'
+  AND ST_3DIsClosed(ST_3DFromWKB(unhex(wkb_hex)))
+  AND ST_3DIsManifold(ST_3DFromWKB(unhex(wkb_hex)))
+  AND ST_3DIsOriented(ST_3DFromWKB(unhex(wkb_hex)));
+
+# Non-vacuity: the corpus actually has real solids to transform.
+query I
+SELECT count(*) >= 10 FROM _golden;
+----
+true
+
+# Rotation about Z preserves volume (relative tol 1e-5).
+query I
+SELECT bool_and(abs(ST_3DVolume(ST_3DRotateZ(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
+----
+true
+
+# Metamorphic scaling: volume scales by |2·3·4| = 24 (relative tol 1e-5).
+query I
+SELECT bool_and(abs(ST_3DVolume(ST_3DScale(s, 2, 3, 4)) - 24 * ST_3DVolume(s)) <= 1e-5 * 24 * ST_3DVolume(s)) FROM _golden;
+----
+true
+
+# Translation preserves volume (loose relative tol 1e-3 for RD-magnitude cancellation).
+query I
+SELECT bool_and(abs(ST_3DVolume(ST_3DTranslate(s, 1000, 2000, 500)) - ST_3DVolume(s)) <= 1e-3 * ST_3DVolume(s)) FROM _golden;
+----
+true
+
+# Surface area is invariant under rotation (relative tol 1e-5).
+query I
+SELECT bool_and(abs(ST_3DSurfaceArea(ST_3DRotateZ(s, 0.7)) - ST_3DSurfaceArea(s)) <= 1e-5 * ST_3DSurfaceArea(s)) FROM _golden;
+----
+true
+
+statement ok
+DROP TABLE _golden;

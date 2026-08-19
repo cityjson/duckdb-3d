@@ -1,0 +1,73 @@
+# name: test/sql/st_3d_hollow_solid.test
+# description: end-to-end SQL coverage for a hollow solid (SOLID_3D with an interior shell)
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# Fixture (ST_AsWKBHollowCube): outer cube [0,4]^3 enclosing inner cube [1,3]^3
+# as a 12-face PolyhedralSurface. With shell metadata it is one solid, two shells.
+# Volume = 64 - 8 = 56; surface area = 96 + 24 = 120 (cavity walls included).
+
+# Volume subtracts the interior shell.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
+----
+56.0
+
+# Surface area sums all faces (exterior + cavity walls).
+query I
+SELECT ST_3DSurfaceArea(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
+----
+120.0
+
+# Introspection: two shells, twelve faces, one solid.
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS s) q;
+----
+1	2	12
+
+# The hollow solid is closed, manifold, oriented, and valid.
+query IIII
+SELECT ST_3DIsClosed(s), ST_3DIsManifold(s), ST_3DIsOriented(s), (ST_3DValidationReport(s)).is_valid
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') AS s) q;
+----
+true	true	true	true
+
+# Volume is shell-grouping invariant: the plain path (no metadata) collapses to
+# one shell but yields the same volume — subtraction is driven by winding.
+query II
+SELECT ST_3DNumShells(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube()) AS s) q;
+----
+1	56.0
+
+# Round-trip: export to WKB and re-import with the same shell metadata; the two
+# shells survive (pins that ST_3DAsWKB preserves shell-ordered face output).
+query II
+SELECT ST_3DNumShells(r), ST_3DVolume(r)
+FROM (
+    SELECT ST_3DFromWKB(
+               ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}')),
+               '{"type": "Solid", "shells": [6, 6]}') AS r
+) q;
+----
+2	56.0
+
+# cityparquet-rs's geometry_properties_lod* STRUCT always nests `shells` as
+# List<List<Int32>> (one entry per solid), so a single Solid serializes (e.g.
+# via to_json() on the Arrow STRUCT, as a CityParquet reader would) as
+# [[6, 6]], not the flat [6, 6] duckdb-cityjson emits. Both forms must be
+# equivalent (M8 spec-alignment: confirm duckdb-3d reads the M4 STRUCT shape).
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'));
+----
+56.0
+
+query III
+SELECT ST_3DNumSolids(s), ST_3DNumShells(s), ST_3DNumFaces(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}') AS s) q;
+----
+1	2	12

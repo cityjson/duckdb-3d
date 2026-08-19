@@ -1,7 +1,7 @@
 #pragma once
 
+#include "kernel/core_types.hpp"
 #include "kernel/geom_model.hpp"
-#include "kernel/solid_model.hpp" // Vertex3D
 
 namespace duckdb_3d {
 
@@ -29,6 +29,11 @@ double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex
 
 //! Minimum 3D distance between two general geometries. 0 if they intersect.
 double Geom3DDistance(const GeomModel &g1, const GeomModel &g2);
+
+//! Lower bound on the distance between two axis-aligned boxes (0 on overlap).
+//! Header-only inputs: usable straight from ReadGeomPayloadHeader without
+//! deserialising a payload body.
+double BBoxDistance(const BBox3D &a, const BBox3D &b);
 
 //! Lower bound on the minimum distance between two geometries, computed from
 //! their axis-aligned bounding boxes alone (0 when the boxes overlap). Since

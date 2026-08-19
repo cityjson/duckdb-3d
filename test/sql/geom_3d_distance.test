@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Point-to-point 3D distance
 query I
 SELECT ST_3DDistance(
@@ -119,13 +121,13 @@ NULL
 # ST_3DClosestPoint: point above polygon returns the point itself
 query III
 SELECT
-    ST_X(ST_3DClosestPoint(
+    ST_3DX(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Y(ST_3DClosestPoint(
+    ST_3DY(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_Z(ST_3DClosestPoint(
+    ST_3DZ(ST_3DClosestPoint(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
@@ -134,7 +136,7 @@ SELECT
 # ST_3DShortestLine: point above polygon is a LineString of length 5
 query II
 SELECT
-    ST_GeometryType(ST_3DShortestLine(
+    ST_3DGeometryType(ST_3DShortestLine(
         ST_Geom3DFromWKB(ST_AsWKBPointZ(2.0, 1.5, 10.0)),
         ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
     ST_3DLength(ST_3DShortestLine(
@@ -149,3 +151,71 @@ SELECT ST_3DClosestPoint(NULL::GEOM_3D,
     ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)));
 ----
 NULL
+
+# ──────────────────────────────────────────────────────────────────────────
+# Header fast-path contract for ST_3DDWithin / ST_3DIntersects.
+#
+# Both read the bbox out of the fixed front header and reject far-apart pairs
+# in O(1), before either body is deserialised. The bbox gap is a lower bound on
+# the true distance, so this is a pure fast *negative*: a pair it does not
+# reject still takes the full, validating path. The only observable consequence
+# is that a payload whose *body* is corrupt can now be pruned without being
+# parsed — pinned below, together with the cases that must still raise.
+#
+# Crafted payload layout:
+#   "D3DG" | u16 major=1 | u16 minor=0 | u32 type | 6×f64 bbox | u32 vertex_count | vertices…
+# Both blobs declare one vertex and then stop, so the header reads fine and
+# deserialising the body raises. `far` boxes itself at (1000,1000,1000),
+# `near` at the origin.
+
+statement ok
+CREATE TABLE truncated_body AS SELECT
+    ('D3DG' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' ||
+     repeat('\x00\x00\x00\x00\x00\x40\x8f\x40', 6) || '\x01\x00\x00\x00')::GEOM_3D AS far,
+    ('D3DG' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' ||
+     repeat('\x00', 48) || '\x01\x00\x00\x00')::GEOM_3D AS near;
+
+# Far pair: the header boxes are ~1732 apart, so neither body is read and the
+# corruption goes unnoticed — false, not an error.
+query II
+SELECT
+    ST_3DDWithin(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), far, 1.0),
+    ST_3DIntersects(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), far)
+FROM truncated_body;
+----
+false	false
+
+# The same far pair under a threshold wide enough to clear the bbox gap is NOT
+# pruned — the fast path is a negative only, so the full path still validates.
+statement error
+SELECT ST_3DDWithin(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), far, 1e9) FROM truncated_body;
+----
+truncated payload
+
+# Overlapping boxes: nothing to prune, so the corrupt body still raises.
+statement error
+SELECT ST_3DDWithin(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), near, 1.0) FROM truncated_body;
+----
+truncated payload
+
+statement error
+SELECT ST_3DIntersects(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)), near) FROM truncated_body;
+----
+truncated payload
+
+# A corrupt *header* is still rejected on the fast path: bad magic …
+statement error
+SELECT ST_3DDWithin(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ('XXXX' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' || repeat('\x00', 48))::GEOM_3D, 1.0);
+----
+bad magic
+
+# … and a header truncated mid-bbox.
+statement error
+SELECT ST_3DDWithin(ST_Geom3DFromWKB(ST_AsWKBPointZ(0.0, 0.0, 0.0)),
+    ('D3DG' || '\x01\x00\x00\x00' || '\x01\x00\x00\x00' || repeat('\x00', 12))::GEOM_3D, 1.0);
+----
+truncated payload
+
+statement ok
+DROP TABLE truncated_body;

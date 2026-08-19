@@ -4,9 +4,11 @@
 
 require three_d
 
-# A LineString Z is recognised by ST_GeometryType
+require-env THREE_D_TEST_FIXTURES
+
+# A LineString Z is recognised by ST_3DGeometryType
 query I
-SELECT ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
+SELECT ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
 ----
 ST_LineString
 
@@ -19,7 +21,7 @@ SELECT ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBLineZ()));
 # A MultiLineString Z is recognised and length is summed over its parts
 query II
 SELECT
-    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ())),
+    ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ())),
     ST_3DLength(ST_Geom3DFromWKB(ST_AsWKBMultiLineZ()));
 ----
 ST_MultiLineString	18.0

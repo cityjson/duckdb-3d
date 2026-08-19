@@ -1,0 +1,40 @@
+# name: test/sql/spatial_coexist.test
+# description: three_d and spatial coexist in one session — three_d owns ST_3D*, spatial owns the generic ST_* names
+# group: [sql]
+
+# This test pins the three_d-then-spatial load order (require three_d precedes
+# require spatial) — the order that used to crash spatial's init on a duplicate
+# ST_Scale. three_d now registers only ST_3D* (plus a few non-colliding names), so
+# there is no clash. (The reverse order, spatial-then-three_d, is symmetric — no
+# name is registered twice — and is verified manually; it needs a separate session
+# to pin here, which the sqllogic require-order does not express.)
+require three_d
+
+require spatial
+
+require-env THREE_D_TEST_FIXTURES
+
+# spatial owns the 2D simple-features vocabulary on its GEOMETRY type.
+query I
+SELECT ST_Area(ST_GeomFromText('POLYGON((0 0, 0 2, 2 2, 2 0, 0 0))'));
+----
+4.0
+
+# three_d owns the 3D-solid vocabulary under ST_3D*, alongside spatial.
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube()));
+----
+56.0
+
+query I
+SELECT ST_3DZMax(ST_3DFromWKB(ST_AsWKBHollowCube()))
+     - ST_3DZMin(ST_3DFromWKB(ST_AsWKBHollowCube()));
+----
+4.0
+
+# The old generic three_d names are gone — ST_Area now resolves ONLY to spatial's
+# GEOMETRY overload, which does not accept a SOLID_3D, so this is a clean bind
+# error rather than a silent wrong answer.
+statement error
+SELECT ST_Area(ST_3DFromWKB(ST_AsWKBHollowCube()));
+----

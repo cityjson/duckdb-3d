@@ -5,7 +5,7 @@ models**: the [3DBAG](https://3dbag.nl) reconstruction of Delft, streamed straig
 from a remote server as CityJSONSeq and turned into queryable solids with the
 [`cityjson`](https://github.com/cityjson/duckdb-cityjson) community extension.
 
-For the formal contract of every function, see [DESIGN_DOC.md](./DESIGN_DOC.md). For the
+For the formal contract of every function, see [FUNCTIONS.md](./FUNCTIONS.md). For the
 extension-composition mechanics and troubleshooting, see
 [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md).
 
@@ -77,7 +77,7 @@ CREATE TABLE feats AS
 SELECT id, parents, children, geometry, geometry_properties,
        b3_volume_lod22, b3_opp_grond, b3_h_maaiveld     -- 3DBAG ground-truth attributes
 FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
     lod => '2.2');
 ```
 
@@ -107,8 +107,8 @@ on an unsupported geometry instead of aborting the whole query.
 ```sql
 SELECT id,
        ROUND(ST_3DVolume(solid), 1)            AS volume_m3,
-       ROUND(ST_Area(solid), 1)                AS footprint_m2,
-       ROUND(ST_ZMax(solid) - ST_ZMin(solid), 2) AS height_m,   -- roof − ground
+       ROUND(ST_3DFootprintArea(solid), 1)                AS footprint_m2,
+       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m,   -- roof − ground
        ST_3DIsClosed(solid)                    AS closed
 FROM parts
 WHERE ST_3DValidationReport(solid).is_valid
@@ -120,8 +120,8 @@ Key expressions:
 | Metric | Expression | Notes |
 | --- | --- | --- |
 | Enclosed volume | `ST_3DVolume(solid)` | Requires a valid (closed + manifold + oriented) solid. |
-| Footprint area | `ST_Area(solid)` | 2D XY projection; the building's ground area. |
-| Building height | `ST_ZMax(solid) - ST_ZMin(solid)` | From the cached bounding box. |
+| Footprint area | `ST_3DFootprintArea(solid)` | 2D XY projection; the building's ground area. |
+| Building height | `ST_3DZMax(solid) - ST_3DZMin(solid)` | From the cached bounding box. |
 | 3D surface area | `ST_3DArea(solid)` / `ST_3DSurfaceArea(solid)` | Total area of all faces. |
 
 ## 4. Validate before you measure
@@ -161,7 +161,7 @@ WHERE ST_3DValidationReport(solid).is_valid;
 
 3DBAG ships each building's own computed volume (`b3_volume_lod22`) and ground-surface
 area (`b3_opp_grond`). `three_d`'s independent kernel agrees with them almost exactly —
-for single-part, valid buildings the volumes match within ~0.02% for the vast majority:
+for single-part, valid buildings the median volume error is 0.017 %:
 
 ```sql
 SELECT ROUND(median(
@@ -171,7 +171,7 @@ FROM parts
 WHERE n_parts = 1
   AND ST_3DValidationReport(solid).is_valid
   AND b3_volume_lod22 > 0;
--- ≈ 0.02 %
+-- 0.017 %
 ```
 
 This double-checks both the data and the extension. The automated version of this check
@@ -212,16 +212,16 @@ Related functions on `GEOM_3D`: `ST_3DMaxDistance`, `ST_3DDFullyWithin`,
 `GEOM_3D` carries accessors and serializers for debugging and interchange:
 
 ```sql
-SELECT ST_GeometryType(g)        AS gtype,        -- ST_PolyhedralSurface
+SELECT ST_3DGeometryType(g)        AS gtype,        -- ST_PolyhedralSurface
        ST_NDims(g)               AS dims,         -- 3
-       ST_AsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.38 446461.18 1.83)
+       ST_3DAsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.382 446461.183 1.82874289)
 FROM (SELECT ST_Geom3DFromWKB(geometry) AS g
       FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0');
 ```
 
-- `ST_AsText(geom)` → ISO WKT (with Z)
-- `ST_AsGeoJSON(geom)` → GeoJSON (a `PolyhedralSurface` is emitted as a `MultiPolygon`)
-- `ST_AsBinary(geom)` → OGC/ISO WKB
+- `ST_3DAsText(geom)` → ISO WKT (with Z)
+- `ST_3DAsGeoJSON(geom)` → GeoJSON (a `PolyhedralSurface` is emitted as a `MultiPolygon`)
+- `ST_3DAsBinary(geom)` → OGC/ISO WKB
 - `ST_3DAsWKB(solid)` → WKB from the canonical `SOLID_3D` model
 
 ## 8. Transformations and construction
@@ -230,11 +230,11 @@ Placement and geometric edits are per-vertex and preserve topology:
 
 ```sql
 -- shift a building 100 m east, 50 m north
-SELECT ST_Translate(solid, 100, 50, 0) FROM parts LIMIT 1;
+SELECT ST_3DTranslate(solid, 100, 50, 0) FROM parts LIMIT 1;
 ```
 
-Available transforms: `ST_Translate`, `ST_Scale`, `ST_RotateX/Y/Z`, `ST_Force3D`,
-`ST_ConvexHull` (2D XY hull), `ST_IsPlanar`.
+Available transforms: `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX/Y/Z`, `ST_Force3D`,
+`ST_3DConvexHull` (2D XY hull), `ST_IsPlanar`.
 
 Construction:
 
@@ -256,6 +256,6 @@ Construction:
   Use `ST_3DTryFromWKB` and `ST_3DValidationReport` while exploring.
 - **`SOLID_3D`-only vs `GEOM_3D`-only**: solid metrics (`ST_3DVolume`, `ST_3DIsClosed`,
   `ST_3DBounds`) take the solid payload; distance/serialization accessors take `GEOM_3D`
-  (build it with `ST_Geom3DFromWKB`). Many accessors (`ST_NDims`, `ST_ZMin`, `ST_ZMax`,
-  `ST_Translate`, …) accept both.
+  (build it with `ST_Geom3DFromWKB`). Many accessors (`ST_NDims`, `ST_3DZMin`, `ST_3DZMax`,
+  `ST_3DTranslate`, …) accept both.
 ```

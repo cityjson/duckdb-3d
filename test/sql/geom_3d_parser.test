@@ -4,46 +4,48 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Polygon Z parses as a single 2D surface geometry
 query III
 SELECT
-    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
-    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
-    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+    ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 ST_Polygon	2	1
 
 # Polygon Z bounding box Z is read from the parsed ring
 query II
 SELECT
-    ST_ZMin(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
-    ST_ZMax(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+    ST_3DZMin(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())),
+    ST_3DZMax(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 5.0	5.0
 
 # MultiPoint Z reports each point as a member geometry
 query III
 SELECT
-    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
-    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
-    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ()));
+    ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
+    ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ())),
+    ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPointZ()));
 ----
 ST_MultiPoint	0	3
 
 # MultiPolygon Z reports each polygon as a member geometry
 query III
 SELECT
-    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
-    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
-    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ()));
+    ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
+    ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ())),
+    ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBMultiPolygonZ()));
 ----
 ST_MultiPolygon	2	2
 
 # PolyhedralSurface Z (closed tetrahedron) parses as a single surface
 query III
 SELECT
-    ST_GeometryType(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
-    ST_Dimension(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
-    ST_NumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()));
+    ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
+    ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
+    ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()));
 ----
 ST_PolyhedralSurface	2	1

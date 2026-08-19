@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Extruding the 4x3 rect footprint (at z=5) by height 2 yields a closed LoD1 box
 # with volume 4*3*2 = 24 and six faces.
 query III
@@ -17,8 +19,8 @@ SELECT
 # The extruded box spans z in [5, 7].
 query II
 SELECT
-    ST_ZMin(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
-    ST_ZMax(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
+    ST_3DZMin(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0)),
+    ST_3DZMax(ST_3DExtrude(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()), 2.0));
 ----
 5.0	7.0
 

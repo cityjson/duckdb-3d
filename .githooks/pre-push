@@ -1,0 +1,82 @@
+#!/bin/sh
+# Gate every push on the checks CI runs, so a red pipeline is caught locally.
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# Format -> make format-check (the same script CI's Format Check runs)
+# Build  -> make debug
+# Tests  -> make test_all (SQL suite in debug + C++ kernel suite)
+#
+# A push that touches no buildable source skips the build and the tests.
+# Gated cityjson/spatial tests skip here exactly as they do in CI; run
+# `make test_full` by hand when you want them to execute.
+#
+# Skip with: git push --no-verify
+
+set -e
+
+# ── Which files is this push carrying? ───────────────────────────────────────
+# git feeds one "<local ref> <local sha> <remote ref> <remote sha>" line per ref
+# on stdin. An all-zero local sha is a branch deletion; an all-zero remote sha
+# is a branch the remote has never seen, which has no cheap diff base — gate
+# those unconditionally rather than guess at a range.
+all_zero() {
+	case "$1" in
+	*[!0]*) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# Not a legal path, so it cannot collide with a real changed file.
+GATE_ALL='!gate-all!'
+
+changed=$(
+	while read -r _local_ref local_sha _remote_ref remote_sha; do
+		all_zero "$local_sha" && continue
+		if all_zero "$remote_sha"; then
+			echo "$GATE_ALL"
+		else
+			git diff --name-only "$remote_sha" "$local_sha"
+		fi
+	done
+)
+
+if [ -z "$changed" ]; then
+	echo "pre-push: nothing to verify"
+	exit 0
+fi
+
+# Anything that can change what gets built or how it behaves.
+buildable='^('"$GATE_ALL"'|src/|test/|CMakeLists\.txt|Makefile|extension_config\.cmake|vcpkg\.json|\.clang-format)'
+if ! printf '%s\n' "$changed" | grep -qE "$buildable"; then
+	echo "pre-push: no buildable sources in this push — skipping build and tests"
+	exit 0
+fi
+
+# ── Format ───────────────────────────────────────────────────────────────────
+# duckdb/scripts/format.py hard-requires black even with no Python under
+# src/ or test/, so treat a missing formatter as "cannot check" rather than
+# failing the push. The pre-commit hook already runs clang-format on staged
+# C++, so this is a backstop for commits made with --no-verify.
+if command -v clang-format >/dev/null 2>&1 && command -v black >/dev/null 2>&1; then
+	echo "pre-push: format check"
+	make format-check
+else
+	echo "pre-push: clang-format or black missing — skipping format check" >&2
+	echo "pre-push: install both to gate on it (pip install 'black>=24')" >&2
+fi
+
+# ── Build and test ───────────────────────────────────────────────────────────
+# Match the justfile: use ninja when it is installed, it is much faster.
+if command -v ninja >/dev/null 2>&1; then
+	GEN_ARG='GEN=ninja'
+else
+	GEN_ARG=''
+fi
+
+echo "pre-push: building (debug)"
+make $GEN_ARG debug
+
+echo "pre-push: tests (SQL + C++)"
+make test_all
+
+echo "pre-push: ok"

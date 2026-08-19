@@ -2,7 +2,7 @@
 
 `golden.csv` holds **frozen reference values** computed by PostGIS + SFCGAL for
 the duckdb-3d differential test (`test/sql/postgis_oracle.test`, design doc
-§9.5.1). It is the *only* place PostGIS is involved: it runs offline, dev-time
+§8.4). It is the *only* place PostGIS is involved: it runs offline, dev-time
 only. `make test` reads the frozen values and never needs PostGIS, a container,
 or the network.
 
@@ -25,7 +25,7 @@ One row per geometry fed to the oracle. Columns:
 
 `pg_hull_area` feeds `ST_Points` to GEOS's `ST_ConvexHull` because GEOS rejects a
 `PolyhedralSurface` directly; this hulls the vertex set, matching the extension's
-`ST_Area(ST_ConvexHull(g))`. GEOS has no planarity requirement, so it is always
+`ST_3DFootprintArea(ST_3DConvexHull(g))`. GEOS has no planarity requirement, so it is always
 `ok` (no status column).
 
 `rejected` = SFCGAL raised. SFCGAL requires exactly-coplanar faces and rejects

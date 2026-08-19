@@ -1,0 +1,48 @@
+# name: test/sql/st_3d_multisolid.test
+# description: multi-solid (collection of solids) coverage, ungated by cityjson
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# Fixture (ST_AsWKBMultiCube): two disjoint outward cubes [0,2]^3 and [5,7]^3, each
+# volume 8, surface area 24, as a GeometryCollection Z of two PolyhedralSurface Z.
+# The plain-WKB path imports them as two single-shell solids. Per DESIGN_DOC §8.2
+# multi-solid volume/area sum member contributions.
+
+# Two solids, total volume 8 + 8 = 16.
+query II
+SELECT ST_3DNumSolids(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+2	16.0
+
+# Total surface area 24 + 24 = 48; the collection is closed.
+query II
+SELECT ST_3DSurfaceArea(s), ST_3DIsClosed(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+48.0	true
+
+# Bounds span both members: [0,7] in X, [0,7] in Y/Z.
+query III
+SELECT (ST_3DBounds(s)).min_x, (ST_3DBounds(s)).max_x, (ST_3DBounds(s)).max_z
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube()) AS s) q;
+----
+0.0	7.0	7.0
+
+# Metadata-aware import of a MultiSolid is now supported: the spec §8 nested
+# `shells` maps one per-shell-count array to each solid (G2). Here two solids of
+# one shell each ([[6],[6]]) — two solids, total volume 16.
+query II
+SELECT ST_3DNumSolids(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "shells": [[6], [6]]}') AS s) q;
+----
+2	16.0
+
+# A shells array count that disagrees with the WKB member count is rejected.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "shells": [[6]]}');
+----
+solid count

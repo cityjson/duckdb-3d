@@ -1,5 +1,5 @@
 # name: test/sql/cityjson_delft_remote.test
-# description: real-world validation of three_d against the remote 3DBAG Delft CityJSONSeq (design doc §12; walkthrough in docs/EXAMPLE.md)
+# description: real-world validation of three_d against the remote 3DBAG Delft CityJSONSeq (design doc §7; walkthrough in docs/EXAMPLE.md)
 # group: [sql]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@
 #   1. the `cityjson` community extension registered with the sqllogic runner,
 #      and
 #   2. network access to
-#      https://storage.googleapis.com/cityjson/delft.city.jsonl
+#      https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl
 #
 # `require cityjson` makes the runner skip this test when cityjson is not
 # pre-registered (the default under `make test`), so it never breaks offline
@@ -35,7 +35,7 @@ CREATE TABLE feats AS
 SELECT id, parents, children, geometry, geometry_properties,
        b3_volume_lod22, b3_opp_grond
 FROM read_cityjsonseq(
-    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
     lod => '2.2')
 LIMIT 400;
 
@@ -86,11 +86,11 @@ WHERE n_parts = 1
 ----
 true
 
-# GROUND TRUTH — footprint area. ST_Area (XY projection) matches 3DBAG's ground
+# GROUND TRUTH — footprint area. ST_3DFootprintArea (XY projection) matches 3DBAG's ground
 # surface area b3_opp_grond within 2% for ≥90% of single-part buildings.
 query I
 SELECT (count(*) FILTER (
-          WHERE abs(ST_Area(solid) - b3_opp_grond)
+          WHERE abs(ST_3DFootprintArea(solid) - b3_opp_grond)
                 <= 0.02 * b3_opp_grond + 0.1))
        >= 0.90 * count(*)
 FROM parts
@@ -99,9 +99,9 @@ WHERE n_parts = 1
 ----
 true
 
-# Building height (ST_ZMax − ST_ZMin) is strictly positive for every solid.
+# Building height (ST_3DZMax − ST_3DZMin) is strictly positive for every solid.
 query I
-SELECT bool_and((ST_ZMax(solid) - ST_ZMin(solid)) > 0) FROM parts;
+SELECT bool_and((ST_3DZMax(solid) - ST_3DZMin(solid)) > 0) FROM parts;
 ----
 true
 
@@ -114,8 +114,8 @@ query IIIII
 SELECT ST_3DNumFaces(solid),
        ST_3DIsClosed(solid),
        ROUND(ST_3DVolume(solid), 1),
-       ROUND(ST_Area(solid), 1),
-       ROUND(ST_ZMax(solid) - ST_ZMin(solid), 2)
+       ROUND(ST_3DFootprintArea(solid), 1),
+       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2)
 FROM parts
 WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----

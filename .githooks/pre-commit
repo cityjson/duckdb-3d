@@ -1,0 +1,37 @@
+#!/bin/sh
+# Format staged sources and docs before every commit.
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# C++  -> clang-format (.clang-format, symlinked to duckdb/.clang-format)
+# Docs -> trailing whitespace stripped, final newline ensured
+#
+# Skip with: git commit --no-verify
+
+set -e
+
+staged() { git diff --cached --name-only --diff-filter=ACM -- "$@"; }
+
+# ── C++ ──────────────────────────────────────────────────────────────────────
+if command -v clang-format >/dev/null 2>&1; then
+	staged '*.cpp' '*.hpp' '*.h' | while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		clang-format -i "$f"
+		git add -- "$f"
+	done
+else
+	echo "pre-commit: clang-format not found, skipping C++ formatting" >&2
+fi
+
+# ── Markdown ─────────────────────────────────────────────────────────────────
+# Pure POSIX tooling, so the hook needs no npm/python install.
+staged '*.md' | while IFS= read -r f; do
+	[ -f "$f" ] || continue
+	# strip trailing whitespace (leaves hard line breaks alone only if you
+	# use backslash continuations; two-space breaks are not used in this repo)
+	sed -i '' -e 's/[[:space:]]*$//' "$f" 2>/dev/null || sed -i -e 's/[[:space:]]*$//' "$f"
+	# ensure the file ends in exactly one newline
+	[ -n "$(tail -c 1 "$f")" ] && printf '\n' >>"$f"
+	git add -- "$f"
+done
+
+exit 0

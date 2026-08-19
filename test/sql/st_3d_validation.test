@@ -4,6 +4,8 @@
 
 require three_d
 
+require-env THREE_D_TEST_FIXTURES
+
 # Create a tetrahedron solid (should be valid)
 statement ok
 CREATE TABLE solids AS
@@ -47,9 +49,11 @@ FROM (SELECT ST_3DValidationReport(solid) AS r FROM solids);
 ----
 true	true	true	true	1	1	4	0	0	0	0	VALID	Valid solid
 
-# Test: NULL propagation
+# Test: NULL propagation. Each validation function is overloaded over SOLID_3D /
+# BLOB, so an untyped NULL is ambiguous and must be cast.
 query IIII
-SELECT ST_3DIsClosed(NULL), ST_3DIsManifold(NULL), ST_3DIsOriented(NULL), ST_3DValidationReport(NULL) IS NULL;
+SELECT ST_3DIsClosed(NULL::SOLID_3D), ST_3DIsManifold(NULL::SOLID_3D), ST_3DIsOriented(NULL::SOLID_3D),
+       ST_3DValidationReport(NULL::SOLID_3D) IS NULL;
 ----
 NULL	NULL	NULL	true
 
@@ -59,7 +63,7 @@ DROP TABLE solids;
 # ──────────────────────────────────────────────────────────────
 # Invalid solid: an open shell (tetrahedron missing one face) imports
 # successfully but is reported invalid — the extension is the oracle of
-# record for invalid geometry (it flags, it does not repair; design doc §9).
+# record for invalid geometry (it flags, it does not repair; design doc §8.1).
 # ──────────────────────────────────────────────────────────────
 statement ok
 CREATE TABLE open_solids AS
