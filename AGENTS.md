@@ -99,8 +99,11 @@ The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` te
 Running a built binary directly without it silently skips every test that requires them.
 
 Under the narrower targets, tests gated on `require cityjson` / `require spatial` skip when
-those extensions are not registered with the runner. Those skips are expected, not failures —
-but a skip under `test_full` means the staging failed and is worth investigating.
+those extensions are not registered with the runner. Those skips are expected, not failures.
+
+A skip under `test_full` **fails the run**: the target stages the gated extensions itself, so
+a skipped `require cityjson` test means the staging did not work and the interop tests did not
+run.
 
 ## Writing style for docs
 

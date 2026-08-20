@@ -91,7 +91,21 @@ test_full:
 	cp $$cache_dir/httpfs.duckdb_extension $$run_ext_dir/; \
 	cp $$cache_dir/httpfs.duckdb_extension.info $$run_ext_dir/; \
 	echo "==> SQL tests (debug, gated tests enabled)"; \
-	HOME=$(TEST_RUN_HOME) DUCKDB_TEST_AUTOLOADING=available \
-	  ./build/debug/$(TEST_PATH) "$(TESTS_BASE_DIRECTORY)*"; \
+	sql_log=$$(mktemp); \
+	if HOME=$(TEST_RUN_HOME) DUCKDB_TEST_AUTOLOADING=available \
+	     ./build/debug/$(TEST_PATH) "$(TESTS_BASE_DIRECTORY)*" >$$sql_log 2>&1; then \
+	  sql_status=0; \
+	else \
+	  sql_status=$$?; \
+	fi; \
+	cat $$sql_log; \
+	if [ $$sql_status -ne 0 ]; then rm -f $$sql_log; exit $$sql_status; fi; \
+	if grep -qE "skipped test|were skipped" $$sql_log; then \
+	  echo "!! a test skipped under test_full: the gated extensions did not stage."; \
+	  echo "!! Under this target a skip is a failure, not an expectation --"; \
+	  echo "!! the cityjson/spatial interop tests are exactly the ones that skip."; \
+	  rm -f $$sql_log; exit 1; \
+	fi; \
+	rm -f $$sql_log; \
 	echo "==> C++ kernel tests"; \
 	$(MAKE) test_cpp

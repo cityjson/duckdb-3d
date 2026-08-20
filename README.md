@@ -146,6 +146,10 @@ make test_all      # test_debug + test_cpp
 extensions the gated tests need, and runs both suites. The others run against whatever build
 already exists.
 
+A skip under `test_full` **fails the run**: the target stages the gated extensions itself, so
+a skipped `require cityjson` test means the staging did not work and the interop tests did not
+run.
+
 Full build, test, and distribution notes: [docs/README.md](docs/README.md).
 
 ## Documentation
