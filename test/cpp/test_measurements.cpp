@@ -190,6 +190,31 @@ TEST_CASE("Volume: unit cube = 1.0", "[measurements]") {
 	REQUIRE(vol == Approx(1.0).epsilon(1e-10));
 }
 
+TEST_CASE("Volume: far-from-origin tetrahedron keeps full precision", "[measurements]") {
+	// Volume is translation-invariant in exact arithmetic, so the tetrahedron
+	// keeps V = 1/6 wherever it sits. Summing origin-based triple products
+	// a·(b×c) destroys that: at projected-CRS magnitudes the terms are ~|o|^3
+	// while the answer is ~1, so nearly every significant digit cancels. RD New
+	// easting/northing (~1e5..1e6) already costs several digits, and by 1e8 the
+	// result collapses to 0. The tetrahedron is the sharpest probe because its
+	// four faces are all obliquely oriented, so no term cancels exactly.
+	//
+	// Regression for docs/TESTING.md §21: ST_3DRotateX on a real 3DBAG solid in
+	// EPSG:28992 shifted the reported volume by up to 12%, purely from this.
+	const double expected = 1.0 / 6.0;
+	for (double offset : {1.0e3, 8.4e4, 4.5e5, 1.0e6, 1.0e8}) {
+		auto model = MakeValidTetrahedron();
+		for (auto &v : model.vertices) {
+			v.x += offset;
+			v.y += offset;
+			v.z += offset;
+		}
+		double vol = ComputeVolume(model);
+		INFO("offset = " << offset << ", volume = " << vol);
+		REQUIRE(std::abs(vol - expected) <= 1e-9 * expected);
+	}
+}
+
 TEST_CASE("Volume: tetrahedron = 1/6", "[measurements]") {
 	// V = |det([v1-v0, v2-v0, v3-v0])| / 6 = |det([[1,0,0],[0,1,0],[0,0,1]])| / 6 = 1/6
 	auto model = MakeValidTetrahedron();

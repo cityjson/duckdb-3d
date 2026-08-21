@@ -72,15 +72,32 @@ SELECT bool_and(abs(ST_3DVolume(ST_3DRotateZ(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 
 ----
 true
 
+# Rotation about X and Y preserves volume just as well as about Z. These are the
+# axes that mix the large RD northing into Z, so before ComputeVolume referenced
+# its triple products to the model's bbox midpoint they drifted by up to 12% on
+# this very corpus while RotateZ stayed clean — see docs/TESTING.md §21.
+query I
+SELECT bool_and(abs(ST_3DVolume(ST_3DRotateX(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
+----
+true
+
+query I
+SELECT bool_and(abs(ST_3DVolume(ST_3DRotateY(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
+----
+true
+
 # Metamorphic scaling: volume scales by |2·3·4| = 24 (relative tol 1e-5).
 query I
 SELECT bool_and(abs(ST_3DVolume(ST_3DScale(s, 2, 3, 4)) - 24 * ST_3DVolume(s)) <= 1e-5 * 24 * ST_3DVolume(s)) FROM _golden;
 ----
 true
 
-# Translation preserves volume (loose relative tol 1e-3 for RD-magnitude cancellation).
+# Translation preserves volume. This held only to 1e-3 while the tetrahedra were
+# summed about the absolute origin; referencing them to the model's own bbox
+# midpoint makes the sum independent of where the model sits, so it now holds at
+# the same 1e-5 as every other rigid motion.
 query I
-SELECT bool_and(abs(ST_3DVolume(ST_3DTranslate(s, 1000, 2000, 500)) - ST_3DVolume(s)) <= 1e-3 * ST_3DVolume(s)) FROM _golden;
+SELECT bool_and(abs(ST_3DVolume(ST_3DTranslate(s, 1000, 2000, 500)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
 ----
 true
 

@@ -10,19 +10,53 @@ namespace duckdb_3d {
 
 namespace {
 
-double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx) {
+//! Six times the signed volume of the tetrahedron (origin, a, b, c), with every
+//! vertex taken relative to `origin`.
+//!
+//! The shift is a no-op in exact arithmetic — a closed shell's signed volume is
+//! translation-invariant — but it is what makes the sum usable in doubles. On
+//! absolute coordinates the triple product scales as |position|^3 while the
+//! answer scales as |extent|^3, so a building in a projected CRS (RD New
+//! easting/northing ~1e5) cancels roughly nine of the ~16 available digits, and
+//! by 1e8 the result is pure noise. Referencing a point inside the model keeps
+//! every term at model scale.
+double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx, const Vertex3D &origin) {
 	uint32_t i0 = model.triangle_vertex_indices[triangle_idx * 3 + 0];
 	uint32_t i1 = model.triangle_vertex_indices[triangle_idx * 3 + 1];
 	uint32_t i2 = model.triangle_vertex_indices[triangle_idx * 3 + 2];
 
-	const auto &a = model.vertices[i0];
-	const auto &b = model.vertices[i1];
-	const auto &c = model.vertices[i2];
+	const auto &va = model.vertices[i0];
+	const auto &vb = model.vertices[i1];
+	const auto &vc = model.vertices[i2];
 
-	double cross_x = b.y * c.z - b.z * c.y;
-	double cross_y = b.z * c.x - b.x * c.z;
-	double cross_z = b.x * c.y - b.y * c.x;
-	return a.x * cross_x + a.y * cross_y + a.z * cross_z;
+	double ax = va.x - origin.x, ay = va.y - origin.y, az = va.z - origin.z;
+	double bx = vb.x - origin.x, by = vb.y - origin.y, bz = vb.z - origin.z;
+	double cx = vc.x - origin.x, cy = vc.y - origin.y, cz = vc.z - origin.z;
+
+	double cross_x = by * cz - bz * cy;
+	double cross_y = bz * cx - bx * cz;
+	double cross_z = bx * cy - by * cx;
+	return ax * cross_x + ay * cross_y + az * cross_z;
+}
+
+//! Midpoint of the model's axis-aligned bounding box — a reference point at the
+//! centre of the coordinate range, so no relative coordinate exceeds half the
+//! model's extent.
+Vertex3D ModelOrigin(const SolidModel &model) {
+	if (model.vertices.empty()) {
+		return {0.0, 0.0, 0.0};
+	}
+	Vertex3D lo = model.vertices[0];
+	Vertex3D hi = model.vertices[0];
+	for (const auto &v : model.vertices) {
+		lo.x = std::min(lo.x, v.x);
+		lo.y = std::min(lo.y, v.y);
+		lo.z = std::min(lo.z, v.z);
+		hi.x = std::max(hi.x, v.x);
+		hi.y = std::max(hi.y, v.y);
+		hi.z = std::max(hi.z, v.z);
+	}
+	return {0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y), 0.5 * (lo.z + hi.z)};
 }
 
 } // namespace
@@ -76,6 +110,7 @@ double ComputeVolume(const SolidModel &model) {
 
 	double total_volume = 0.0;
 	uint32_t solid_count = model.SolidCount();
+	const Vertex3D origin = ModelOrigin(model);
 
 	for (uint32_t solid_idx = 0; solid_idx < solid_count; solid_idx++) {
 		double solid_volume = 0.0;
@@ -90,7 +125,7 @@ double ComputeVolume(const SolidModel &model) {
 				uint32_t tri_start = model.face_triangle_offsets[face_idx];
 				uint32_t tri_end = model.face_triangle_offsets[face_idx + 1];
 				for (uint32_t tri_idx = tri_start; tri_idx < tri_end; tri_idx++) {
-					solid_volume += SignedTriangleVolume(model, tri_idx);
+					solid_volume += SignedTriangleVolume(model, tri_idx, origin);
 				}
 			}
 		}
