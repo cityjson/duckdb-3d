@@ -158,6 +158,7 @@ Full build, test, and distribution notes: [docs/README.md](docs/README.md).
 | --- | --- |
 | [docs/FUNCTIONS.md](docs/FUNCTIONS.md) | **Function reference** — every function, with signatures and runnable examples |
 | [docs/EXAMPLE.md](docs/EXAMPLE.md) | Hands-on walkthrough against real 3DBAG data |
+| [docs/TESTING.md](docs/TESTING.md) | Manual notebook: every public function run against real CityJSON, CityJSONSeq, CityParquet and arrow-native data |
 | [docs/DESIGN_DOC.md](docs/DESIGN_DOC.md) | Architecture & design philosophy: type model, layering, invariants |
 | [docs/CITYJSON_INTEROP.md](docs/CITYJSON_INTEROP.md) | Composing with the `cityjson` extension; running the interop tests |
 | [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) | Deferred design decisions |
