@@ -292,6 +292,18 @@ requires only the absence of degenerate faces. Both **raise** when unmet (§2.1)
 **Tolerance** is a small floating-point epsilon for repeated-point and near-zero-area tests,
 defined as named constants in `src/kernel/core_types.hpp`.
 
+The near-zero-area test is **absolute** (`kEpsAbsolute`, 1e-12), which is only defensible
+because the quantity it measures is computed about a local reference point. Newell's area
+vector pairs a coordinate difference with a coordinate sum, so on absolute projected
+coordinates a face of exactly zero area returns not 0 but noise of order
+`n·eps·|position|·|extent|` — 1e-11 to 1e-10 at RD New easting/northing, i.e. one to two
+orders *above* the threshold. The verdict would then depend on where the building sits, and
+because `degenerate_face_count` gates `ST_3DVolume` and `ST_3DSurfaceArea`, so would a hard
+error. `NewellRingAreaVector` therefore references the ring's own first vertex, which is
+exact (the area vector is translation-invariant) and returns 0 for a flat face at any
+magnitude. Do not restore the absolute form, and do not "fix" the resulting sensitivity by
+loosening the epsilon — that would change which real buildings are accepted.
+
 ### 8.2 Why volume works the way it does
 
 Volume sums signed tetrahedral contributions over oriented triangles, taking the absolute

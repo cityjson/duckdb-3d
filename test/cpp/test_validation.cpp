@@ -155,9 +155,14 @@ SolidModel MakeInconsistentOrientation() {
 	return model;
 }
 
-//! Build a surface with a degenerate face (all vertices collinear)
-SolidModel MakeDegenerateFace() {
-	Vertex3D v0 = {0, 0, 0}, v1 = {1, 0, 0}, v2 = {0, 1, 0}, v3 = {0, 0, 1};
+//! Build a surface with a degenerate face (a ring that retraces itself, so it
+//! encloses exactly zero area, obliquely oriented so nothing cancels by luck),
+//! optionally
+//! translated by `offset` on every axis. Degeneracy is a property of the shape,
+//! so the verdict must not depend on where the shape sits.
+SolidModel MakeDegenerateFace(double offset = 0.0) {
+	const double o = offset;
+	Vertex3D v0 = {o, o, o}, v1 = {o + 1, o, o}, v2 = {o, o + 1, o}, v3 = {o, o, o + 1};
 
 	WKBBuilder b;
 	b.byteOrder();
@@ -172,7 +177,7 @@ SolidModel MakeDegenerateFace() {
 	b.ring({v1, v2, v3});
 	// Degenerate face: all points collinear
 	b.polyHeader(1);
-	b.ring({{0, 0, 0}, {0.5, 0, 0}, {1, 0, 0}});
+	b.ring({{o, o, o}, {o + 1, o + 0.1, o}, {o + 2, o + 0.2, o}, {o + 1, o + 0.1, o}});
 
 	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
 	auto model = BuildSolidModel(surfaces);
@@ -251,6 +256,22 @@ TEST_CASE("Validation: degenerate face", "[validation]") {
 	auto model = MakeDegenerateFace();
 	REQUIRE(model.validation.degenerate_face_count > 0);
 	REQUIRE(model.validation.is_valid == false);
+}
+
+TEST_CASE("Validation: the degeneracy verdict does not depend on position", "[validation]") {
+	// IsFaceDegenerate compares a Newell area magnitude against the absolute
+	// kEpsAbsolute (1e-12). Computed on absolute coordinates that magnitude is
+	// n*eps*|position|*|extent| of noise -- 1e-11 to 1e-10 at RD New
+	// (EPSG:28992) easting/northing -- so the SAME flat face was flagged near the
+	// origin and silently passed at Dutch national coordinates. Since
+	// degenerate_face_count gates ComputeVolume and ComputeSurfaceArea, that made
+	// a hard error position-dependent. See geometry_math.cpp.
+	for (double offset : {0.0, 1.0e2, 8.5e4, 4.47e5, 1.0e6, 1.0e8}) {
+		auto model = MakeDegenerateFace(offset);
+		INFO("offset = " << offset);
+		REQUIRE(model.validation.degenerate_face_count > 0);
+		REQUIRE(model.validation.is_valid == false);
+	}
 }
 
 TEST_CASE("Validation: hole boundaries count as open edges", "[validation]") {
