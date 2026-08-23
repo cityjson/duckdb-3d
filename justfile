@@ -30,8 +30,9 @@ test-debug:
 test-cpp:
     make test_cpp
 
-# Stages the cityjson/spatial extensions the sqllogic runner needs, so the gated
-# tests run instead of skipping. Needs network: the community download on the
+# Stages the LOCAL cityjson build plus spatial/three_d for the sqllogic runner,
+# so the gated tests run instead of skipping. Runs against the release build (see
+# the note in the Makefile). Needs network: the httpfs/spatial download on the
 # first run, and the remote Delft fixture on every run.
 
 # Configure + build + every test, no skips.
@@ -58,9 +59,14 @@ ci: format-check build test test-cpp
 shell:
     ./build/release/duckdb
 
-# Launch the shell with cityjson + three_d loaded (needs `INSTALL cityjson FROM community` once).
+# Path to the cityjson extension used by shell-cityjson and `make test_full`.
+# A LOCAL duckdb-cityjson build: the community-published one emits the stale flat
+# `geometry` column shape (see docs/CITYJSON_INTEROP.md).
+cityjson_extension := env_var_or_default("CITYJSON_EXTENSION", "../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension")
+
+# Launch the shell with the local cityjson + three_d loaded.
 shell-cityjson:
-    ./build/release/duckdb -unsigned -cmd "LOAD cityjson; LOAD three_d;"
+    ./build/release/duckdb -unsigned -cmd "LOAD '{{cityjson_extension}}'; LOAD three_d;"
 
 # Remove build artifacts.
 clean:

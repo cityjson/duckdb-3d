@@ -28,9 +28,13 @@ geometry backend.
 
 ## Quick start
 
+Reading CityJSON needs the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
+extension, built from the sibling checkout and loaded by path — the community-published
+build is older and emits a different column shape
+([why](docs/CITYJSON_INTEROP.md#which-cityjson-build)):
+
 ```sql
-INSTALL cityjson FROM community;   -- one-time; reads CityJSON into WKB
-LOAD cityjson;
+LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
 
 -- Measure real buildings straight from a remote CityJSONSeq server
@@ -39,10 +43,10 @@ SELECT id,
        ROUND(ST_3DFootprintArea(solid), 1)           AS footprint_m2,
        ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m
 FROM (
-  SELECT id, ST_3DTryFromWKB(geometry, geometry_properties) AS solid
+  SELECT id, ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
   FROM read_cityjsonseq(
     'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
-  WHERE geometry IS NOT NULL
+  WHERE geometry_lod2_2 IS NOT NULL
 )
 WHERE ST_3DValidationReport(solid).is_valid
 LIMIT 5;
@@ -142,9 +146,10 @@ make test_cpp      # C++ kernel tests
 make test_all      # test_debug + test_cpp
 ```
 
-`make test_full` is the self-contained one: it builds, stages the `cityjson` / `spatial`
-extensions the gated tests need, and runs both suites. The others run against whatever build
-already exists.
+`make test_full` is the self-contained one: it builds (release), stages the `cityjson` /
+`spatial` / `three_d` extensions the gated tests need, and runs both suites. Its `cityjson`
+is a **local** `../duckdb-cityjson` build — the community-published one is stale — so build
+that sibling checkout first. The other targets run against whatever build already exists.
 
 A skip under `test_full` **fails the run**: the target stages the gated extensions itself, so
 a skipped `require cityjson` test means the staging did not work and the interop tests did not

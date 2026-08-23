@@ -3,17 +3,20 @@
 # group: [sql]
 
 # This test exercises the design-doc §7 composition: read CityJSON via the
-# `cityjson` community extension, then run `ST_3D*` over the resulting
-# (geometry, geometry_properties) pair.
+# `cityjson` extension, then run `ST_3D*` over the resulting
+# (geometry_lod<X>, geometry_properties_lod<X>) pair.
 #
 # `require cityjson` makes the sqllogic-test runner skip this test when
-# cityjson isn't pre-registered with the runner. To run it locally:
+# cityjson isn't staged for the runner. It must be a build of the sibling
+# duckdb-cityjson checkout — the published community extension still emits the
+# pre-per-LoD `geometry` / `geometry_properties` columns and will not bind here.
+# `make test_full` stages the local build; to run it by hand:
 #
 #   ./build/debug/duckdb -unsigned -c \
-#     "INSTALL cityjson FROM community; LOAD cityjson; LOAD three_d; \
-#      <queries from this test>"
+#     "LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension'; \
+#      LOAD three_d; <queries from this test>"
 #
-# Or see docs/CITYJSON_INTEROP.md for an automated path.
+# See docs/CITYJSON_INTEROP.md.
 require cityjson
 
 require three_d
@@ -26,9 +29,20 @@ require three_d
 statement ok
 CREATE TABLE buildings AS
 SELECT id,
-       ST_3DFromWKB(geometry, geometry_properties) AS solid
+       ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
 FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2')
-WHERE geometry IS NOT NULL;
+WHERE geometry_lod2_2 IS NOT NULL;
+
+# The column contract this composition depends on: cityjson emits one BLOB and
+# one STRUCT sidecar per LoD present, named with the *normalised* LoD, and
+# ST_3DFromWKB's STRUCT overload consumes the sidecar directly.
+query II
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2'))
+WHERE column_name LIKE 'geometry%' ORDER BY column_name;
+----
+geometry_lod2_2	BLOB
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
 
 # We get exactly one Building back, with a non-null SOLID_3D payload.
 query II

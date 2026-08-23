@@ -188,7 +188,7 @@ void WkbCubeFaces(std::vector<uint8_t> &buf, double lo, double hi, bool reversed
 
 // Test helper: a hollow cube — outer cube [0,4]^3 (outward) enclosing inner cube
 // [1,3]^3 (inward) as a single 12-face PolyhedralSurface Z. Paired with
-// geometry_properties {"shellCount":2,"shellFaceCounts":[6,6]} it imports as one
+// geometry_properties {"type":"Solid","shells":[6,6]} it imports as one
 // solid with two shells: volume 64-8=56, surface area 96+24=120.
 static std::vector<uint8_t> BuildHollowCubeWKB() {
 	std::vector<uint8_t> buf;

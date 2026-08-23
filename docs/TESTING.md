@@ -60,11 +60,11 @@ LOAD three_d;
 └────────────────┴───────────────────┴───────────────────┘
 ```
 
-**This choice changes the SQL you write.** The current `cityjson` (`aa64174`) and the
-community build that `INSTALL cityjson FROM community` still serves (`d511bdb`) expose
-*different column names*:
+**This choice changes the SQL you write.** The current `cityjson` and the community build
+that `INSTALL cityjson FROM community` still serves (`d511bdb`) expose *different column
+names*:
 
-| | community `d511bdb` | local `aa64174` (used here) |
+| | community `d511bdb` | local build (used here) |
 | --- | --- | --- |
 | Geometry column | `geometry` `BLOB` | `geometry_lod2_2` `BLOB` (one per LoD present) |
 | Sidecar | `geometry_properties` `VARCHAR` (JSON) | `geometry_properties_lod2_2` `STRUCT` |
@@ -72,10 +72,11 @@ community build that `INSTALL cityjson FROM community` still serves (`d511bdb`) 
 `ST_3DFromWKB` accepts both sidecar forms — the `VARCHAR` and `STRUCT` overloads are
 [documented](./FUNCTIONS.md#st_3dfromwkb--st_3dtryfromwkb) and both are covered by the
 automated suite — but the *column names* differ, so cells written for one build do not
-bind against the other. `docs/EXAMPLE.md`, `docs/CITYJSON_INTEROP.md`, and the gated
-`test/sql/cityjson_*.test` files are all written against the community naming and are
-correct **for that build**; every cell below uses the local naming. If you are on the
-community extension, drop the `_lod2_2` suffixes.
+bind against the other. This repo now targets the **local build only**: `docs/EXAMPLE.md`,
+`docs/CITYJSON_INTEROP.md`, and the gated `test/sql/cityjson_*.test` files all use the
+per-LoD naming, and `make test_full` stages the local build rather than downloading the
+community one. Support for the flat shape was dropped rather than kept on a compatibility
+branch.
 
 One more naming rule: the suffix is the *normalised* LoD, so `lod => '2'` produces
 `geometry_lod2_0`, not `geometry_lod2`.
@@ -1141,7 +1142,8 @@ from 1e-3 to 1e-5 — that looseness had been a workaround for this very cancell
 - **LoD0 and the solid LoDs never share a row** in 3DBAG (§23). Join `parents`/`children`,
   or the query silently returns nothing.
 - **The LoD suffix is normalised**: `lod => '2'` yields `geometry_lod2_0`.
-- **Column names differ between the local and community `cityjson` builds** — see
+- **The community `cityjson` build is not supported** — its flat `geometry` /
+  `geometry_properties` columns do not bind against anything in this repo. See
   [Setup](#which-cityjson-build-this-notebook-uses--and-why-it-matters).
 
 ### Tracked gaps, not bugs

@@ -39,11 +39,16 @@ CityJSON and CityJSONSeq:
 - CityJSON — `https://cityjson.open3d.city/cityjson/delft.city.json`
 
 `three_d` does not read CityJSON itself; the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
-community extension does, and hands over `(geometry BLOB, geometry_properties)` pairs.
+extension does, and hands over `(geometry_lod<X> BLOB, geometry_properties_lod<X> STRUCT)`
+pairs. Build it from the sibling checkout and load it by path — the community-published
+build is older and uses a flat `geometry` column
+([why](./CITYJSON_INTEROP.md#which-cityjson-build)):
 
+```sh
+(cd ../duckdb-cityjson && GEN=ninja make release)
+```
 ```sql
-INSTALL cityjson FROM community;   -- one-time
-LOAD cityjson;
+LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
 ```
 
@@ -53,7 +58,9 @@ are joined via `parents` / `children`:
 
 ```sql
 CREATE TABLE feats AS
-SELECT id, parents, children, geometry, geometry_properties,
+SELECT id, parents, children,
+       geometry_lod2_2            AS geometry,
+       geometry_properties_lod2_2 AS geometry_properties,
        b3_volume_lod22, b3_opp_grond
 FROM read_cityjsonseq(
     'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2');
@@ -87,8 +94,10 @@ Most single-value examples below use one representative building:
 CREATE TABLE ex AS SELECT * FROM parts WHERE id = 'NL.IMBAG.Pand.0503100000018426-0';
 ```
 
-> **Always pass `lod => '...'`.** Without it, `cityjson` emits a `STRUCT` geometry column
-> that `ST_3DFromWKB` cannot consume.
+> **Always pass `lod => '...'`.** Without it, `cityjson` emits `geom_lod*` STRUCT columns
+> that `ST_3DFromWKB` cannot consume. The emitted names carry the *normalised* LoD, so
+> `lod => '2.2'` gives `geometry_lod2_2` and `lod => '2'` gives `geometry_lod2_0`; the
+> `feats` query above aliases them once so the rest of this document can say `geometry`.
 
 ---
 

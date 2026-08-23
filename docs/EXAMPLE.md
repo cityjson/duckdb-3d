@@ -3,7 +3,7 @@
 This is a hands-on walkthrough of the `three_d` extension against **real 3D city
 models**: the [3DBAG](https://3dbag.nl) reconstruction of Delft, streamed straight
 from a remote server as CityJSONSeq and turned into queryable solids with the
-[`cityjson`](https://github.com/cityjson/duckdb-cityjson) community extension.
+[`cityjson`](https://github.com/cityjson/duckdb-cityjson) extension.
 
 For the formal contract of every function, see [FUNCTIONS.md](./FUNCTIONS.md). For the
 extension-composition mechanics and troubleshooting, see
@@ -14,28 +14,35 @@ extension-composition mechanics and troubleshooting, see
 `three_d` never parses CityJSON itself. The division of labour is:
 
 - **`cityjson`** reads CityJSON / CityJSONSeq and, in per-LoD mode (`lod => '...'`),
-  emits a `geometry BLOB` (WKB) column plus a sidecar `geometry_properties VARCHAR`
-  (JSON) column.
-- **`three_d`** consumes that pair through `ST_3DFromWKB(geometry, geometry_properties)`
-  and gives you a `SOLID_3D` you can validate, measure, and transform.
+  emits one `geometry_lod<X> BLOB` (WKB) column per LoD present, each paired with a
+  sidecar `geometry_properties_lod<X> STRUCT`.
+- **`three_d`** consumes that pair through
+  `ST_3DFromWKB(geometry_lod<X>, geometry_properties_lod<X>)` and gives you a `SOLID_3D`
+  you can validate, measure, and transform.
 
 ```
-CityJSON ──cityjson──▶ (geometry BLOB, geometry_properties JSON) ──three_d──▶ SOLID_3D / GEOM_3D
+CityJSON ──cityjson──▶ (geometry_lod2_2 BLOB, geometry_properties_lod2_2 STRUCT) ──three_d──▶ SOLID_3D / GEOM_3D
 ```
+
+The suffix is the **normalised** LoD, so `lod => '2.2'` gives `_lod2_2` and `lod => '2'`
+gives `_lod2_0` — not `_lod2`.
 
 ## Setup
 
-Build the extension, then make `cityjson` available (one-time):
+Build both extensions from source. They pin the same DuckDB core, so the two load into
+one process without an ABI complaint:
 
 ```sh
-GEN=ninja make                                     # builds ./build/release/duckdb with three_d preloaded
-./build/release/duckdb -unsigned -c "INSTALL cityjson FROM community;"
+GEN=ninja make                                   # ./build/release/duckdb, three_d linked in
+(cd ../duckdb-cityjson && GEN=ninja make release)
 ```
 
-Every session that follows just loads both:
+`cityjson` is loaded **by path** — the published community build is a different, older
+extension that still emits a flat `geometry` column, and none of the SQL below binds
+against it:
 
 ```sql
-LOAD cityjson;
+LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
 ```
 
@@ -54,9 +61,9 @@ SELECT id,
        ROUND(ST_3DSurfaceArea(solid), 3) AS area,
        ROUND(ST_3DVolume(solid), 3)      AS volume
 FROM (
-  SELECT id, ST_3DFromWKB(geometry, geometry_properties) AS solid
+  SELECT id, ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
   FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2')
-  WHERE geometry IS NOT NULL
+  WHERE geometry_lod2_2 IS NOT NULL
 );
 ```
 
@@ -74,7 +81,9 @@ The 3DBAG Delft tile is published as CityJSONSeq. Read it directly by URL, in Lo
 
 ```sql
 CREATE TABLE feats AS
-SELECT id, parents, children, geometry, geometry_properties,
+SELECT id, parents, children,
+       geometry_lod2_2            AS geometry,
+       geometry_properties_lod2_2 AS geometry_properties,
        b3_volume_lod22, b3_opp_grond, b3_h_maaiveld     -- 3DBAG ground-truth attributes
 FROM read_cityjsonseq(
     'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
@@ -98,6 +107,9 @@ FROM feats p
 JOIN feats b ON b.id = p.parents[1]
 WHERE p.geometry IS NOT NULL;
 ```
+
+Aliasing the two per-LoD columns to `geometry` / `geometry_properties` once, as above, is
+worth doing when a query mentions them repeatedly.
 
 Use `ST_3DTryFromWKB` (not `ST_3DFromWKB`) when exploring real data: it returns `NULL`
 on an unsupported geometry instead of aborting the whole query.
@@ -214,7 +226,7 @@ Related functions on `GEOM_3D`: `ST_3DMaxDistance`, `ST_3DDFullyWithin`,
 ```sql
 SELECT ST_3DGeometryType(g)        AS gtype,        -- ST_PolyhedralSurface
        ST_NDims(g)               AS dims,         -- 3
-       ST_3DAsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.382 446461.183 1.82874289)
+       ST_3DAsText(ST_3DCentroid(g)) AS centroid     -- POINT Z (84595.382 446461.183 1.82866198)
 FROM (SELECT ST_Geom3DFromWKB(geometry) AS g
       FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0');
 ```
@@ -247,9 +259,14 @@ Construction:
 ## Gotchas checklist
 
 - **Always pass `lod => '...'`** to `read_cityjson` / `read_cityjsonseq`. Without it,
-  `cityjson` emits a `STRUCT` geometry column that `ST_3DFromWKB` cannot consume.
-- **Filter `WHERE geometry IS NOT NULL`** upstream — objects lacking the requested LoD
-  have a NULL geometry.
+  `cityjson` emits per-LoD `geom_lod*` structs that `ST_3DFromWKB` cannot consume.
+- **The LoD suffix is normalised.** `lod => '2'` yields `geometry_lod2_0`, and the object
+  may carry several LoDs at once — `DESCRIBE` the reader to see which columns exist.
+- **Filter `WHERE geometry_lod<X> IS NOT NULL`** upstream — objects lacking the requested
+  LoD have a NULL geometry.
+- **Load `cityjson` by path from the sibling build.** The community-published extension
+  is older and uses the flat `geometry` / `geometry_properties VARCHAR` shape; this
+  document targets only the current one.
 - **Attributes are on the parent `Building`**, geometry is on the `BuildingPart`; join
   via `parents` / `children` (§2).
 - **Validate before `ST_3DVolume` / `ST_3DSurfaceArea`** — they raise on invalid solids.

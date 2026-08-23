@@ -7,14 +7,16 @@
 #   test/data/multisolid.city.json      — one MultiSolid, 2 non-adjacent unit cubes
 #   test/data/compositesolid.city.json  — one CompositeSolid, 2 adjacent unit cubes
 #
-# All expected values below were verified against the live `cityjson` community
-# extension (INSTALL cityjson FROM community). `require cityjson` skips this test
-# where the extension is not registered; see docs/CITYJSON_INTEROP.md.
+# All expected values below were verified against a local build of the sibling
+# duckdb-cityjson checkout, which emits the per-LoD `geometry_lod<X>` /
+# `geometry_properties_lod<X>` columns (`lod => '1'` normalises to `_lod1_0`).
+# `require cityjson` skips this test where it is not staged for the runner; see
+# docs/CITYJSON_INTEROP.md.
 #
-# What it pins: (1) the plain-WKB path imports either dataset as a collection of
-# single-shell solids with correct summed geometry maths; (2) the documented v1
-# boundary — metadata-aware import of a MultiSolid/CompositeSolid raises, and the
-# TRY variant returns NULL (deferred capability: docs/FUTURE_WORK.md §1).
+# What it pins: both the plain-WKB path and the metadata-aware path import either
+# dataset as a collection of single-shell solids with correct summed geometry
+# maths. Neither raises — MultiSolid and CompositeSolid import per member, with
+# the partition recovered from the sidecar's nested `shells`.
 require cityjson
 
 require three_d
@@ -30,9 +32,9 @@ SELECT
     ROUND(ST_3DSurfaceArea(s), 6),
     ST_3DIsClosed(s)
 FROM (
-    SELECT ST_3DFromWKB(geometry) AS s
+    SELECT ST_3DFromWKB(geometry_lod1_0) AS s
     FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
-    WHERE geometry IS NOT NULL
+    WHERE geometry_lod1_0 IS NOT NULL
 ) q;
 ----
 2	2.0	12.0	true
@@ -43,9 +45,9 @@ FROM (
 query II
 SELECT ST_3DNumSolids(s), ROUND(ST_3DVolume(s), 6)
 FROM (
-    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    SELECT ST_3DFromWKB(geometry_lod1_0, geometry_properties_lod1_0) AS s
     FROM read_cityjson('test/data/multisolid.city.json', lod => '1')
-    WHERE geometry IS NOT NULL
+    WHERE geometry_lod1_0 IS NOT NULL
 ) q;
 ----
 2	2.0
@@ -61,9 +63,9 @@ SELECT
     ROUND(ST_3DSurfaceArea(s), 6),
     ST_3DIsClosed(s)
 FROM (
-    SELECT ST_3DFromWKB(geometry) AS s
+    SELECT ST_3DFromWKB(geometry_lod1_0) AS s
     FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
-    WHERE geometry IS NOT NULL
+    WHERE geometry_lod1_0 IS NOT NULL
 ) q;
 ----
 2	2.0	12.0	true
@@ -72,9 +74,9 @@ FROM (
 query II
 SELECT ST_3DNumSolids(s), ROUND(ST_3DVolume(s), 6)
 FROM (
-    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    SELECT ST_3DFromWKB(geometry_lod1_0, geometry_properties_lod1_0) AS s
     FROM read_cityjson('test/data/compositesolid.city.json', lod => '1')
-    WHERE geometry IS NOT NULL
+    WHERE geometry_lod1_0 IS NOT NULL
 ) q;
 ----
 2	2.0
