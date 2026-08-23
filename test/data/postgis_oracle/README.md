@@ -17,7 +17,8 @@ or the network.
 `geom_role` splits the input set by which side of the API consumes the bytes:
 
 - **`solid`** — imported with `ST_3DFromWKB` into `SOLID_3D`: the two tetra
-  fixtures, the hollow cube, the two-member cube collection, and the nine 3DBAG
+  fixtures, the hollow cube, the two-member cube collection (adjacent, and a
+  second copy with the parts 1e6 apart), and the nine 3DBAG
   solids.
 - **`geom`** — imported with `ST_Geom3DFromWKB` into `GEOM_3D`: one fixture per
   class the accessor surface dispatches on (point, line, multi-line, polygon,

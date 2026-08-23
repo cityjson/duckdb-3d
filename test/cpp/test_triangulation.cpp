@@ -96,12 +96,8 @@ TEST_CASE("Triangulation: ring winding is decided about a local origin", "[trian
 	}
 	SECTION("concave L-shape far from the origin") {
 		for (double D : {0.0, 4.5e5, 1.0e9}) {
-			auto m = OneFace({{D, D, 0},
-			                  {D + 3, D, 0},
-			                  {D + 3, D + 1, 0},
-			                  {D + 1, D + 1, 0},
-			                  {D + 1, D + 3, 0},
-			                  {D, D + 3, 0}});
+			auto m = OneFace(
+			    {{D, D, 0}, {D + 3, D, 0}, {D + 3, D + 1, 0}, {D + 1, D + 1, 0}, {D + 1, D + 3, 0}, {D, D + 3, 0}});
 			INFO("offset = " << D << ", triangles = " << m.TriangleCount());
 			REQUIRE(m.TriangleCount() == 4);
 			REQUIRE(ComputeSurfaceArea(m) == Approx(5.0).epsilon(1e-9));

@@ -53,8 +53,7 @@ public:
 	}
 };
 
-std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false, Vertex3D translate = {0, 0, 0},
-                                  double rotate_x = 0.0) {
+std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false, Vertex3D translate = {0, 0, 0}, double rotate_x = 0.0) {
 	// Rotate about X first (so a rotated scene keeps its parts' separation
 	// direction), then translate to the requested position.
 	const double c = std::cos(rotate_x), s = std::sin(rotate_x);

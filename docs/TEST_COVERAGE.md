@@ -42,8 +42,8 @@ per-transform); `test/sql/postgis_oracle.test` replays those frozen values with 
 present. Feeding the same bytes to both isolates the math from ingestion differences.
 
 The input set has two roles. `geom_role = 'solid'` rows import through `ST_3DFromWKB` (the two
-tetra fixtures, the hollow cube, the two-member cube collection, nine 3DBAG solids);
-`geom_role = 'geom'` rows are one fixture per `GEOM_3D` class — point, line, multi-line,
+tetra fixtures, the hollow cube, the two-member cube collection in an adjacent and a
+far-separated variant, nine 3DBAG solids); `geom_role = 'geom'` rows are one fixture per `GEOM_3D` class — point, line, multi-line,
 polygon, warped polygon, multi-point, multi-polygon — which is what makes the accessor and
 serialization columns non-trivial.
 
@@ -108,7 +108,7 @@ over the whole frozen 3DBAG corpus.
 | --- | --- |
 | `ST_AsWKBHollowCube()` + `test/cpp/test_inner_shell.cpp` | Interior-shell subtraction (volume 56, area 120), shell-grouping invariance, and rejection of a same-wound cavity |
 | `ST_AsWKBMultiCube()` | Collection-of-solids math in every CI run, ungated |
-| `ST_AsWKBMultiCube(separation)` | Volume conditioning when a collection's parts are spatially separated — the per-shell reference point of DESIGN_DOC §8.2. Total volume stays 16 at separations of 1e4–1e7 |
+| `ST_AsWKBMultiCube(separation)` | Volume conditioning when a collection's parts are spatially separated — the per-shell reference point of DESIGN_DOC §8.2. Total volume stays 16 at separations of 1e4–1e10, and the 1e6 case is oracled against SFCGAL as `fixture:multi_cube_far` |
 | `test/data/multisolid.city.json`, `compositesolid.city.json` | `MultiSolid` / `CompositeSolid` import per solid, with shell grouping recovered from the sidecar (`test/sql/cityjson_multisolid.test`). Import does **not** raise on either class |
 | `test/data/unit_cube.city.json` | End-to-end `cityjson` → `three_d` smoke test |
 

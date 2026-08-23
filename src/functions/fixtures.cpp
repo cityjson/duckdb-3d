@@ -497,8 +497,7 @@ void RegisterFixtureFunctions(ExtensionLoader &loader) {
 	// that pins volume conditioning for spatially separated parts.
 	ScalarFunctionSet multicube_set("st_aswkbmulticube");
 	multicube_set.AddFunction(ScalarFunction({}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
-	multicube_set.AddFunction(
-	    ScalarFunction({LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBMultiCubeSepFun));
+	multicube_set.AddFunction(ScalarFunction({LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBMultiCubeSepFun));
 	loader.RegisterFunction(multicube_set);
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},

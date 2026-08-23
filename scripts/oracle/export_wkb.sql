@@ -42,6 +42,13 @@ COPY (
   UNION ALL
   SELECT 'fixture:multi_cube', '', 'solid',
          lower(hex(ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBMultiCube()))))
+  UNION ALL
+  -- Same two cubes, but 1e6 apart on every axis: the case that exposed the
+  -- volume reference point being hoisted per model instead of per shell
+  -- (DESIGN_DOC §8.2). Total volume is still 8 + 8 = 16, so SFCGAL confirms the
+  -- fixed conditioning with an entirely independent implementation.
+  SELECT 'fixture:multi_cube_far', '', 'solid',
+         lower(hex(ST_3DAsWKB(ST_3DFromWKB(ST_AsWKBMultiCube(1e6::DOUBLE)))))
 
   -- ── GEOM_3D fixtures: one per class the accessor surface dispatches on ──
   UNION ALL
