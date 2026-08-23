@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """gen_golden.py — Phase A of the duckdb-3d PostGIS/SFCGAL differential harness.
 
-Generates test/data/postgis_oracle/golden.csv (per-geometry volume, surface
-area, closedness) and golden_pairs.csv (per-pair distance and relation
-predicates): frozen reference values computed by PostGIS + SFCGAL on the *same*
-ISO WKB bytes the three_d extension exports.
+Generates three frozen CSVs under test/data/postgis_oracle/ — reference values
+computed by PostGIS + SFCGAL on the *same* ISO WKB bytes the three_d extension
+exports:
+
+  * golden.csv            per-geometry measurement, accessors, bbox, serialization
+  * golden_pairs.csv      per-pair distance and relation predicates
+  * golden_transforms.csv per (geometry, affine/CRS op) bbox and re-measurement
+
 This is the ONLY place PostGIS exists — it runs offline, dev-time only. The
 committed golden.csv is what the CI test (test/sql/postgis_oracle.test) compares
 against, so `make test` never needs PostGIS, a container, or the network.
@@ -19,13 +23,15 @@ The WKB inputs are frozen in golden.csv, so there are two regen modes:
   * `--reexport` (`just oracle-reexport`) — re-derive the wkb_hex from the
     fixture via the release DuckDB CLI + cityjson, then recompute. Use this only
     when the fixture (test/data/3dbag.city.jsonl) or the input set changes. It
-    requires a DuckDB version for which the cityjson community extension is
-    published (see README.md).
+    needs a LOCAL duckdb-cityjson build (CITYJSON_EXTENSION, defaulting to the
+    sibling checkout); the community build is no longer supported — its column
+    shape is stale. See docs/CITYJSON_INTEROP.md.
 
-Both modes then feed the bytes into PostGIS (scripts/oracle/postgis_oracle.sql),
-sort rows, and fixed-format floats -> deterministic golden.csv (+ provenance).
-The oracle runs in a container managed by `just oracle-up` (Apple `container`,
-Docker-compatible); a clean run leaves golden.csv byte-identical.
+Both modes then feed the bytes into PostGIS (scripts/oracle/postgis_oracle.sql,
+_pairs.sql, _transforms.sql), sort rows, and fixed-format floats -> deterministic
+CSVs (+ provenance). The oracle runs in a container managed by `just oracle-up`
+(Apple `container`, Docker- and Podman-compatible via ORACLE_RUNTIME); a clean
+run leaves the CSVs byte-identical.
 """
 
 from __future__ import annotations
@@ -45,8 +51,18 @@ DUCKDB = REPO / "build" / "release" / "duckdb"
 EXPORT_SQL = REPO / "scripts" / "oracle" / "export_wkb.sql"
 ORACLE_SQL = REPO / "scripts" / "oracle" / "postgis_oracle.sql"
 ORACLE_PAIRS_SQL = REPO / "scripts" / "oracle" / "postgis_oracle_pairs.sql"
+ORACLE_TRANSFORMS_SQL = REPO / "scripts" / "oracle" / "postgis_oracle_transforms.sql"
 OUT_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden.csv"
 OUT_PAIRS_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden_pairs.csv"
+OUT_TRANSFORMS_CSV = REPO / "test" / "data" / "postgis_oracle" / "golden_transforms.csv"
+
+# The cityjson reader used by --reexport. A LOCAL duckdb-cityjson build, loaded
+# by path: the published community extension still emits the pre-per-LoD column
+# shape (flat `geometry` BLOB) this repo no longer targets.
+CITYJSON_EXTENSION = os.environ.get(
+    "CITYJSON_EXTENSION",
+    str(REPO.parent / "duckdb-cityjson" / "build" / "release" / "extension"
+        / "cityjson" / "cityjson.duckdb_extension"))
 
 # Container runtime + image are configurable so the harness also runs under
 # plain Docker; the defaults target Apple `container` with the pinned image.
@@ -76,15 +92,20 @@ _HEX = re.compile(r"\A[0-9a-fA-F]*\Z")
 _SAFE_ID = re.compile(r"\A[\w:.\-]*\Z")
 
 # Columns whose values are floating-point and must be formatted deterministically.
-FLOAT_COLS = ("pg_area3d", "pg_volume", "pg_hull_area")
+BBOX_COLS = ("pg_min_x", "pg_min_y", "pg_min_z", "pg_max_x", "pg_max_y", "pg_max_z")
+FLOAT_COLS = (("pg_area3d", "pg_volume", "pg_hull_area", "pg_length3d",
+               "pg_proj_area", "pg_x", "pg_y", "pg_z") + BBOX_COLS)
 PAIR_FLOAT_COLS = ("pg_dist3d", "pg_maxdist3d", "threshold",
                    "pg_shortline_len", "pg_closestpoint_dist")
+TRANSFORM_FLOAT_COLS = ("pg_area3d", "pg_volume", "pg_length3d",
+                        "pg_proj_area") + BBOX_COLS
 FLOAT_FMT = "%.17g"  # round-trippable, stable across runs of the same image
 
 # PostGIS COPY writes booleans as t/f; normalise to true/false so DuckDB's
 # read_csv infers a real BOOLEAN column in Phase B.
-BOOL_COLS = ("pg_is_closed",)
+BOOL_COLS = ("pg_is_closed", "pg_is_planar", "pg_wkb_roundtrip")
 PAIR_BOOL_COLS = ("pg_intersects", "pg_dwithin", "pg_dfullywithin")
+TRANSFORM_BOOL_COLS = ()
 _BOOL = {"t": "true", "f": "false"}
 
 # Geometry pairs for the distance/relation oracle: (feature_a, feature_b,
@@ -99,6 +120,12 @@ PAIRS = (
     ("NL.IMBAG.Pand.0703100000035935-0", "NL.IMBAG.Pand.0703100000028278-0", 100.0),
     ("NL.IMBAG.Pand.0703100000035935-0", "NL.IMBAG.Pand.0703100000035935-0", 1.0),
     ("fixture:tetra", "fixture:tetra", 2.0),
+    # Cross-class pairs over the GEOM_3D fixtures: the distance family dispatches
+    # on both operands' classes, and the solid-only pairs above never reach the
+    # point/line/polygon branches.
+    ("fixture:point", "fixture:polygon", 5.0),
+    ("fixture:line", "fixture:multipolygon", 10.0),
+    ("fixture:multipoint", "fixture:multiline", 20.0),
 )
 
 
@@ -133,9 +160,15 @@ def export_wkb_inputs() -> list[dict[str, str]]:
     """DuckDB side: (feature_id, lod, geom_role, wkb_hex) rows from the fixture."""
     if not DUCKDB.exists():
         raise SystemExit(f"release CLI not found at {DUCKDB}; run `just build` first")
+    if not Path(CITYJSON_EXTENSION).exists():
+        raise SystemExit(
+            f"cityjson extension not found at {CITYJSON_EXTENSION}; build the sibling "
+            f"duckdb-cityjson checkout (`GEN=ninja make release`) or set CITYJSON_EXTENSION")
     # export_wkb.sql opens with the analytic ST_AsWKB* fixtures, which three_d
     # only registers when THREE_D_TEST_FIXTURES is set (src/functions/fixtures.cpp).
-    out = run([str(DUCKDB), "-unsigned", "-cmd", "LOAD three_d;",
+    out = run([str(DUCKDB), "-unsigned",
+               "-cmd", "LOAD three_d;",
+               "-cmd", f"LOAD '{CITYJSON_EXTENSION}';",
                "-c", f".read {EXPORT_SQL}"],
               env={**os.environ, "THREE_D_TEST_FIXTURES": "1"})
     return list(csv.DictReader(io.StringIO(out)))
@@ -168,20 +201,32 @@ def _validate(rows: list[dict[str, str]]) -> None:
                 raise SystemExit(f"unsafe {c}: {r[c]!r}")
 
 
-def run_oracle(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Load wkb_inputs into PostGIS, run postgis_oracle.sql, return CSV rows."""
+def _load_inputs_sql(rows: list[dict[str, str]]) -> str:
+    """SQL that recreates the TEMP wkb_inputs table. TEMP means per-session, so
+    every psql invocation that reads it has to reload it."""
     _validate(rows)
     values = ",\n".join(
         "(" + ",".join(_pgquote(r[c]) for c in
                        ("feature_id", "lod", "geom_role", "wkb_hex")) + ")"
         for r in rows
     )
-    load = (
+    return (
         "CREATE TEMP TABLE wkb_inputs"
         " (feature_id text, lod text, geom_role text, wkb_hex text);\n"
         f"INSERT INTO wkb_inputs VALUES\n{values};\n"
     )
-    out = psql(load + ORACLE_SQL.read_text())
+
+
+def run_oracle(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Load wkb_inputs into PostGIS, run postgis_oracle.sql, return CSV rows."""
+    out = psql(_load_inputs_sql(rows) + ORACLE_SQL.read_text())
+    return list(csv.DictReader(io.StringIO(out)))
+
+
+def run_oracle_transforms(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Run postgis_oracle_transforms.sql. Must follow run_oracle: it calls the
+    oracle_area3d/oracle_volume wrappers postgis_oracle.sql defines."""
+    out = psql(_load_inputs_sql(rows) + ORACLE_TRANSFORMS_SQL.read_text())
     return list(csv.DictReader(io.StringIO(out)))
 
 
@@ -207,6 +252,10 @@ def check_canary(rows: list[dict[str, str]]) -> None:
         raise SystemExit(f"sanity: {CANARY} area {row['pg_area3d']} != {CANARY_AREA}")
     if not math.isclose(float(row["pg_volume"]), CANARY_VOLUME, rel_tol=1e-9):
         raise SystemExit(f"sanity: {CANARY} volume {row['pg_volume']} != {CANARY_VOLUME}")
+    # The serialization column is a self-comparison inside PostGIS; if it were
+    # ever uniformly false the Phase B assertion built on it would be vacuous.
+    if row["pg_wkb_roundtrip"] != "t":
+        raise SystemExit(f"sanity: PostGIS did not re-emit {CANARY}'s input WKB unchanged")
 
 
 def run_oracle_pairs(pairs, wkb_by_id: dict[str, str]) -> list[dict[str, str]]:
@@ -241,6 +290,31 @@ def check_pair_canary(rows: list[dict[str, str]]) -> None:
         raise SystemExit(f"sanity: {CANARY} self-distance {row['pg_dist3d']} != 0")
     if row["pg_intersects"] != "t":
         raise SystemExit(f"sanity: {CANARY} self-pair not intersecting")
+
+
+def check_transform_canary(rows: list[dict[str, str]]) -> None:
+    """The transform oracle must reproduce the analytic invariants on the tetra:
+    a rotation preserves volume exactly, the anisotropic scale multiplies it by
+    det = 2·3·0.5 = 3. Without this a silently degenerate op (e.g. an identity
+    ST_RotateX) would freeze values Phase B then happily agrees with."""
+    by_op = {r["op"]: r for r in rows if r["feature_id"] == CANARY}
+    for op in ("translate", "scale", "rotatex", "rotatey", "rotatez"):
+        if op not in by_op:
+            raise SystemExit(f"sanity: transform canary {CANARY}/{op} missing")
+        if by_op[op]["pg_volume_status"] != "ok":
+            raise SystemExit(f"sanity: SFCGAL rejected the {op}d {CANARY}")
+    for op in ("translate", "rotatex", "rotatey", "rotatez"):
+        if not math.isclose(float(by_op[op]["pg_volume"]), CANARY_VOLUME, rel_tol=1e-9):
+            raise SystemExit(
+                f"sanity: {op} changed {CANARY}'s volume ({by_op[op]['pg_volume']})")
+    if not math.isclose(float(by_op["scale"]["pg_volume"]), 3.0 * CANARY_VOLUME,
+                        rel_tol=1e-9):
+        raise SystemExit(
+            f"sanity: scale did not triple {CANARY}'s volume ({by_op['scale']['pg_volume']})")
+    # A translation must move the bbox and leave its extent alone; catches an op
+    # column that silently carried the untransformed geometry through.
+    if float(by_op["translate"]["pg_min_x"]) != 100.5:
+        raise SystemExit("sanity: translate did not move the canary bbox")
 
 
 def format_golden(rows: list[dict[str, str]], pg_ver: str, sfcgal_ver: str,
@@ -283,6 +357,8 @@ def main() -> None:
     check_canary(oracle_rows)
     pair_rows = run_oracle_pairs(PAIRS, {r["feature_id"]: r["wkb_hex"] for r in inputs})
     check_pair_canary(pair_rows)
+    transform_rows = run_oracle_transforms(inputs)
+    check_transform_canary(transform_rows)
     pg_ver, sfcgal_ver, geos_ver = oracle_versions()
     if (pg_ver, sfcgal_ver, geos_ver) != (EXPECTED_PG, EXPECTED_SFCGAL, EXPECTED_GEOS):
         sys.stderr.write(
@@ -296,9 +372,14 @@ def main() -> None:
         pair_rows, pg_ver, sfcgal_ver, geos_ver,
         float_cols=PAIR_FLOAT_COLS, bool_cols=PAIR_BOOL_COLS,
         sort_key=lambda r: (r["feature_a"], r["feature_b"], float(r["threshold"]))))
+    OUT_TRANSFORMS_CSV.write_text(format_golden(
+        transform_rows, pg_ver, sfcgal_ver, geos_ver,
+        float_cols=TRANSFORM_FLOAT_COLS, bool_cols=TRANSFORM_BOOL_COLS,
+        sort_key=lambda r: (r["geom_role"], r["feature_id"], r["op"])))
     mode = "re-export" if args.reexport else "frozen-WKB"
     print(f"wrote {OUT_CSV.relative_to(REPO)}: {len(oracle_rows)} rows; "
-          f"{OUT_PAIRS_CSV.name}: {len(pair_rows)} rows "
+          f"{OUT_PAIRS_CSV.name}: {len(pair_rows)} rows; "
+          f"{OUT_TRANSFORMS_CSV.name}: {len(transform_rows)} rows "
           f"[{mode}] (PostGIS {pg_ver}, SFCGAL {sfcgal_ver}, GEOS {geos_ver})")
 
 

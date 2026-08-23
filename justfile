@@ -70,8 +70,13 @@ clean:
 # Regenerates test/data/postgis_oracle/golden.csv, the frozen reference values
 # the CI test test/sql/postgis_oracle.test compares against. PostGIS runs offline
 # here only; `make test` never needs it. See test/data/postgis_oracle/README.md.
-# Defaults target Apple `container`; for Docker, swap `--arch amd64` for
-# `--platform linux/amd64` and set ORACLE_RUNTIME=docker.
+# Defaults target Apple `container`; for Docker or rootless Podman, swap
+# `--arch amd64` for `--platform linux/amd64` and set ORACLE_RUNTIME accordingly:
+#
+#   export ORACLE_RUNTIME=podman ORACLE_ARCH_FLAG="--platform linux/amd64"
+#
+# gen_golden.py reads ORACLE_RUNTIME from the environment too, so the same two
+# variables cover `oracle-up`, `oracle-regen`/`oracle-reexport`, and `oracle-down`.
 
 oracle_runtime := env_var_or_default("ORACLE_RUNTIME", "container")
 oracle_container := env_var_or_default("ORACLE_CONTAINER", "pg_oracle")
@@ -100,8 +105,8 @@ oracle-down:
 oracle-regen:
     python3 scripts/oracle/gen_golden.py
 
-# Needs a published cityjson for the CLI's DuckDB version; use only when the
-# fixture test/data/3dbag.city.jsonl changes.
+# Needs a LOCAL duckdb-cityjson build (see CITYJSON_EXTENSION in gen_golden.py);
+# use only when the fixture test/data/3dbag.city.jsonl or the input set changes.
 
 # Re-derive WKB from the fixture, then refresh the oracle values.
 oracle-reexport:
