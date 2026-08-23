@@ -82,3 +82,15 @@ SELECT ST_3DNumSolids(s), ST_3DVolume(s)
 FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube(1e6::DOUBLE)) AS s) q;
 ----
 2	16.0
+
+# Ear-clipping decides a ring's handedness from a 2D shoelace sum. On absolute
+# coordinates that sum's products scale as |position|^2 against an answer of
+# |extent|^2, so at 1e9 it collapsed, the handedness read backwards, no ear was
+# ever found, and one face produced NO triangles — 13.333 instead of 16, with
+# every validity flag still green. Referenced to the ring's first vertex, the
+# answer is exact at any offset.
+query II
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBMultiCube(1e9::DOUBLE))),
+       ST_3DVolume(ST_3DFromWKB(ST_AsWKBMultiCube(1e10::DOUBLE)));
+----
+16.0	16.0

@@ -71,6 +71,14 @@ any time. Nothing may treat the triangulation as authoritative, because doing so
 quietly discard the face structure that WKB export and semantic-surface interoperability
 depend on.
 
+Ear-clipping runs on coordinates referenced to the ring's own first vertex, for the same
+conditioning reason volume does (§8.2), one power lower: the handedness shoelace and the
+convexity tests are signed areas whose products scale as `|position|²` against an answer of
+`|extent|²`. Left absolute, the handedness sum collapsed for a 1 mm face at RD New northings
+and for a 2 m face at ~10⁹; the convexity test then inverted, no ear was ever found, and the
+face emitted **zero** triangles — a wrong `ST_3DVolume` with every validity flag still green,
+because validation reads rings, not triangles. Pinned by `test/cpp/test_triangulation.cpp`.
+
 ### 2.3 Fail clearly at the boundary
 
 Unsupported geometry classes are rejected with a descriptive error at import, not silently

@@ -261,7 +261,7 @@ TEST_CASE("Volume: spatially separated multi-solid keeps full precision", "[meas
 	// intermediate products cancel exactly by luck. True total volume is 2.0 at
 	// every separation, because volume is translation-invariant.
 	const double expected = 2.0;
-	for (double sep : {1.0e4, 1.0e5, 1.0e6, 1.0e7}) {
+	for (double sep : {1.0e4, 1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9}) {
 		for (double rot : {0.0, 0.7}) {
 			auto cube_a = BuildCubeWKB(false, {0, 0, 0}, rot);
 			auto cube_b = BuildCubeWKB(false, {sep, sep, sep}, rot);
@@ -280,7 +280,8 @@ TEST_CASE("Volume: spatially separated multi-solid keeps full precision", "[meas
 
 			double vol = ComputeVolume(model);
 			INFO("separation = " << sep << ", rotate_x = " << rot << ", volume = " << vol);
-			// 1e-6 is far looser than the ~1e-11 floor this leaves and far
+			// 1e-6 is far looser than the floor this leaves (~1e-8 relative at
+			// 1e9, from the rotated vertices' own |p|·eps rounding) and far
 			// tighter than the failures it pins (1.6% at 1e5, 1600x at 1e7).
 			REQUIRE(std::abs(vol - expected) <= 1e-6 * expected);
 		}

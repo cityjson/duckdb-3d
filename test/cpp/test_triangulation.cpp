@@ -61,3 +61,50 @@ TEST_CASE("Triangulation: a tilted (non-axis-aligned) face keeps its true area",
 	REQUIRE(m.TriangleCount() == 2);
 	REQUIRE(ComputeSurfaceArea(m) == Approx(std::sqrt(2.0)).epsilon(1e-12));
 }
+
+TEST_CASE("Triangulation: ring winding is decided about a local origin", "[triangulation]") {
+	// EarClipTriangulate decides the ring's 2D handedness with a shoelace sum.
+	// Written on absolute projected coordinates, px[i]*py[j] - px[j]*py[i], its
+	// intermediate products scale as |position|^2 while the answer scales as
+	// |extent|^2 — the same conditioning trap as the volume sum (DESIGN_DOC
+	// §8.2), one power lower. When the noise swamps the true value the handedness
+	// flips, the convexity test inverts, no ear is ever found and the face silently
+	// emits ZERO triangles: ST_3DVolume then returns a wrong number without any
+	// validity flag changing, because validation works on rings, not triangles.
+	//
+	// The threshold scales with the FACE's own area, not the model's extent: the
+	// shoelace noise is ~n·|p|²·eps, so a face breaks once its area falls below
+	// that. A 2 m square survives to ~1e9; a 1 mm face already breaks at RD New
+	// (EPSG:28992) northings, where the sum collapses to exactly 0 and the ring
+	// is read as clockwise.
+	SECTION("2 m square, far from the origin") {
+		for (double D : {0.0, 4.5e5, 1.0e7, 1.0e9}) {
+			auto m = OneFace({{D, D, 0}, {D + 2, D, 0}, {D + 2, D + 2, 0}, {D, D + 2, 0}});
+			INFO("offset = " << D << ", triangles = " << m.TriangleCount());
+			REQUIRE(m.TriangleCount() == 2);
+			REQUIRE(ComputeSurfaceArea(m) == Approx(4.0).epsilon(1e-9));
+		}
+	}
+	SECTION("1 mm face at RD New magnitudes") {
+		const double s = 0.001;
+		for (double D : {0.0, 8.5e4, 4.5e5}) {
+			auto m = OneFace({{D, D, 0}, {D + s, D, 0}, {D + s, D + s, 0}, {D, D + s, 0}});
+			INFO("offset = " << D << ", triangles = " << m.TriangleCount());
+			REQUIRE(m.TriangleCount() == 2);
+			REQUIRE(ComputeSurfaceArea(m) == Approx(s * s).epsilon(1e-6));
+		}
+	}
+	SECTION("concave L-shape far from the origin") {
+		for (double D : {0.0, 4.5e5, 1.0e9}) {
+			auto m = OneFace({{D, D, 0},
+			                  {D + 3, D, 0},
+			                  {D + 3, D + 1, 0},
+			                  {D + 1, D + 1, 0},
+			                  {D + 1, D + 3, 0},
+			                  {D, D + 3, 0}});
+			INFO("offset = " << D << ", triangles = " << m.TriangleCount());
+			REQUIRE(m.TriangleCount() == 4);
+			REQUIRE(ComputeSurfaceArea(m) == Approx(5.0).epsilon(1e-9));
+		}
+	}
+}
