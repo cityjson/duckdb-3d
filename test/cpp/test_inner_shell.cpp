@@ -18,11 +18,9 @@
 //    path (one merged shell) yields the same volume as the metadata path — the
 //    subtraction is driven by the interior shell's WINDING, not by grouping.
 //    (Grouping only changes ST_3DNumShells.)
-//  * validation does NOT yet enforce CityGML's "interior oriented opposite the
-//    exterior": a same-wound inner shell passes as valid and yields V_outer +
-//    V_inner. That gap is tracked in docs/FUTURE_WORK.md; the test below pins
-//    the current behaviour and will flip into a regression test once the
-//    cross-shell orientation check is implemented.
+//  * validation enforces CityGML §9.3's "interior oriented opposite the
+//    exterior": a same-wound inner shell would silently ADD its volume, so it
+//    is REJECTED rather than measured (see the last test in this file).
 //
 // Fixture: outer cube [0,4]^3 (V=64, SA=96) enclosing inner cube [1,3]^3
 // (V=8, SA=24). Expected hollow volume = 64 - 8 = 56; surface area (all faces,

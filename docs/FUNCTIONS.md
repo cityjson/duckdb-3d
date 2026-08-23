@@ -236,6 +236,12 @@ shape — passing the wrong family raises (or yields `NULL` in the `TRY` form).
 | `ST_3DAsGeoJSON` | `(GEOM_3D)` | `VARCHAR` | A `PolyhedralSurface` is emitted as a `MultiPolygon`. |
 | `ST_3DAsBinary` | `(GEOM_3D)` | `BLOB` | OGC/ISO WKB, little-endian. |
 
+The two **binary** exports are exact — `ST_3DAsWKB` and `ST_3DAsBinary` agree byte-for-byte
+with each other and with PostGIS's `ST_AsBinary` on the same geometry. The two **text**
+exports are not: ordinates are formatted with `%.9g`, so at RD coordinate magnitudes
+(`62609.76675`) WKT and GeoJSON round to about 0.1 mm. Use the binary forms when the output
+has to round-trip losslessly.
+
 `ST_3DAsWKB` exports a single solid as `PolyhedralSurface Z` and a multi-solid as
 `GeometryCollection Z`. It is the bridge back to `GEOM_3D` and to other tools:
 

@@ -396,9 +396,9 @@ surface; PROJ-backed `ST_3DTransform`. See the
 
 - Performance tuning — bounding-box pre-filters for the distance family.
 - Stored SRID in the payload header, enabling a one-argument `ST_3DTransform` and cross-CRS
-  mismatch detection ([FUTURE_WORK.md §3](./FUTURE_WORK.md)).
+  mismatch detection ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
 - Bundling PROJ's `proj.db` into the distributable extension.
-- Moving CityJSON-aware interpretation upstream ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
+- Moving CityJSON-aware interpretation upstream ([FUTURE_WORK.md §1](./FUTURE_WORK.md)).
 
 **Lower priority.** Remaining PostGIS-analogue accessors and serializers — `ST_HasM`, `ST_M`,
 `ST_Zmflag`, `ST_3DLongestLine`, `ST_Affine`, `ST_FlipCoordinates`, `ST_SwapOrdinates`,
