@@ -47,9 +47,12 @@ true
 
 # ── Real 3DBAG golden solids: invariants at RD coordinate magnitudes ──────────
 # Every relation below holds at the same measured 1e-5 relative tolerance, since
-# ComputeVolume references its signed tetrahedra to the model's own bbox midpoint
-# rather than the absolute origin (b019978) — before that, translation at RD
-# magnitudes (~1e5) drifted by ~3.5e-5 and the X/Y rotations by up to 12%.
+# ComputeVolume references its signed tetrahedra to a point ON THE SHELL being
+# integrated rather than to the absolute origin (b019978, granularity corrected
+# to per-shell later) — before that, translation at RD magnitudes (~1e5) drifted
+# by ~3.5e-5 and the X/Y rotations by up to 12%. The measured maxima over the
+# real Delft tile are now 3.0e-11 relative under rotation and exactly 0 under
+# translation, so 1e-5 leaves six orders of headroom.
 # Boolean predicates over the whole corpus, so a regression in any solid fails.
 
 # Materialise the solid-role rows FIRST. golden.csv also carries GEOM_3D-class
@@ -83,8 +86,8 @@ true
 
 # Rotation about X and Y preserves volume just as well as about Z. These are the
 # axes that mix the large RD northing into Z, so before ComputeVolume referenced
-# its triple products to the model's bbox midpoint they drifted by up to 12% on
-# this very corpus while RotateZ stayed clean — see docs/TESTING.md §21.
+# its triple products to a local point they drifted by up to 12% on this very
+# corpus while RotateZ stayed clean — see docs/TESTING.md §21.
 query I
 SELECT bool_and(abs(ST_3DVolume(ST_3DRotateX(s, 0.7)) - ST_3DVolume(s)) <= 1e-5 * ST_3DVolume(s)) FROM _golden;
 ----

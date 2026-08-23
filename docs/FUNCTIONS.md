@@ -475,12 +475,17 @@ WHERE n_parts = 1 AND ST_3DValidationReport(solid).is_valid AND b3_volume_lod22 
 
 - **`ST_3DVolume`** sums signed tetrahedral contributions. Because interior shells are wound
   opposite the exterior, cavities **subtract automatically** — no "this shell is a hole" flag
-  is needed. Multi-solid values sum their members. The tetrahedra are referenced to the
-  model's own bounding-box midpoint rather than the coordinate origin, so the result does not
-  depend on where the model sits: a building measures the same in RD New easting/northing as
-  it does at the origin, and rigid motions preserve volume to ~1e-15 relative. Summing about
-  the absolute origin would cancel away roughly nine of the sixteen available digits at
-  projected-CRS magnitudes.
+  is needed. Multi-solid values sum their members. The tetrahedra are referenced to **each
+  shell's own first vertex** rather than to the coordinate origin, so the result does not
+  depend on where the model sits, nor on how far apart a multi-solid's parts are: a building
+  measures the same in RD New easting/northing as it does at the origin. Summing about the
+  absolute origin would cancel away roughly nine of the sixteen available digits at
+  projected-CRS magnitudes. Under rigid motions the volume is preserved to **~1e-11
+  relative** — measured max 3.0e-11 over all 1098 valid solids of the Delft tile under
+  rotation, and *exactly* 0 under translation. Rotation is the looser of the two because
+  rotating absolute RD coordinates injects `|p|·eps` rounding into the vertices themselves,
+  before any measurement runs; that floor is a property of the coordinates, not of the volume
+  sum.
 - **`ST_3DSurfaceArea` / `ST_3DArea`** sum *all* faces and are **not** shell-aware: cavity
   walls count toward surface area. Only volume distinguishes shell roles.
 - **`ST_3DFootprintArea`** is the 2D XY-projected ground area. It has no validity

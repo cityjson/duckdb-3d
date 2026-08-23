@@ -552,7 +552,8 @@ FROM ex;
 > **This cell used to fail.** `v_rotx` read `18.9956` — 2.7 % off — before the fix
 > described in [Quirks](#a-real-bug-this-walkthrough-found-volume-drift-under-rotation). The output above is post-fix.
 
-Across all 1098 valid parts, the relative volume drift under rotation is now exactly zero:
+Across all 1098 valid parts, the relative volume drift under rotation is now zero to six
+decimal places — the query below rounds, so read it as "below 5e-7", not as "exactly zero":
 
 ```sql
 SELECT ROUND(max(abs(ST_3DVolume(ST_3DRotateX(solid, pi()/3)) - ST_3DVolume(solid))/ST_3DVolume(solid)), 6) AS max_relerr_rotx,
@@ -568,6 +569,12 @@ FROM good;
 │ 0.0             │ 0.0             │ 0.0             │
 └─────────────────┴─────────────────┴─────────────────┘
 ```
+
+Unrounded, the same three maxima are **2.6e-11**, **6.2e-12** and **3.0e-11**, and the
+translation maximum is *exactly* 0.0. Rotation is the looser case for a reason that has
+nothing to do with the volume sum: rotating absolute RD coordinates injects `|p|·eps`
+rounding into the vertices themselves before any measurement runs, so ~1e-11 is the floor
+imposed by the coordinates, not a residue of the cancellation this section is about.
 
 ## 15 — `ST_3DTransform`: RD New → WGS84
 
@@ -1103,13 +1110,25 @@ roughly nine of the sixteen available digits. Only X and Y rotations mix the lar
 northing into Z, which is why Z rotation looked fine and hid the problem. A tetrahedron
 translated to 1e8 reported `1.67e7` instead of `1/6`.
 
-Fixed by referencing each tetrahedron to the model's bounding-box midpoint — a no-op in
-exact arithmetic. Drift across all 1098 valid Delft solids is now exactly 0 (§14).
+Fixed by referencing each tetrahedron to a point on the shell it belongs to — a no-op in
+exact arithmetic. Drift across all 1098 valid Delft solids is now at most **3.0e-11**
+relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is the floor
+imposed by rotating absolute RD coordinates, not a residue of the cancellation.
 Untransformed measurements did not change: agreement with 3DBAG's `b3_volume_lod22` is
 still a 0.0167 % median error. Regression tests: `test/cpp/test_measurements.cpp`
 ("far-from-origin tetrahedron keeps full precision") and the RotateX/RotateY cases in
 `test/sql/metamorphic_transforms.test`, where the translation tolerance also tightened
 from 1e-3 to 1e-5 — that looseness had been a workaround for this very cancellation.
+
+The first attempt at this fix used **one** reference point for the whole model (its
+bounding-box midpoint). That is enough for a compact building but not in general: for a
+`MultiSolid`/`CompositeSolid` whose parts are far apart the midpoint is far from *every*
+part, and the same cancellation returns — two unit cubes separated by 1e6 reported 14.456
+instead of 16, and by 1e7, 2353. The reference point has to be hoisted **per shell**; see
+DESIGN_DOC §8.2 and `test/sql/st_3d_multisolid.test`. Two neighbouring conditioning bugs of
+the same family turned up while pinning it — ear-clipping's handedness test (DESIGN_DOC §2.2)
+and Newell's ring area, which made the degenerate-face verdict position-dependent
+(DESIGN_DOC §8.1).
 
 ### Cells whose real output contradicts the naive expectation
 
