@@ -82,9 +82,10 @@ make test_cpp      # C++ kernel tests (Catch2)
 make test_all      # test_debug + test_cpp
 ```
 
-**`make test_full` is the target to verify against.** It builds, stages the gated extensions,
-and runs both suites, so `require cityjson` / `require spatial` tests execute instead of
-skipping. It needs network access.
+**`make test_full` is the target to verify against.** It builds (release), stages the gated
+extensions, and runs both suites, so `require cityjson` / `require spatial` tests execute
+instead of skipping. It needs network access, and a locally built `../duckdb-cityjson` — the
+community-published `cityjson` is stale and no longer supported (docs/CITYJSON_INTEROP.md).
 
 **`make test`, `test_debug`, and `test_all` do not build.** The ci-tools targets run whatever
 binary `build/release` / `build/debug` already holds, so a stale build reports results for
@@ -99,8 +100,11 @@ The `Makefile` exports `THREE_D_TEST_FIXTURES=1`, which gates the `st_aswkb*` te
 Running a built binary directly without it silently skips every test that requires them.
 
 Under the narrower targets, tests gated on `require cityjson` / `require spatial` skip when
-those extensions are not registered with the runner. Those skips are expected, not failures —
-but a skip under `test_full` means the staging failed and is worth investigating.
+those extensions are not registered with the runner. Those skips are expected, not failures.
+
+A skip under `test_full` **fails the run**: the target stages the gated extensions itself, so
+a skipped `require cityjson` test means the staging did not work and the interop tests did not
+run.
 
 ## Writing style for docs
 

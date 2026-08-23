@@ -113,11 +113,30 @@ WHERE geom_role = 'solid' AND pg_volume_status = 'ok'
 ----
 true
 
+# ── Separated-parts multi-solid: the conditioning case, oracled ──
+# Two unit-8 cubes 1e6 apart on every axis. Volume is translation-invariant, so
+# the answer is 16 however far apart the parts sit — but a divergence-theorem sum
+# only holds that in doubles if each shell is integrated about a point ON that
+# shell (DESIGN_DOC §8.2). With a single model-wide reference point this
+# extension returned 14.456 here. SFCGAL computes the same quantity with an
+# entirely independent implementation and lands on 15.999999999883585, so the
+# tight-tier comparison above is a real cross-check, not a self-consistency one.
+# Asserted explicitly so the row cannot silently drop out of the golden set.
+query III
+SELECT pg_volume_status,
+       abs(pg_volume - 16.0) < 1e-9,
+       abs(ST_3DVolume(ST_3DFromWKB(unhex(wkb_hex))) - pg_volume) <= 1e-6 * pg_volume
+FROM golden WHERE feature_id = 'fixture:multi_cube_far';
+----
+ok	true	true
+
 # ── Convex-hull area (2D-XY). The extension measures its own hull with
 # ST_3DFootprintArea(ST_3DConvexHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
 # because GEOS's ST_ConvexHull rejects a PolyhedralSurface. GEOS has no planarity
-# requirement, so this covers all geometry (no 'rejected' rows). ──
-# Non-vacuity: every geometry has a positive hull area to compare against.
+# requirement, so this covers all geometry (no 'rejected' rows) — including the
+# degenerate hulls of the point/line fixtures, whose XY hull has zero area.
+# ST_Geom3DFromWKB rejects GeometryCollection by design, so that row is excluded. ──
+# Non-vacuity: every solid has a positive hull area to compare against.
 query I
 SELECT bool_and(pg_hull_area > 0) FROM golden WHERE geom_role = 'solid';
 ----
@@ -127,7 +146,7 @@ query I
 SELECT count(*) = count(*) FILTER (
   WHERE abs(ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
         <= 1e-6 * abs(pg_hull_area) + 1e-6)
-FROM golden WHERE geom_role = 'solid';
+FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
 ----
 true
 
@@ -288,6 +307,401 @@ WHERE a.feature_id = 'NL.IMBAG.Pand.0703100000035935-0'
 
 statement ok
 DROP TABLE golden_pairs;
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Accessors, serialization, and footprint on every frozen geometry.
+#
+# The golden carries two input roles. 'solid' rows import through ST_3DFromWKB
+# into SOLID_3D; 'geom' rows are the point/line/polygon/multi-* fixtures that a
+# SOLID_3D cannot hold and import through ST_Geom3DFromWKB into GEOM_3D. Some
+# accessors exist on only one of the two, hence the role filters below.
+#
+# Where PostGIS is deliberately NOT the reference:
+#   * ST_3DDimension / ST_3DNumGeometries on a PolyhedralSurface — PostGIS reads
+#     a closed PolyhedralSurface as a solid (ST_Dimension = 3, and 2 for the open
+#     one) and ST_NumGeometries as its patch count; three_d reports the
+#     topological dimension of the surface (2) and treats the surface as one
+#     geometry. Different questions, so those two are oracled on the 'geom' rows.
+#   * ST_3DPerimeter — PostGIS's is the sum of every face's ring length; three_d's
+#     is the length of the *boundary* edges only (0 for a closed solid). Not the
+#     same measurement; see docs/TEST_COVERAGE.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Non-vacuity: the GEOM_3D tier exists and every one of its classes is present.
+query I
+SELECT count(*) >= 7 AND count(DISTINCT pg_geomtype) >= 6
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# Every frozen 'geom' WKB re-imports cleanly through ST_Geom3DFromWKB.
+query I
+SELECT count(*) = count(ST_Geom3DFromWKB(unhex(wkb_hex)))
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# ── Geometry class. ST_Geom3DFromWKB rejects GeometryCollection by design
+# (multi-solid collections belong to ST_3DFromWKB), so that one row is excluded. ──
+query I
+SELECT bool_and(ST_3DGeometryType(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_geomtype)
+FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
+----
+true
+
+# ── Coordinate dimensionality: ST_NDims on both types, ST_CoordDim on GEOM_3D. ──
+query I
+SELECT bool_and(ST_NDims(ST_3DFromWKB(unhex(wkb_hex))) = pg_ndims)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT bool_and(ST_NDims(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_ndims)
+   AND bool_and(ST_CoordDim(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_coorddim)
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# ── Topological dimension and member count, on the classes where the two
+# definitions coincide (see the note above). Non-vacuity: both columns vary. ──
+query I
+SELECT count(DISTINCT pg_dimension) >= 3 AND count(DISTINCT pg_numgeom) >= 3
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+query I
+SELECT bool_and(ST_3DDimension(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_dimension)
+   AND bool_and(ST_3DNumGeometries(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_numgeom)
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# ── ST_3DLength. Zero for every class but (multi)linestring, which is exactly
+# what makes the two non-zero fixture rows worth pinning. ──
+query I
+SELECT count(*) FILTER (WHERE pg_length3d > 0) = 2 FROM golden;
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DLength(ST_Geom3DFromWKB(unhex(wkb_hex))) - pg_length3d)
+        <= 1e-9 * abs(pg_length3d) + 1e-9)
+FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
+----
+true
+
+# ── Z extent — exact on every row, including the SFCGAL-rejected roofs. ──
+query I
+SELECT bool_and(ST_3DZMin(ST_3DFromWKB(unhex(wkb_hex))) = pg_min_z)
+   AND bool_and(ST_3DZMax(ST_3DFromWKB(unhex(wkb_hex))) = pg_max_z)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT bool_and(ST_3DZMin(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_min_z)
+   AND bool_and(ST_3DZMax(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_max_z)
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# ── The full 3D bounding box. ST_3DBounds takes SOLID_3D only, so the 'geom'
+# rows are covered by the ST_3DZMin/ZMax pair above. Both engines read the same
+# doubles off the same vertices, so this is an exact comparison. ──
+query I
+SELECT bool_and(b.min_x = pg_min_x) AND bool_and(b.min_y = pg_min_y)
+   AND bool_and(b.min_z = pg_min_z) AND bool_and(b.max_x = pg_max_x)
+   AND bool_and(b.max_y = pg_max_y) AND bool_and(b.max_z = pg_max_z)
+FROM golden, LATERAL (SELECT ST_3DBounds(ST_3DFromWKB(unhex(wkb_hex))) AS b)
+WHERE geom_role = 'solid';
+----
+true
+
+# ── Footprint area. PostGIS sums the |XY projection| of every patch. A two-sided
+# shell is crossed twice by each vertical column, so three_d's footprint is half
+# of that; a (multi)polygon is single-sided and the two agree directly. ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DFootprintArea(ST_3DFromWKB(unhex(wkb_hex))) - pg_proj_area / 2)
+        <= 1e-9 * abs(pg_proj_area) + 1e-9)
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DFootprintArea(ST_Geom3DFromWKB(unhex(wkb_hex))) - pg_proj_area)
+        <= 1e-9 * abs(pg_proj_area) + 1e-9)
+FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# ── Planarity. SFCGAL's ST_IsPlanar is defined for polygons only; the other
+# classes record 'rejected'. Non-vacuity: one planar and one warped fixture. ──
+query I
+SELECT count(*) FILTER (WHERE pg_is_planar) = 1
+   AND count(*) FILTER (WHERE NOT pg_is_planar) = 1
+FROM golden WHERE pg_is_planar_status = 'ok';
+----
+true
+
+query I
+SELECT bool_and(ST_IsPlanar(ST_Geom3DFromWKB(unhex(wkb_hex))) IS NOT DISTINCT FROM pg_is_planar)
+FROM golden WHERE pg_is_planar_status = 'ok';
+----
+true
+
+# ── Point ordinates. ST_X/Y/Z and ST_3DX/Y/Z both raise on non-points, so the
+# comparison is over the single Point fixture. ──
+query I
+SELECT count(*) = 1 FROM golden WHERE pg_xyz_status = 'ok';
+----
+true
+
+query I
+SELECT bool_and(ST_3DX(g) = pg_x AND ST_3DY(g) = pg_y AND ST_3DZ(g) = pg_z)
+FROM golden, LATERAL (SELECT ST_Geom3DFromWKB(unhex(wkb_hex)) AS g)
+WHERE pg_xyz_status = 'ok';
+----
+true
+
+# ── WKB serialization. PostGIS re-emits every frozen input byte-for-byte
+# (pg_wkb_roundtrip), so asserting three_d's exports against wkb_hex is genuine
+# agreement between two ISO-WKB writers, not a self-comparison. ──
+query I
+SELECT bool_and(pg_wkb_roundtrip) FROM golden;
+----
+true
+
+query I
+SELECT bool_and(hex(ST_3DAsWKB(ST_3DFromWKB(unhex(wkb_hex)))) = upper(wkb_hex))
+FROM golden WHERE geom_role = 'solid';
+----
+true
+
+query I
+SELECT bool_and(hex(ST_3DAsBinary(ST_Geom3DFromWKB(unhex(wkb_hex)))) = upper(wkb_hex))
+FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
+----
+true
+
+# ── WKT. Compared numerically, not as strings: three_d formats ordinates with
+# "%.9g" (kernel/geom_serialize.cpp) while PostGIS emits round-trip precision,
+# and PostGIS writes no space after the comma. Pulling the numbers out of both
+# and comparing them pairwise checks the geometry rather than the layout — the
+# token counts must match too, which is what catches a dropped ring or vertex. ──
+statement ok
+CREATE TABLE wkt_tokens AS
+SELECT feature_id,
+       regexp_extract_all(ST_3DAsText(ST_Geom3DFromWKB(unhex(wkb_hex))),
+                          '-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?') AS mine,
+       regexp_extract_all(pg_wkt, '-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?') AS theirs
+FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
+
+query I
+SELECT bool_and(len(mine) = len(theirs))
+   AND bool_and(len(mine) >= 3)     -- the Point fixture is the 3-ordinate floor
+   AND max(len(mine)) >= 100        -- and a real roof carries hundreds
+FROM wkt_tokens;
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(a::DOUBLE - b::DOUBLE) <= 1e-8 * abs(b::DOUBLE) + 1e-9)
+FROM (SELECT unnest(mine) AS a, unnest(theirs) AS b FROM wkt_tokens);
+----
+true
+
+statement ok
+DROP TABLE wkt_tokens;
+
+# ── GeoJSON. PostGIS has no GeoJSON encoding for PolyhedralSurface and raises;
+# three_d emits a MultiPolygon there instead (documented divergence, so those
+# rows carry status 'rejected' and no reference value). On the classes PostGIS
+# does encode, the two agree as exact strings. ──
+query I
+SELECT count(*) = 7 FROM golden WHERE pg_geojson_status = 'ok';
+----
+true
+
+query I
+SELECT bool_and(ST_3DAsGeoJSON(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_geojson)
+FROM golden WHERE pg_geojson_status = 'ok';
+----
+true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Affine and CRS transforms.
+#
+# golden_transforms.csv holds, per (geometry, op), the 3D bounding box PostGIS
+# computes after applying the op — plus a re-measurement of area/volume/length,
+# which is where the invariants live: a rigid motion must not change volume, and
+# the anisotropic scale must multiply it by det = 2·3·0.5 = 3. PostGIS's
+# ST_RotateX/Y/Z are right-handed and counter-clockwise in radians, and its
+# ST_Transform passes Z through — the conventions three_d documents.
+#
+# This is the oracle-backed guard for the volume bug fixed in b019978, where
+# referencing the volume tetrahedra to the origin made ST_3DVolume
+# rotation-dependent on real-world coordinates.
+# ─────────────────────────────────────────────────────────────────────────────
+statement ok
+CREATE TABLE golden_transforms AS
+SELECT * FROM read_csv('test/data/postgis_oracle/golden_transforms.csv', header = true);
+
+# Every op is present on every geometry (the reprojection excepted — it is
+# emitted for the real 3DBAG rows only, see scripts/oracle/).
+query I
+SELECT count(DISTINCT op) = 6
+   AND count(*) FILTER (WHERE op = 'transform_28992_4326') = 9
+   AND count(*) FILTER (WHERE op <> 'transform_28992_4326')
+       = 5 * (SELECT count(*) FROM golden)
+FROM golden_transforms;
+----
+true
+
+# Apply each op with three_d's own function, on the same frozen bytes.
+statement ok
+CREATE TABLE t_solid AS
+SELECT p.*,
+       CASE p.op
+         WHEN 'translate' THEN ST_3DTranslate(s.g, 100.5, -50.25, 5.125)
+         WHEN 'scale'     THEN ST_3DScale(s.g, 2.0, 3.0, 0.5)
+         WHEN 'rotatex'   THEN ST_3DRotateX(s.g, 0.7)
+         WHEN 'rotatey'   THEN ST_3DRotateY(s.g, 0.7)
+         WHEN 'rotatez'   THEN ST_3DRotateZ(s.g, 0.7)
+         ELSE                  ST_3DTransform(s.g, 28992, 4326)
+       END AS g
+FROM golden_transforms p
+JOIN (SELECT feature_id, ST_3DFromWKB(unhex(wkb_hex)) AS g
+      FROM golden WHERE geom_role = 'solid') s USING (feature_id)
+WHERE p.geom_role = 'solid';
+
+statement ok
+CREATE TABLE t_geom AS
+SELECT p.*,
+       CASE p.op
+         WHEN 'translate' THEN ST_3DTranslate(s.g, 100.5, -50.25, 5.125)
+         WHEN 'scale'     THEN ST_3DScale(s.g, 2.0, 3.0, 0.5)
+         WHEN 'rotatex'   THEN ST_3DRotateX(s.g, 0.7)
+         WHEN 'rotatey'   THEN ST_3DRotateY(s.g, 0.7)
+         ELSE                  ST_3DRotateZ(s.g, 0.7)
+       END AS g
+FROM golden_transforms p
+JOIN (SELECT feature_id, ST_Geom3DFromWKB(unhex(wkb_hex)) AS g
+      FROM golden WHERE geom_role = 'geom') s USING (feature_id)
+WHERE p.geom_role = 'geom';
+
+# The join is total on both sides — no op row is silently dropped.
+query I
+SELECT (SELECT count(*) FROM t_solid) + (SELECT count(*) FROM t_geom)
+     = (SELECT count(*) FROM golden_transforms);
+----
+true
+
+# ── Transformed bounding box. The affine ops are exact double arithmetic on
+# both sides; the reprojection gets a looser absolute tier because the two PROJ
+# builds differ (7.2.1 in the oracle container) and pick their own pipeline for
+# EPSG:28992 → EPSG:4326 without the NL grid. Measured divergence there is under
+# 1e-9 degrees; 1e-7 (≈1 cm) is the headroom. ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(b.min_x - pg_min_x) <= tol AND abs(b.min_y - pg_min_y) <= tol
+    AND abs(b.min_z - pg_min_z) <= tol AND abs(b.max_x - pg_max_x) <= tol
+    AND abs(b.max_y - pg_max_y) <= tol AND abs(b.max_z - pg_max_z) <= tol)
+FROM t_solid, LATERAL (SELECT ST_3DBounds(g) AS b),
+     LATERAL (SELECT CASE WHEN op = 'transform_28992_4326' THEN 1e-7
+                          ELSE 1e-9 * greatest(abs(pg_max_x), abs(pg_max_y), 1.0) END AS tol);
+----
+true
+
+# ST_3DBounds is SOLID_3D-only, so the GEOM_3D rows compare the Z extent.
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DZMin(g) - pg_min_z) <= 1e-9 * abs(pg_min_z) + 1e-9
+    AND abs(ST_3DZMax(g) - pg_max_z) <= 1e-9 * abs(pg_max_z) + 1e-9)
+FROM t_geom;
+----
+true
+
+# ── Volume and surface area after each AFFINE op. The reprojection is excluded
+# from these two: its output is in degrees, where an "area" or "volume" is not a
+# quantity either engine is really computing, and the ~1e-9° pipeline difference
+# between the two PROJ builds amplifies into a 1e-3 relative gap on the smallest
+# faces. The bounding-box check above is what oracles ST_3DTransform. ──
+# Non-vacuity first: SFCGAL must have accepted real 3DBAG rows as well as the
+# fixtures under the affine ops, or the loose tier would be empty.
+query I
+SELECT count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id LIKE 'fixture:%')     >= 4
+   AND count(*) FILTER (WHERE pg_volume_status = 'ok' AND feature_id NOT LIKE 'fixture:%') >= 4
+FROM t_solid WHERE op <> 'transform_28992_4326';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(g) - pg_volume) <= 1e-6 * abs(pg_volume) + 1e-9)
+FROM t_solid WHERE pg_volume_status = 'ok' AND op <> 'transform_28992_4326'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DVolume(g) - pg_volume) <= 1e-3 * abs(pg_volume) + 1e-6)
+FROM t_solid WHERE pg_volume_status = 'ok' AND op <> 'transform_28992_4326'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(g) - pg_area3d) <= 1e-6 * abs(pg_area3d) + 1e-9)
+FROM t_solid WHERE pg_area_status = 'ok' AND op <> 'transform_28992_4326'
+  AND feature_id LIKE 'fixture:%';
+----
+true
+
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DSurfaceArea(g) - pg_area3d) <= 1e-3 * abs(pg_area3d) + 1e-6)
+FROM t_solid WHERE pg_area_status = 'ok' AND op <> 'transform_28992_4326'
+  AND feature_id NOT LIKE 'fixture:%';
+----
+true
+
+# ── Length and footprint after each op, on the GEOM_3D rows. Both are
+# planarity-free, so they cover the classes area/volume cannot reach. ──
+query I
+SELECT count(*) = count(*) FILTER (
+  WHERE abs(ST_3DLength(g) - pg_length3d) <= 1e-9 * abs(pg_length3d) + 1e-9
+    AND abs(ST_3DFootprintArea(g) - pg_proj_area) <= 1e-9 * abs(pg_proj_area) + 1e-9)
+FROM t_geom;
+----
+true
+
+# ── Deterministic pins on the analytic fixtures: rotations preserve the unit
+# tetra's volume, the anisotropic scale triples it (det = 2·3·0.5). ──
+query IIII
+SELECT ROUND(max(ST_3DVolume(g)) FILTER (WHERE op = 'rotatex'), 9),
+       ROUND(max(ST_3DVolume(g)) FILTER (WHERE op = 'rotatey'), 9),
+       ROUND(max(ST_3DVolume(g)) FILTER (WHERE op = 'translate'), 9),
+       ROUND(max(ST_3DVolume(g)) FILTER (WHERE op = 'scale'), 9)
+FROM t_solid WHERE feature_id = 'fixture:tetra';
+----
+0.166666667	0.166666667	0.166666667	0.5
+
+statement ok
+DROP TABLE t_geom;
+
+statement ok
+DROP TABLE t_solid;
+
+statement ok
+DROP TABLE golden_transforms;
 
 statement ok
 DROP TABLE golden;

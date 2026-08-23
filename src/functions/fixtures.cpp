@@ -188,7 +188,7 @@ void WkbCubeFaces(std::vector<uint8_t> &buf, double lo, double hi, bool reversed
 
 // Test helper: a hollow cube — outer cube [0,4]^3 (outward) enclosing inner cube
 // [1,3]^3 (inward) as a single 12-face PolyhedralSurface Z. Paired with
-// geometry_properties {"shellCount":2,"shellFaceCounts":[6,6]} it imports as one
+// geometry_properties {"type":"Solid","shells":[6,6]} it imports as one
 // solid with two shells: volume 64-8=56, surface area 96+24=120.
 static std::vector<uint8_t> BuildHollowCubeWKB() {
 	std::vector<uint8_t> buf;
@@ -211,12 +211,15 @@ static void ST_AsWKBHollowCubeFun(DataChunk &args, ExpressionState &state, Vecto
 // a GeometryCollection Z of two PolyhedralSurface Z — a MultiSolid analogue.
 // Imports (plain path) as two single-shell solids: ST_3DNumSolids=2,
 // total volume 16, total surface area 48.
-static std::vector<uint8_t> BuildMultiCubeWKB() {
+// The one-argument overload takes the separation between the two cubes' origins
+// (applied on all three axes, so the parts are offset diagonally). Total volume
+// stays 16 at every separation — that is the invariant the regression pins.
+static std::vector<uint8_t> BuildMultiCubeWKB(double separation = 5.0) {
 	std::vector<uint8_t> buf;
 	WkbU8(buf, 1);
 	WkbU32(buf, 1007); // GeometryCollectionZ
 	WkbU32(buf, 2);    // two members
-	for (double base : {0.0, 5.0}) {
+	for (double base : {0.0, separation}) {
 		WkbU8(buf, 1);
 		WkbU32(buf, 1015); // PolyhedralSurfaceZ
 		WkbU32(buf, 6);
@@ -230,6 +233,14 @@ static void ST_AsWKBMultiCubeFun(DataChunk &args, ExpressionState &state, Vector
 	auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddStringOrBlob(result, blob_str);
+}
+
+static void ST_AsWKBMultiCubeSepFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<double, string_t>(args.data[0], result, args.size(), [&](double separation) {
+		auto wkb = BuildMultiCubeWKB(separation);
+		auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
+		return StringVector::AddStringOrBlob(result, blob_str);
+	});
 }
 
 // Test helper: build a Point Z WKB from x, y, z.
@@ -482,7 +493,12 @@ void RegisterFixtureFunctions(ExtensionLoader &loader) {
 	    ScalarFunction("st_aswkbpolyhedraltetra", {}, LogicalType::BLOB, ST_AsWKBPolyhedralTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbopentetra", {}, LogicalType::BLOB, ST_AsWKBOpenTetraFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbhollowcube", {}, LogicalType::BLOB, ST_AsWKBHollowCubeFun));
-	loader.RegisterFunction(ScalarFunction("st_aswkbmulticube", {}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
+	// Two overloads: the fixed-offset pair, and a separation-parameterised one
+	// that pins volume conditioning for spatially separated parts.
+	ScalarFunctionSet multicube_set("st_aswkbmulticube");
+	multicube_set.AddFunction(ScalarFunction({}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
+	multicube_set.AddFunction(ScalarFunction({LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBMultiCubeSepFun));
+	loader.RegisterFunction(multicube_set);
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_AsWKBPointZFun));

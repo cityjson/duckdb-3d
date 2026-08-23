@@ -1,5 +1,8 @@
 feature_a,feature_b,threshold,pg_dist3d,pg_maxdist3d,pg_intersects,pg_dwithin,pg_dfullywithin,pg_shortline_len,pg_closestpoint_dist,source,pg_version,sfcgal_version,geos_version
 NL.IMBAG.Pand.0703100000035935-0,NL.IMBAG.Pand.0703100000028278-0,100,517.64470825846217,563.83908639344293,false,false,false,517.64470825846217,517.64470825846217,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
 NL.IMBAG.Pand.0703100000035935-0,NL.IMBAG.Pand.0703100000028278-0,1000,517.64470825846217,563.83908639344293,false,true,true,517.64470825846217,517.64470825846217,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
-NL.IMBAG.Pand.0703100000035935-0,NL.IMBAG.Pand.0703100000035935-0,1,0,19.254145060203008,true,true,false,0,0,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
+NL.IMBAG.Pand.0703100000035935-0,NL.IMBAG.Pand.0703100000035935-0,1,0,19.254145060203005,true,true,false,0,0,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
+fixture:line,fixture:multipolygon,10,0,13,true,true,false,0,0,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
+fixture:multipoint,fixture:multiline,20,0.72975638311577984,19.849433241279208,false,true,true,0.72975638311577984,0.72975638311577984,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
+fixture:point,fixture:polygon,5,1.5,3.8405728739343039,false,true,true,1.5,1.5,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2
 fixture:tetra,fixture:tetra,2,0,1.4142135623730951,true,true,true,0,0,3dbag.city.jsonl,3.4.3,1.3.8,3.9.0-CAPI-1.16.2

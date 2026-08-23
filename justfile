@@ -30,8 +30,9 @@ test-debug:
 test-cpp:
     make test_cpp
 
-# Stages the cityjson/spatial extensions the sqllogic runner needs, so the gated
-# tests run instead of skipping. Needs network: the community download on the
+# Stages the LOCAL cityjson build plus spatial/three_d for the sqllogic runner,
+# so the gated tests run instead of skipping. Runs against the release build (see
+# the note in the Makefile). Needs network: the httpfs/spatial download on the
 # first run, and the remote Delft fixture on every run.
 
 # Configure + build + every test, no skips.
@@ -58,9 +59,14 @@ ci: format-check build test test-cpp
 shell:
     ./build/release/duckdb
 
-# Launch the shell with cityjson + three_d loaded (needs `INSTALL cityjson FROM community` once).
+# Path to the cityjson extension used by shell-cityjson and `make test_full`.
+# A LOCAL duckdb-cityjson build: the community-published one emits the stale flat
+# `geometry` column shape (see docs/CITYJSON_INTEROP.md).
+cityjson_extension := env_var_or_default("CITYJSON_EXTENSION", "../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension")
+
+# Launch the shell with the local cityjson + three_d loaded.
 shell-cityjson:
-    ./build/release/duckdb -unsigned -cmd "LOAD cityjson; LOAD three_d;"
+    ./build/release/duckdb -unsigned -cmd "LOAD '{{cityjson_extension}}'; LOAD three_d;"
 
 # Remove build artifacts.
 clean:
@@ -70,8 +76,13 @@ clean:
 # Regenerates test/data/postgis_oracle/golden.csv, the frozen reference values
 # the CI test test/sql/postgis_oracle.test compares against. PostGIS runs offline
 # here only; `make test` never needs it. See test/data/postgis_oracle/README.md.
-# Defaults target Apple `container`; for Docker, swap `--arch amd64` for
-# `--platform linux/amd64` and set ORACLE_RUNTIME=docker.
+# Defaults target Apple `container`; for Docker or rootless Podman, swap
+# `--arch amd64` for `--platform linux/amd64` and set ORACLE_RUNTIME accordingly:
+#
+#   export ORACLE_RUNTIME=podman ORACLE_ARCH_FLAG="--platform linux/amd64"
+#
+# gen_golden.py reads ORACLE_RUNTIME from the environment too, so the same two
+# variables cover `oracle-up`, `oracle-regen`/`oracle-reexport`, and `oracle-down`.
 
 oracle_runtime := env_var_or_default("ORACLE_RUNTIME", "container")
 oracle_container := env_var_or_default("ORACLE_CONTAINER", "pg_oracle")
@@ -100,8 +111,8 @@ oracle-down:
 oracle-regen:
     python3 scripts/oracle/gen_golden.py
 
-# Needs a published cityjson for the CLI's DuckDB version; use only when the
-# fixture test/data/3dbag.city.jsonl changes.
+# Needs a LOCAL duckdb-cityjson build (see CITYJSON_EXTENSION in gen_golden.py);
+# use only when the fixture test/data/3dbag.city.jsonl or the input set changes.
 
 # Re-derive WKB from the fixture, then refresh the oracle values.
 oracle-reexport:

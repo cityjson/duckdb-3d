@@ -71,10 +71,16 @@ make test_all      # test_debug + test_cpp
 ```
 
 `make test_full` is the only target that covers the whole surface on its own. It builds the
-debug extension, stages `cityjson`, `spatial`, and `httpfs` where the sqllogic runner can
-reach them, and runs the SQL and C++ suites — so the gated tests execute instead of
-skipping. It needs network access: the community download on the first run (cached in
-`build/ext_cache`), and the remote Delft fixture on every run.
+**release** extension, stages `cityjson`, `spatial`, `three_d`, and `httpfs` where the
+sqllogic runner can reach them, and runs the SQL and C++ suites — so the gated tests execute
+instead of skipping. It needs network access: the `httpfs`/`spatial` download on the first
+run (cached in `build/ext_cache`), and the remote Delft fixture on every run.
+
+Its `cityjson` comes from a **local** `../duckdb-cityjson` build, not the community
+repository — override with `make test_full CITYJSON_EXTENSION=<path>`. Release, not debug,
+because a release-built third-party extension inside a debug DuckDB trips the debug
+allocator's bookkeeping; see
+[CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md#running-the-gated-tests-under-sqllogic).
 
 The narrower targets carry two sharp edges. `make test`, `test_debug`, and `test_all` run
 whatever binary `build/release` or `build/debug` already holds — the ci-tools targets have no
@@ -89,9 +95,9 @@ Run a single test file:
 ```
 
 Under `test`/`test_debug`/`test_all` the `cityjson` and `spatial` tests are gated on those
-extensions being registered with the runner, and skip when they are not. `test_full`
-establishes that registration; [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md) documents the
-mechanics, and how to compose the two extensions by hand.
+extensions being staged for the runner, and skip when they are not. `test_full` does the
+staging; [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md) documents the mechanics, and how to
+compose the two extensions by hand.
 
 ## Managing dependencies (vcpkg)
 

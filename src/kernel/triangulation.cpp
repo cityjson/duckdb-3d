@@ -66,13 +66,28 @@ void EarClipTriangulate(const SolidModel &model, const Vertex3D &normal, uint32_
 		indices[i] = model.ring_vertex_indices[vi_start + i];
 	}
 
-	// Project all vertices to 2D
+	// Project all vertices to 2D, referenced to the ring's first vertex.
+	//
+	// The local origin is not cosmetic. Every downstream test here is a signed
+	// area, i.e. a difference of products of coordinates; on absolute projected
+	// coordinates those products scale as |position|^2 while the answer scales as
+	// |extent|^2, so the small ones drown (DESIGN_DOC §8.2 makes the same point
+	// about volume, one power higher). Shifting is exact for the handedness sum —
+	// it is translation-invariant — and it keeps the products at ring scale.
 	std::vector<double> px(n), py(n);
+	double ox = 0, oy = 0;
+	ProjectTo2D(model.vertices[indices[0]], normal, ox, oy);
 	for (uint32_t i = 0; i < n; i++) {
 		ProjectTo2D(model.vertices[indices[i]], normal, px[i], py[i]);
+		px[i] -= ox;
+		py[i] -= oy;
 	}
 
-	// Ensure CCW winding in 2D
+	// Ensure CCW winding in 2D. Left in absolute coordinates this collapsed to
+	// zero (read as clockwise) for a 1 mm face at RD New northings and for a 2 m
+	// face at ~1e9; the convexity test then inverted, no ear was ever found and
+	// the face silently produced NO triangles — a wrong ST_3DVolume with every
+	// validity flag still green, since validation works on rings, not triangles.
 	double total_area = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t j = (i + 1) % n;

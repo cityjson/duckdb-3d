@@ -15,12 +15,14 @@ then implementation, then a design-doc update in the same change.
 ### The concern (separation of concerns)
 
 `duckdb-3d` is meant to be a **CityJSON-agnostic** 3D kernel (DESIGN_DOC §1, §2;
-repo `CLAUDE.md`: *"Keep CityJSON-specific assumptions out of the core kernel"*). Today that
-boundary leaks: `src/kernel/metadata_parser.cpp` understands CityJSON-specific fields —
-`cityjsonType`, `lod`, `children`, `semantics`, and the CityJSON meaning of `shellCount` —
-and `model_builder.cpp` branches on `type == "MultiSolid" / "CompositeSolid"`. That couples
-the generic solid kernel to *how CityJSON geometries are interpreted as DuckDB values*, which
-is properly the responsibility of the `duckdb-cityjson` extension.
+repo `CLAUDE.md`: *"Keep CityJSON-specific assumptions out of the core kernel"*). The leak
+is now narrow but real: `src/kernel/metadata_parser.cpp` parses the CityParquet spec §8
+`geometry_properties` object — a CityGML/CityJSON-shaped document — and keeps a `type` field
+whose vocabulary (`Solid`, `MultiSolid`, `CompositeSolid`) is CityJSON's. Grouping itself is
+already driven entirely by the format-neutral `shells` face counts, and `type` is only
+informational, so what remains is the *name and shape of the sidecar contract* rather than
+any behavioural branch. Deciding how CityJSON geometries become DuckDB values is properly
+the responsibility of the `duckdb-cityjson` extension.
 
 ### Proposed direction
 

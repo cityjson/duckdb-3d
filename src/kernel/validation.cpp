@@ -186,18 +186,10 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 	uint32_t face_start = model.shell_face_offsets[shell_idx];
 	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
 
-	// Local origin: the shell's first triangulated vertex.
-	bool have_origin = false;
+	// Local origin: the shell's first triangulated vertex — the same reference
+	// point ComputeVolume uses, so the two agree bit-for-bit.
 	Vertex3D o = {0, 0, 0};
-	for (uint32_t f = face_start; f < face_end && !have_origin; f++) {
-		uint32_t tri_start = model.face_triangle_offsets[f];
-		uint32_t tri_end = model.face_triangle_offsets[f + 1];
-		if (tri_start < tri_end) {
-			o = model.vertices[model.triangle_vertex_indices[tri_start * 3 + 0]];
-			have_origin = true;
-		}
-	}
-	if (!have_origin) {
+	if (!ShellLocalOrigin(model, shell_idx, o)) {
 		return out; // no triangles → nothing to integrate
 	}
 	out.has_geometry = true;

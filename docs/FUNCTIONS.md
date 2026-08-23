@@ -39,11 +39,16 @@ CityJSON and CityJSONSeq:
 - CityJSON — `https://cityjson.open3d.city/cityjson/delft.city.json`
 
 `three_d` does not read CityJSON itself; the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
-community extension does, and hands over `(geometry BLOB, geometry_properties)` pairs.
+extension does, and hands over `(geometry_lod<X> BLOB, geometry_properties_lod<X> STRUCT)`
+pairs. Build it from the sibling checkout and load it by path — the community-published
+build is older and uses a flat `geometry` column
+([why](./CITYJSON_INTEROP.md#which-cityjson-build)):
 
+```sh
+(cd ../duckdb-cityjson && GEN=ninja make release)
+```
 ```sql
-INSTALL cityjson FROM community;   -- one-time
-LOAD cityjson;
+LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
 ```
 
@@ -53,7 +58,9 @@ are joined via `parents` / `children`:
 
 ```sql
 CREATE TABLE feats AS
-SELECT id, parents, children, geometry, geometry_properties,
+SELECT id, parents, children,
+       geometry_lod2_2            AS geometry,
+       geometry_properties_lod2_2 AS geometry_properties,
        b3_volume_lod22, b3_opp_grond
 FROM read_cityjsonseq(
     'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2');
@@ -87,8 +94,10 @@ Most single-value examples below use one representative building:
 CREATE TABLE ex AS SELECT * FROM parts WHERE id = 'NL.IMBAG.Pand.0503100000018426-0';
 ```
 
-> **Always pass `lod => '...'`.** Without it, `cityjson` emits a `STRUCT` geometry column
-> that `ST_3DFromWKB` cannot consume.
+> **Always pass `lod => '...'`.** Without it, `cityjson` emits `geom_lod*` STRUCT columns
+> that `ST_3DFromWKB` cannot consume. The emitted names carry the *normalised* LoD, so
+> `lod => '2.2'` gives `geometry_lod2_2` and `lod => '2'` gives `geometry_lod2_0`; the
+> `feats` query above aliases them once so the rest of this document can say `geometry`.
 
 ---
 
@@ -235,6 +244,12 @@ shape — passing the wrong family raises (or yields `NULL` in the `TRY` form).
 | `ST_3DAsText` | `(GEOM_3D)` | `VARCHAR` | ISO WKT with Z. |
 | `ST_3DAsGeoJSON` | `(GEOM_3D)` | `VARCHAR` | A `PolyhedralSurface` is emitted as a `MultiPolygon`. |
 | `ST_3DAsBinary` | `(GEOM_3D)` | `BLOB` | OGC/ISO WKB, little-endian. |
+
+The two **binary** exports are exact — `ST_3DAsWKB` and `ST_3DAsBinary` agree byte-for-byte
+with each other and with PostGIS's `ST_AsBinary` on the same geometry. The two **text**
+exports are not: ordinates are formatted with `%.9g`, so at RD coordinate magnitudes
+(`62609.76675`) WKT and GeoJSON round to about 0.1 mm. Use the binary forms when the output
+has to round-trip losslessly.
 
 `ST_3DAsWKB` exports a single solid as `PolyhedralSurface Z` and a multi-solid as
 `GeometryCollection Z`. It is the bridge back to `GEOM_3D` and to other tools:
@@ -460,7 +475,17 @@ WHERE n_parts = 1 AND ST_3DValidationReport(solid).is_valid AND b3_volume_lod22 
 
 - **`ST_3DVolume`** sums signed tetrahedral contributions. Because interior shells are wound
   opposite the exterior, cavities **subtract automatically** — no "this shell is a hole" flag
-  is needed. Multi-solid values sum their members.
+  is needed. Multi-solid values sum their members. The tetrahedra are referenced to **each
+  shell's own first vertex** rather than to the coordinate origin, so the result does not
+  depend on where the model sits, nor on how far apart a multi-solid's parts are: a building
+  measures the same in RD New easting/northing as it does at the origin. Summing about the
+  absolute origin would cancel away roughly nine of the sixteen available digits at
+  projected-CRS magnitudes. Under rigid motions the volume is preserved to **~1e-11
+  relative** — measured max 3.0e-11 over all 1098 valid solids of the Delft tile under
+  rotation, and *exactly* 0 under translation. Rotation is the looser of the two because
+  rotating absolute RD coordinates injects `|p|·eps` rounding into the vertices themselves,
+  before any measurement runs; that floor is a property of the coordinates, not of the volume
+  sum.
 - **`ST_3DSurfaceArea` / `ST_3DArea`** sum *all* faces and are **not** shell-aware: cavity
   walls count toward surface area. Only volume distinguishes shell roles.
 - **`ST_3DFootprintArea`** is the 2D XY-projected ground area. It has no validity
@@ -702,7 +727,10 @@ CGAL/SFCGAL backend — see [DESIGN_DOC.md §11](./DESIGN_DOC.md#11-roadmap).
 The `ST_AsWKB*` family (`ST_AsWKBPolyhedralTetra`, `ST_AsWKBOpenTetra`, `ST_AsWKBHollowCube`,
 `ST_AsWKBMultiCube`, `ST_AsWKBPointZ`, `ST_AsWKBLineZ`, `ST_AsWKBMultiLineZ`,
 `ST_AsWKBPolygonZ`, `ST_AsWKBWarpedPolygonZ`, `ST_AsWKBMultiPointZ`, `ST_AsWKBMultiPolygonZ`)
-generates small WKB fixtures for the test suite.
+generates small WKB fixtures for the test suite. `ST_AsWKBMultiCube` has a second overload,
+`ST_AsWKBMultiCube(separation DOUBLE)`, which places the two cubes `separation` apart on every
+axis; total volume stays 16 at any separation, which is what the conditioning regression in
+`test/sql/st_3d_multisolid.test` pins.
 
 **These are not public API.** They are registered only when the `THREE_D_TEST_FIXTURES`
 environment variable is set. The `Makefile` exports it, so every `make` target has them; a

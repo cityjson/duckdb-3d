@@ -11,24 +11,39 @@
 # concentric cavity [1,3]^3 (V=8), the cavity wound opposite the exterior.
 # Hollow volume = 64 - 8 = 56.
 #
-# When the loaded `cityjson` emits spec §8 `geometry_properties` (shells:[6,6]),
-# the metadata path recovers two shells and the winding check applies; an older
-# `cityjson` that emits no `shells` falls back to one merged shell. Either way
-# the volume is 56 — signed-volume subtraction is shell-grouping invariant for a
-# disjoint cavity (DESIGN_DOC §8.2). This asserts the value; the shells-driven
-# two-shell path and the winding enforcement are pinned CI-independently by
-# test/sql/st_3d_hollow_solid.test and test/cpp/test_inner_shell.cpp.
+# The `cityjson` build must be the sibling duckdb-cityjson checkout: it emits the
+# per-LoD `geometry_lod<X>` / `geometry_properties_lod<X>` pair, with `shells` in
+# the CityParquet `List<List<Int32>>` shape ([[6, 6]] for a two-shell Solid).
+# `require cityjson` skips this test when it is not staged for the runner; see
+# docs/CITYJSON_INTEROP.md.
+#
+# The metadata path recovers the two shells and the winding check applies. The
+# volume would be 56 even from a single merged shell — signed-volume subtraction
+# is shell-grouping invariant for a disjoint cavity (DESIGN_DOC §8.2) — so the
+# shell count is asserted alongside it, and the shells-driven path and winding
+# enforcement are pinned CI-independently by test/sql/st_3d_hollow_solid.test
+# and test/cpp/test_inner_shell.cpp.
+#
+# Note the LoD suffix is the NORMALISED LoD: `lod => '2'` yields `_lod2_0`.
 require cityjson
 
 require three_d
 
-# Hollow volume 56, and the solid is closed.
-query IT
-SELECT ROUND(ST_3DVolume(s), 6), ST_3DIsClosed(s)
+# The sidecar carries the per-shell face counts, nested one level.
+query II
+SELECT geometry_properties_lod2_0.type, geometry_properties_lod2_0.shells
+FROM read_cityjson('test/data/hollow_solid.city.json', lod => '2')
+WHERE geometry_lod2_0 IS NOT NULL;
+----
+Solid	[[6, 6]]
+
+# Two shells recovered, hollow volume 56, and the solid is closed.
+query III
+SELECT ST_3DNumShells(s), ROUND(ST_3DVolume(s), 6), ST_3DIsClosed(s)
 FROM (
-    SELECT ST_3DFromWKB(geometry, geometry_properties) AS s
+    SELECT ST_3DFromWKB(geometry_lod2_0, geometry_properties_lod2_0) AS s
     FROM read_cityjson('test/data/hollow_solid.city.json', lod => '2')
-    WHERE geometry IS NOT NULL
+    WHERE geometry_lod2_0 IS NOT NULL
 ) q;
 ----
-56.0	true
+2	56.0	true

@@ -71,6 +71,14 @@ any time. Nothing may treat the triangulation as authoritative, because doing so
 quietly discard the face structure that WKB export and semantic-surface interoperability
 depend on.
 
+Ear-clipping runs on coordinates referenced to the ring's own first vertex, for the same
+conditioning reason volume does (§8.2), one power lower: the handedness shoelace and the
+convexity tests are signed areas whose products scale as `|position|²` against an answer of
+`|extent|²`. Left absolute, the handedness sum collapsed for a 1 mm face at RD New northings
+and for a 2 m face at ~10⁹; the convexity test then inverted, no ear was ever found, and the
+face emitted **zero** triangles — a wrong `ST_3DVolume` with every validity flag still green,
+because validation reads rings, not triangles. Pinned by `test/cpp/test_triangulation.cpp`.
+
 ### 2.3 Fail clearly at the boundary
 
 Unsupported geometry classes are rejected with a descriptive error at import, not silently
@@ -284,6 +292,18 @@ requires only the absence of degenerate faces. Both **raise** when unmet (§2.1)
 **Tolerance** is a small floating-point epsilon for repeated-point and near-zero-area tests,
 defined as named constants in `src/kernel/core_types.hpp`.
 
+The near-zero-area test is **absolute** (`kEpsAbsolute`, 1e-12), which is only defensible
+because the quantity it measures is computed about a local reference point. Newell's area
+vector pairs a coordinate difference with a coordinate sum, so on absolute projected
+coordinates a face of exactly zero area returns not 0 but noise of order
+`n·eps·|position|·|extent|` — 1e-11 to 1e-10 at RD New easting/northing, i.e. one to two
+orders *above* the threshold. The verdict would then depend on where the building sits, and
+because `degenerate_face_count` gates `ST_3DVolume` and `ST_3DSurfaceArea`, so would a hard
+error. `NewellRingAreaVector` therefore references the ring's own first vertex, which is
+exact (the area vector is translation-invariant) and returns 0 for a flat face at any
+magnitude. Do not restore the absolute form, and do not "fix" the resulting sensitivity by
+loosening the epsilon — that would change which real buildings are accepted.
+
 ### 8.2 Why volume works the way it does
 
 Volume sums signed tetrahedral contributions over oriented triangles, taking the absolute
@@ -308,6 +328,35 @@ orientation check enforces *consistency*, not a fixed handedness. Taking `abs` o
 the interior and exterior terms have already cancelled, collapses that ambiguity while
 preserving the cavity subtraction. Taking it per shell would make cavities *add*, which would
 be wrong.
+
+**The reference point must be per shell, not per model.** The signed tetrahedra are taken
+about a local reference point — the shell's first triangulated vertex — rather than about the
+absolute coordinate origin. This is a no-op in exact arithmetic (a closed shell's signed
+volume is translation-invariant), but it is what makes the sum survive doubles: on absolute
+coordinates the triple product `a·(b×c)` scales as `|position|³` while the answer scales as
+`|extent|³`, so at projected-CRS magnitudes almost every significant digit cancels. A
+building in EPSG:28992 (easting/northing ~10⁵) loses roughly nine of the ~16 available
+digits, and by 10⁸ the result is noise.
+
+Note the *granularity*, which is the part that is easy to get wrong. The reference point must
+sit **on the shell being integrated**, not merely somewhere inside the model. A single
+model-wide point (say the model bounding-box midpoint) is close to its shells only when the
+model is compact; for a `MultiSolid`/`CompositeSolid` whose parts are spatially separated it
+is far from *every* part, the relative coordinates scale with half the part separation
+instead of each part's own extent, and the cancellation returns in full. Measured on two unit
+cubes separated diagonally and rotated 0.7 rad about X — true volume 16 — a model-wide point
+returned 16.0027 at a separation of 10⁵, 14.456 at 10⁶ and 2353.1 at 10⁷, with
+`is_valid` still `true` throughout. Per shell, the same cases land within 5e-11, 5e-10 and
+7e-9 respectively.
+
+Because each shell is separately closed (`ComputeVolume` refuses otherwise), giving each its
+own reference point is exact and does not disturb the cavity subtraction above: shells still
+accumulate **signed** into the per-solid total before `abs` is applied. `validation.cpp`'s
+interior-shell winding check uses the same helper (`ShellLocalOrigin`, `geometry_math.hpp`),
+so the sign it tests and the magnitude volume reports come from bit-identical arithmetic.
+
+Do not "simplify" the reference-point subtraction away, and do not hoist it to model scope.
+Both are pinned by `test/cpp/test_measurements.cpp` and `test/sql/st_3d_multisolid.test`.
 
 ### 8.3 What shell grouping actually buys
 
@@ -396,9 +445,9 @@ surface; PROJ-backed `ST_3DTransform`. See the
 
 - Performance tuning — bounding-box pre-filters for the distance family.
 - Stored SRID in the payload header, enabling a one-argument `ST_3DTransform` and cross-CRS
-  mismatch detection ([FUTURE_WORK.md §3](./FUTURE_WORK.md)).
+  mismatch detection ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
 - Bundling PROJ's `proj.db` into the distributable extension.
-- Moving CityJSON-aware interpretation upstream ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
+- Moving CityJSON-aware interpretation upstream ([FUTURE_WORK.md §1](./FUTURE_WORK.md)).
 
 **Lower priority.** Remaining PostGIS-analogue accessors and serializers — `ST_HasM`, `ST_M`,
 `ST_Zmflag`, `ST_3DLongestLine`, `ST_Affine`, `ST_FlipCoordinates`, `ST_SwapOrdinates`,
