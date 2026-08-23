@@ -108,6 +108,7 @@ over the whole frozen 3DBAG corpus.
 | --- | --- |
 | `ST_AsWKBHollowCube()` + `test/cpp/test_inner_shell.cpp` | Interior-shell subtraction (volume 56, area 120), shell-grouping invariance, and rejection of a same-wound cavity |
 | `ST_AsWKBMultiCube()` | Collection-of-solids math in every CI run, ungated |
+| `ST_AsWKBMultiCube(separation)` | Volume conditioning when a collection's parts are spatially separated — the per-shell reference point of DESIGN_DOC §8.2. Total volume stays 16 at separations of 1e4–1e7 |
 | `test/data/multisolid.city.json`, `compositesolid.city.json` | `MultiSolid` / `CompositeSolid` import per solid, with shell grouping recovered from the sidecar (`test/sql/cityjson_multisolid.test`). Import does **not** raise on either class |
 | `test/data/unit_cube.city.json` | End-to-end `cityjson` → `three_d` smoke test |
 

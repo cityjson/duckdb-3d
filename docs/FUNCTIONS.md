@@ -722,7 +722,10 @@ CGAL/SFCGAL backend — see [DESIGN_DOC.md §11](./DESIGN_DOC.md#11-roadmap).
 The `ST_AsWKB*` family (`ST_AsWKBPolyhedralTetra`, `ST_AsWKBOpenTetra`, `ST_AsWKBHollowCube`,
 `ST_AsWKBMultiCube`, `ST_AsWKBPointZ`, `ST_AsWKBLineZ`, `ST_AsWKBMultiLineZ`,
 `ST_AsWKBPolygonZ`, `ST_AsWKBWarpedPolygonZ`, `ST_AsWKBMultiPointZ`, `ST_AsWKBMultiPolygonZ`)
-generates small WKB fixtures for the test suite.
+generates small WKB fixtures for the test suite. `ST_AsWKBMultiCube` has a second overload,
+`ST_AsWKBMultiCube(separation DOUBLE)`, which places the two cubes `separation` apart on every
+axis; total volume stays 16 at any separation, which is what the conditioning regression in
+`test/sql/st_3d_multisolid.test` pins.
 
 **These are not public API.** They are registered only when the `THREE_D_TEST_FIXTURES`
 environment variable is set. The `Makefile` exports it, so every `make` target has them; a

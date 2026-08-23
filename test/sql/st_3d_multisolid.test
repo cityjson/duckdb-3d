@@ -46,3 +46,39 @@ statement error
 SELECT ST_3DFromWKB(ST_AsWKBMultiCube(), '{"type": "MultiSolid", "shells": [[6]]}');
 ----
 solid count
+
+# ── Volume conditioning when the parts are spatially separated ────────────────
+#
+# ST_AsWKBMultiCube(sep) puts the second cube at [sep, sep+2]^3, so the two parts
+# are `sep` apart on every axis. Total volume is 16 at every separation — volume
+# is translation-invariant — but the divergence-theorem sum only holds that in
+# doubles if each shell is integrated about a reference point ON that shell.
+# A single model-wide reference point sits mid-way between the parts, i.e. far
+# from BOTH, and the |p|^3-versus-|extent|^3 cancellation returns. Measured on
+# the pre-fix build, this query returned 16.0000009 at 1e4, 16.0027 at 1e5,
+# 14.456 at 1e6 (9.6% low), 2353.1 at 1e7 and 387140.3 at 1e8 — with
+# ST_3DValidationReport(...).is_valid still true at every one of them: a wrong
+# number and no error. See DESIGN_DOC §8.2 and the C++ pin in
+# test/cpp/test_measurements.cpp.
+#
+# The rotation matters: an axis-aligned separation cancels exactly by luck
+# (integer-representable intermediates), so only oblique faces expose it.
+#
+# Tolerances are measured, not guessed. What is left is the floor imposed by
+# rotating absolute coordinates — the rotated vertices themselves carry |p|·eps
+# rounding before ComputeVolume ever runs — which grows with the separation:
+# 2.7e-12 at 1e4, 4.5e-11 at 1e5, 4.8e-10 at 1e6, 6.1e-9 at 1e7.
+query IIII
+SELECT abs(ST_3DVolume(ST_3DRotateX(ST_3DFromWKB(ST_AsWKBMultiCube(1e4::DOUBLE)), 0.7)) - 16.0) < 1e-10,
+       abs(ST_3DVolume(ST_3DRotateX(ST_3DFromWKB(ST_AsWKBMultiCube(1e5::DOUBLE)), 0.7)) - 16.0) < 1e-9,
+       abs(ST_3DVolume(ST_3DRotateX(ST_3DFromWKB(ST_AsWKBMultiCube(1e6::DOUBLE)), 0.7)) - 16.0) < 1e-8,
+       abs(ST_3DVolume(ST_3DRotateX(ST_3DFromWKB(ST_AsWKBMultiCube(1e7::DOUBLE)), 0.7)) - 16.0) < 1e-7;
+----
+true	true	true	true
+
+# Unrotated, the separated pair is exact, and the solid count is unchanged.
+query II
+SELECT ST_3DNumSolids(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(ST_AsWKBMultiCube(1e6::DOUBLE)) AS s) q;
+----
+2	16.0

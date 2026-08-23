@@ -309,6 +309,35 @@ the interior and exterior terms have already cancelled, collapses that ambiguity
 preserving the cavity subtraction. Taking it per shell would make cavities *add*, which would
 be wrong.
 
+**The reference point must be per shell, not per model.** The signed tetrahedra are taken
+about a local reference point — the shell's first triangulated vertex — rather than about the
+absolute coordinate origin. This is a no-op in exact arithmetic (a closed shell's signed
+volume is translation-invariant), but it is what makes the sum survive doubles: on absolute
+coordinates the triple product `a·(b×c)` scales as `|position|³` while the answer scales as
+`|extent|³`, so at projected-CRS magnitudes almost every significant digit cancels. A
+building in EPSG:28992 (easting/northing ~10⁵) loses roughly nine of the ~16 available
+digits, and by 10⁸ the result is noise.
+
+Note the *granularity*, which is the part that is easy to get wrong. The reference point must
+sit **on the shell being integrated**, not merely somewhere inside the model. A single
+model-wide point (say the model bounding-box midpoint) is close to its shells only when the
+model is compact; for a `MultiSolid`/`CompositeSolid` whose parts are spatially separated it
+is far from *every* part, the relative coordinates scale with half the part separation
+instead of each part's own extent, and the cancellation returns in full. Measured on two unit
+cubes separated diagonally and rotated 0.7 rad about X — true volume 16 — a model-wide point
+returned 16.0027 at a separation of 10⁵, 14.456 at 10⁶ and 2353.1 at 10⁷, with
+`is_valid` still `true` throughout. Per shell, the same cases land within 5e-11, 5e-10 and
+7e-9 respectively.
+
+Because each shell is separately closed (`ComputeVolume` refuses otherwise), giving each its
+own reference point is exact and does not disturb the cavity subtraction above: shells still
+accumulate **signed** into the per-solid total before `abs` is applied. `validation.cpp`'s
+interior-shell winding check uses the same helper (`ShellLocalOrigin`, `geometry_math.hpp`),
+so the sign it tests and the magnitude volume reports come from bit-identical arithmetic.
+
+Do not "simplify" the reference-point subtraction away, and do not hoist it to model scope.
+Both are pinned by `test/cpp/test_measurements.cpp` and `test/sql/st_3d_multisolid.test`.
+
 ### 8.3 What shell grouping actually buys
 
 A correctly-wound cavity yields the correct volume **even without** shell metadata, because

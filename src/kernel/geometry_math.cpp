@@ -25,4 +25,19 @@ Vertex3D NewellRingAreaVector(const SolidModel &model, uint32_t ring_idx) {
 	return area;
 }
 
+bool ShellLocalOrigin(const SolidModel &model, uint32_t shell_idx, Vertex3D &out) {
+	uint32_t face_start = model.shell_face_offsets[shell_idx];
+	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
+
+	for (uint32_t f = face_start; f < face_end; f++) {
+		uint32_t tri_start = model.face_triangle_offsets[f];
+		uint32_t tri_end = model.face_triangle_offsets[f + 1];
+		if (tri_start < tri_end) {
+			out = model.vertices[model.triangle_vertex_indices[tri_start * 3 + 0]];
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace duckdb_3d

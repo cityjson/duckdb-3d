@@ -18,8 +18,8 @@ namespace {
 //! absolute coordinates the triple product scales as |position|^3 while the
 //! answer scales as |extent|^3, so a building in a projected CRS (RD New
 //! easting/northing ~1e5) cancels roughly nine of the ~16 available digits, and
-//! by 1e8 the result is pure noise. Referencing a point inside the model keeps
-//! every term at model scale.
+//! by 1e8 the result is pure noise. `origin` must therefore be a point ON the
+//! shell being integrated — see ShellLocalOrigin, and DESIGN_DOC §8.2.
 double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx, const Vertex3D &origin) {
 	uint32_t i0 = model.triangle_vertex_indices[triangle_idx * 3 + 0];
 	uint32_t i1 = model.triangle_vertex_indices[triangle_idx * 3 + 1];
@@ -37,26 +37,6 @@ double SignedTriangleVolume(const SolidModel &model, uint32_t triangle_idx, cons
 	double cross_y = bz * cx - bx * cz;
 	double cross_z = bx * cy - by * cx;
 	return ax * cross_x + ay * cross_y + az * cross_z;
-}
-
-//! Midpoint of the model's axis-aligned bounding box — a reference point at the
-//! centre of the coordinate range, so no relative coordinate exceeds half the
-//! model's extent.
-Vertex3D ModelOrigin(const SolidModel &model) {
-	if (model.vertices.empty()) {
-		return {0.0, 0.0, 0.0};
-	}
-	Vertex3D lo = model.vertices[0];
-	Vertex3D hi = model.vertices[0];
-	for (const auto &v : model.vertices) {
-		lo.x = std::min(lo.x, v.x);
-		lo.y = std::min(lo.y, v.y);
-		lo.z = std::min(lo.z, v.z);
-		hi.x = std::max(hi.x, v.x);
-		hi.y = std::max(hi.y, v.y);
-		hi.z = std::max(hi.z, v.z);
-	}
-	return {0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y), 0.5 * (lo.z + hi.z)};
 }
 
 } // namespace
@@ -110,7 +90,6 @@ double ComputeVolume(const SolidModel &model) {
 
 	double total_volume = 0.0;
 	uint32_t solid_count = model.SolidCount();
-	const Vertex3D origin = ModelOrigin(model);
 
 	for (uint32_t solid_idx = 0; solid_idx < solid_count; solid_idx++) {
 		double solid_volume = 0.0;
@@ -118,6 +97,18 @@ double ComputeVolume(const SolidModel &model) {
 		uint32_t shell_end = model.solid_shell_offsets[solid_idx + 1];
 
 		for (uint32_t shell_idx = shell_start; shell_idx < shell_end; shell_idx++) {
+			// One reference point per SHELL, not per model. Every shell here is
+			// closed (gated above), so its signed volume is translation-invariant
+			// and each may use its own origin without changing the sum — while a
+			// single model-wide point would sit far from every part of a
+			// MultiSolid/CompositeSolid with separated parts and reintroduce the
+			// cancellation the shift exists to avoid. Shells still accumulate
+			// SIGNED into `solid_volume`, so an interior cavity (wound opposite
+			// the exterior, enforced by validation) keeps subtracting.
+			Vertex3D origin;
+			if (!ShellLocalOrigin(model, shell_idx, origin)) {
+				continue; // no triangles in this shell — nothing to integrate
+			}
 			uint32_t face_start = model.shell_face_offsets[shell_idx];
 			uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
 

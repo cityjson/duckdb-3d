@@ -53,9 +53,18 @@ public:
 	}
 };
 
-std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false) {
-	Vertex3D v000 = {0, 0, 0}, v100 = {1, 0, 0}, v110 = {1, 1, 0}, v010 = {0, 1, 0};
-	Vertex3D v001 = {0, 0, 1}, v101 = {1, 0, 1}, v111 = {1, 1, 1}, v011 = {0, 1, 1};
+std::vector<uint8_t> BuildCubeWKB(bool reverse_winding = false, Vertex3D translate = {0, 0, 0},
+                                  double rotate_x = 0.0) {
+	// Rotate about X first (so a rotated scene keeps its parts' separation
+	// direction), then translate to the requested position.
+	const double c = std::cos(rotate_x), s = std::sin(rotate_x);
+	auto place = [&](Vertex3D v) {
+		Vertex3D r = {v.x, v.y * c - v.z * s, v.y * s + v.z * c};
+		return Vertex3D {r.x + translate.x, r.y + translate.y, r.z + translate.z};
+	};
+
+	Vertex3D v000 = place({0, 0, 0}), v100 = place({1, 0, 0}), v110 = place({1, 1, 0}), v010 = place({0, 1, 0});
+	Vertex3D v001 = place({0, 0, 1}), v101 = place({1, 0, 1}), v111 = place({1, 1, 1}), v011 = place({0, 1, 1});
 
 	WKBBuilder b;
 	b.byteOrder();
@@ -238,6 +247,44 @@ TEST_CASE("Volume: multi-solid sums volumes", "[measurements]") {
 
 	double vol = ComputeVolume(model);
 	REQUIRE(vol == Approx(2.0).epsilon(1e-10));
+}
+
+TEST_CASE("Volume: spatially separated multi-solid keeps full precision", "[measurements]") {
+	// A single reference point for the whole model is not enough. When a
+	// MultiSolid/CompositeSolid's parts are far apart, the model-wide bbox
+	// midpoint is far from EVERY part, so the relative coordinates scale with
+	// half the part separation rather than with each part's own extent — and the
+	// |p|^3-versus-|e|^3 cancellation that the reference point exists to prevent
+	// comes straight back. The reference point has to be hoisted per shell.
+	//
+	// Two unit cubes, separated diagonally so no coordinate axis lets the
+	// intermediate products cancel exactly by luck. True total volume is 2.0 at
+	// every separation, because volume is translation-invariant.
+	const double expected = 2.0;
+	for (double sep : {1.0e4, 1.0e5, 1.0e6, 1.0e7}) {
+		for (double rot : {0.0, 0.7}) {
+			auto cube_a = BuildCubeWKB(false, {0, 0, 0}, rot);
+			auto cube_b = BuildCubeWKB(false, {sep, sep, sep}, rot);
+
+			WKBBuilder gc;
+			gc.byteOrder();
+			gc.geomType(WKBGeometryType::GeometryCollectionZ);
+			gc.u32(2);
+			gc.buffer.insert(gc.buffer.end(), cube_a.begin(), cube_a.end());
+			gc.buffer.insert(gc.buffer.end(), cube_b.begin(), cube_b.end());
+
+			auto surfaces = ParseWKB(gc.buffer.data(), gc.buffer.size());
+			auto model = BuildSolidModel(surfaces);
+			TriangulateSolidModel(model);
+			REQUIRE(model.SolidCount() == 2);
+
+			double vol = ComputeVolume(model);
+			INFO("separation = " << sep << ", rotate_x = " << rot << ", volume = " << vol);
+			// 1e-6 is far looser than the ~1e-11 floor this leaves and far
+			// tighter than the failures it pins (1.6% at 1e5, 1600x at 1e7).
+			REQUIRE(std::abs(vol - expected) <= 1e-6 * expected);
+		}
+	}
 }
 
 TEST_CASE("Volume: multi-solid does not cancel globally reversed solids", "[measurements]") {

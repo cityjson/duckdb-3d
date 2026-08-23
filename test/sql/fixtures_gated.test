@@ -7,12 +7,14 @@ require three_d
 require-env THREE_D_TEST_FIXTURES
 
 # The `<> 'st_aswkb'` exclusion drops DuckDB's own core geometry ST_AsWKB, which
-# is unrelated to this extension; what remains is exactly our 11 fixtures.
-query I
-SELECT count(*) FROM duckdb_functions()
+# is unrelated to this extension; what remains is exactly our 11 fixture names —
+# 12 overloads, because st_aswkbmulticube has a separation-parameterised second
+# signature (duckdb_functions() lists one row per overload).
+query II
+SELECT count(*), count(DISTINCT function_name) FROM duckdb_functions()
 WHERE function_name LIKE 'st_aswkb%' AND function_name <> 'st_aswkb';
 ----
-11
+12	11
 
 # The production surface is registered unconditionally — the gate covers fixtures only.
 query I
