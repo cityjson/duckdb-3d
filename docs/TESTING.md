@@ -24,7 +24,8 @@ this walkthrough found and fixed.
 
 Two extensions are needed: `three_d` (this repo) and `cityjson` (the sibling
 [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) repo) for the readers.
-`spatial` and `json` are used by a handful of cells and autoload.
+`spatial` and `json` are used by a handful of cells. The extension build ships with
+`autoload_known_extensions` off, so `LOAD` them explicitly where a cell needs them.
 
 ```sh
 GEN=ninja make release        # builds ./build/release/duckdb with three_d linked in
@@ -748,7 +749,7 @@ SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out', crs => 'EPSG:7415
 ┌────────────┬────────┐        ┌──────────────────┬─────────┬──────┬─────────┐
 │ table_name │  role  │        │       file       │ action  │ rows │  bytes  │
 ├────────────┼────────┤        ├──────────────────┼─────────┼──────┼─────────┤
-│ building   │ object │        │ building.parquet │ written │ 2231 │ 4235239 │
+│ building   │ object │        │ building.parquet │ written │ 2231 │ 3690150 │
 └────────────┴────────┘        │ metadata.json    │ written │    0 │    6722 │
                                └──────────────────┴─────────┴──────┴─────────┘
 ```
@@ -789,6 +790,7 @@ shells = [[6]]
 ```
 
 ```sql
+LOAD json;
 CREATE TABLE cp AS
 SELECT id,
        ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2)                    AS s_struct,
@@ -868,33 +870,62 @@ CityJSONSeq or via a Parquet file on disk. That is the CityParquet round-trip gu
 
 ## 22 — LoD0 is GeoParquet, and needs a bridge
 
-CityParquet's LoD0 footprint column is written as a **Parquet-native `GEOMETRY`** with an
-embedded PROJJSON CRS; the solid LoDs stay `BLOB` because solids are outside GeoParquet's
-WKB vocabulary. That asymmetry is visible on read-back:
+CityParquet's LoD0 footprint column carries the **Parquet-native `GEOMETRY`** logical
+type; the solid LoDs stay `BLOB`. A writer annotates a column exactly when it declares it
+in the `geo` footer, and a `PolyhedralSurface Z` is not legal GeoParquet — but the sharper
+reason is that DuckDB promotes any annotated column and converts it eagerly, and its
+geometry model has no polyhedral surface. Annotating a solid column would therefore make
+even `SELECT count(*)` over it fail, before any `ST_3D*` function saw a value. That
+asymmetry is visible on read-back:
 
 ```sql
-SELECT column_name, CASE WHEN column_type = 'BLOB' THEN 'BLOB' ELSE 'GEOMETRY(<projjson>)' END AS as_read
+LOAD spatial;
+SELECT column_name, column_type
 FROM (DESCRIBE SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
 WHERE column_name LIKE 'geometry_lod%' ORDER BY 1;
 ```
 
 ```
-┌─────────────────┬──────────────────────┐
-│   column_name   │       as_read        │
-├─────────────────┼──────────────────────┤
-│ geometry_lod0_0 │ GEOMETRY(<projjson>) │
-│ geometry_lod1_2 │ BLOB                 │
-│ geometry_lod1_3 │ BLOB                 │
-│ geometry_lod2_2 │ BLOB                 │
-└─────────────────┴──────────────────────┘
+┌─────────────────┬───────────────────────┐
+│   column_name   │      column_type      │
+├─────────────────┼───────────────────────┤
+│ geometry_lod0_0 │ GEOMETRY('EPSG:7415') │
+│ geometry_lod1_2 │ BLOB                  │
+│ geometry_lod1_3 │ BLOB                  │
+│ geometry_lod2_2 │ BLOB                  │
+└─────────────────┴───────────────────────┘
+```
+
+**`EPSG:7415` is a rendering, not what is stored.** `cityjson`'s writer puts the whole
+PROJJSON document in the logical type's `crs` parameter, and `spatial` — loaded here —
+resolves it back to its authority code for display. Without `spatial` the same column
+prints as `GEOMETRY('{"$schema":"https://proj.org/schemas/v0.5/projjson…')`. The Parquet
+side is unambiguous:
+
+```sql
+SELECT name, logical_type IS NOT NULL AS annotated, length(logical_type) AS logical_type_len
+FROM parquet_schema('/tmp/cp_test/pkg_out/building.parquet')
+WHERE name LIKE 'geometry_lod%' ORDER BY 1;
+```
+
+```
+┌─────────────────┬───────────┬──────────────────┐
+│      name       │ annotated │ logical_type_len │
+├─────────────────┼───────────┼──────────────────┤
+│ geometry_lod0_0 │ true      │             2081 │
+│ geometry_lod1_2 │ false     │             NULL │
+│ geometry_lod1_3 │ false     │             NULL │
+│ geometry_lod2_2 │ false     │             NULL │
+└─────────────────┴───────────┴──────────────────┘
 ```
 
 `ST_Geom3DFromWKB` takes `BLOB`, and **`geometry_lod0_0::BLOB` does not work** — DuckDB
-v1.5.4 raises `Unimplemented type for cast (GEOMETRY(...) -> BLOB)`. Use `spatial`'s
-`ST_AsWKB` as the bridge:
+v1.5.4 raises `Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting
+from source column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not
+help either: the promotion follows the logical type, not the `geo` footer, so the column
+is still `GEOMETRY` with the setting off. Use `spatial`'s `ST_AsWKB` as the bridge:
 
 ```sql
-LOAD spatial;
 SELECT count(*) AS n,
        ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0)))
                      - ST_Area(geometry_lod0_0))), 12) AS max_abs_diff
@@ -1007,7 +1038,8 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
 - **`FILTER` does not guard a raising function** (§18). `SUM(ST_3DVolume(s)) FILTER (WHERE
   …is_valid)` still evaluates `ST_3DVolume` on invalid rows and raises. Filter in `WHERE`.
 - **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22). Bridge Parquet-native
-  `GEOMETRY` through `spatial`'s `ST_AsWKB`.
+  `GEOMETRY` through `spatial`'s `ST_AsWKB`. `SET enable_geoparquet_conversion=false` is
+  not a way out — the promotion follows the Parquet logical type, not the `geo` footer.
 - **LoD0 and the solid LoDs never share a row** in 3DBAG (§23). Join `parents`/`children`,
   or the query silently returns nothing.
 - **The LoD suffix is normalised**: `lod => '2'` yields `geometry_lod2_0`.
