@@ -156,13 +156,51 @@ stay un-prefixed.
 
 ## Import / construction
 
+The single-argument constructors take either a `BLOB` of WKB or DuckDB's native
+`GEOMETRY`, so a GeoParquet column that arrives carrying the Parquet `GEOMETRY`
+logical type needs no `ST_AsWKB` in between — see
+[WKB or GEOMETRY](#wkb-or-geometry) below.
+
 | Function | Signature | Returns |
 | --- | --- | --- |
-| `ST_3DFromWKB` | `(wkb BLOB)` | `SOLID_3D` |
+| `ST_3DFromWKB` | `(wkb BLOB \| GEOMETRY)` | `SOLID_3D` |
 | `ST_3DFromWKB` | `(wkb BLOB, geometry_properties VARCHAR)` | `SOLID_3D` |
 | `ST_3DFromWKB` | `(wkb BLOB, geometry_properties STRUCT)` | `SOLID_3D` |
 | `ST_3DTryFromWKB` | same three overloads | `SOLID_3D` or `NULL` |
-| `ST_Geom3DFromWKB` | `(wkb BLOB)` | `GEOM_3D` |
+| `ST_Geom3DFromWKB` | `(wkb BLOB \| GEOMETRY)` | `GEOM_3D` |
+
+### WKB or GEOMETRY
+
+A CityParquet package annotates its GeoParquet-legal geometry columns with the Parquet
+`GEOMETRY` logical type, and DuckDB promotes such a column to its native `GEOMETRY` on
+read. `geometry_lod0_0::BLOB` is not a way back — the cast is unimplemented — so the
+single-argument constructors accept `GEOMETRY` directly:
+
+```sql
+SELECT count(*) AS n,
+       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
+                     - ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0))))), 12) AS max_abs_diff
+FROM read_parquet('building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+```
+```
+┌───────┬──────────────┐
+│   n   │ max_abs_diff │
+├───────┼──────────────┤
+│  1115 │          0.0 │
+└───────┴──────────────┘
+```
+
+Two consequences worth knowing:
+
+- **Solid columns are unaffected**, because they never carry the annotation and could not
+  survive it: DuckDB's geometry model has no polyhedral surface, and `ST_GeomFromWKB`
+  raises `Unsupported geometry type in WKB` on solid bytes. A solid therefore cannot reach
+  these functions as `GEOMETRY` at all; on `ST_3DFromWKB` / `ST_3DTryFromWKB` the
+  `GEOMETRY` form matters for foreign GeoParquet columns, where `MultiPolygon Z` is common
+  and the `TRY` form's `NULL` is the useful answer.
+- The argument is bound through a single `ANY` candidate rather than one overload per
+  type, so an untyped `ST_3DFromWKB(NULL)` still binds. Anything that is neither
+  `GEOMETRY` nor implicitly castable to `BLOB` is rejected at bind time as before.
 
 ### `ST_3DFromWKB` / `ST_3DTryFromWKB`
 

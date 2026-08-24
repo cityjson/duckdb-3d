@@ -1,6 +1,8 @@
 #include "functions/three_d_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/geometry.hpp"
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
 #include "kernel/geom_analysis.hpp"
@@ -26,15 +28,35 @@ using duckdb_3d::ReadGeomPayloadHeader;
 // GEOM_3D: general geometry construction and accessors
 // ──────────────────────────────────────────────────────────────
 
-// ST_Geom3DFromWKB(wkb BLOB) → GEOM_3D
+// ST_Geom3DFromWKB(wkb BLOB | GEOMETRY) → GEOM_3D
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
-static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t wkb) {
+static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, count, [&](string_t wkb) {
 		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto payload = SerializeGeomPayload(model);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	});
+}
+
+static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	Geom3DFromWKBVector(args.data[0], args.size(), result);
+}
+
+// ST_Geom3DFromWKB(geom GEOMETRY) → GEOM_3D. A CityParquet footprint column
+// carries the Parquet GEOMETRY logical type, so DuckDB hands it over as GEOMETRY
+// rather than BLOB. Geometry::ToBinary is the supported way down to WKB — the
+// storage is physically a string, but not contractually raw WKB, so the string_t
+// must not simply be reinterpreted.
+static void ST_Geom3DFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	Vector wkb_vec(LogicalType::BLOB);
+	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
+	Geom3DFromWKBVector(wkb_vec, args.size(), result);
+}
+
+static unique_ptr<FunctionData> BindGeom3DFromWkbArg(ClientContext &, ScalarFunction &bound_function,
+                                                     vector<unique_ptr<Expression>> &arguments) {
+	return BindWkbArgument(bound_function, arguments, ST_Geom3DFromWKBFun, ST_Geom3DFromGeometryFun);
 }
 
 //! Reject a type code that is not in the GEOM_3D enum. The header-read accessors
@@ -315,8 +337,10 @@ static void ST_3DNumGeometriesFun(DataChunk &args, ExpressionState &state, Vecto
 
 void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                    const LogicalType &geom_3d_type) {
-	// GEOM_3D construction and accessors
-	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::BLOB}, geom_3d_type, ST_Geom3DFromWKBFun));
+	// GEOM_3D construction and accessors. One ANY candidate, dispatched at bind
+	// time, so that BLOB, GEOMETRY and an untyped NULL all bind (see BindWkbArgument).
+	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::ANY}, geom_3d_type, ST_Geom3DFromWKBFun,
+	                                       BindGeom3DFromWkbArg));
 
 	loader.RegisterFunction(
 	    ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_3DGeometryTypeFun));

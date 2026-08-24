@@ -868,7 +868,7 @@ FROM parts p JOIN cp c USING (id);
 **Every one of 1116 solids is byte-identical** whether it arrives via streamed
 CityJSONSeq or via a Parquet file on disk. That is the CityParquet round-trip guarantee.
 
-## 22 — LoD0 is GeoParquet, and needs a bridge
+## 22 — LoD0 is GeoParquet, and reads as GEOMETRY
 
 CityParquet's LoD0 footprint column carries the **Parquet-native `GEOMETRY`** logical
 type; the solid LoDs stay `BLOB`. A writer annotates a column exactly when it declares it
@@ -919,15 +919,15 @@ WHERE name LIKE 'geometry_lod%' ORDER BY 1;
 └─────────────────┴───────────┴──────────────────┘
 ```
 
-`ST_Geom3DFromWKB` takes `BLOB`, and **`geometry_lod0_0::BLOB` does not work** — DuckDB
-v1.5.4 raises `Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting
-from source column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not
-help either: the promotion follows the logical type, not the `geo` footer, so the column
-is still `GEOMETRY` with the setting off. Use `spatial`'s `ST_AsWKB` as the bridge:
+**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.4 raises
+`Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting from source
+column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not help either:
+the promotion follows the logical type, not the `geo` footer, so the column is still
+`GEOMETRY` with the setting off. The constructors take the column as it comes:
 
 ```sql
 SELECT count(*) AS n,
-       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0)))
+       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
                      - ST_Area(geometry_lod0_0))), 12) AS max_abs_diff
 FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
 ```
@@ -940,6 +940,23 @@ FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0
 └──────┴───────────────┘
 ```
 
+Routing the same column through `spatial`'s `ST_AsWKB` first is still valid and gives the
+identical answer — it is simply no longer necessary:
+
+```sql
+SELECT ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
+                     - ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0))))), 12) AS direct_vs_bridged
+FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+```
+
+```
+┌───────────────────┐
+│ direct_vs_bridged │
+├───────────────────┤
+│               0.0 │
+└───────────────────┘
+```
+
 This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
 `spatial`'s GEOS-backed `ST_Area` to 6.7e-5 m² worst case across 1115 footprints — about
 4e-9 relative on areas up to 15 000 m².
@@ -949,7 +966,7 @@ This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
 ```sql
 WITH raw AS (SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
 SELECT b.id AS building,
-       ROUND(ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(b.geometry_lod0_0))), 2) AS lod0_area,
+       ROUND(ST_3DFootprintArea(ST_Geom3DFromWKB(b.geometry_lod0_0)), 2) AS lod0_area,
        ROUND(ST_3DVolume(ST_3DFromWKB(p.geometry_lod1_2, p.geometry_properties_lod1_2)), 1) AS lod12_vol,
        ROUND(ST_3DVolume(ST_3DFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2)), 1) AS lod22_vol,
        ROUND(ST_3DFootprintArea(ST_3DFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2)), 2) AS lod22_fp
@@ -1037,9 +1054,10 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
 
 - **`FILTER` does not guard a raising function** (§18). `SUM(ST_3DVolume(s)) FILTER (WHERE
   …is_valid)` still evaluates `ST_3DVolume` on invalid rows and raises. Filter in `WHERE`.
-- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22). Bridge Parquet-native
-  `GEOMETRY` through `spatial`'s `ST_AsWKB`. `SET enable_geoparquet_conversion=false` is
-  not a way out — the promotion follows the Parquet logical type, not the `geo` footer.
+- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22), and
+  `SET enable_geoparquet_conversion=false` is not a way out — the promotion follows the
+  Parquet logical type, not the `geo` footer. Pass the `GEOMETRY` column straight to
+  `ST_Geom3DFromWKB`, which takes it.
 - **LoD0 and the solid LoDs never share a row** in 3DBAG (§23). Join `parents`/`children`,
   or the query silently returns nothing.
 - **The LoD suffix is normalised**: `lod => '2'` yields `geometry_lod2_0`.
@@ -1083,6 +1101,7 @@ The behaviours it demonstrates are covered automatically as follows:
 | §15 | `test/sql/st_transform.test`, `test/cpp/test_crs_transform.cpp` |
 | §16 | `test/sql/geom_3d_construct.test`, `test/cpp/test_geom_construct.cpp` |
 | §20 | `test/sql/st_3d_from_wkb_struct.test` (the CityParquet STRUCT sidecar) |
+| §22 (GEOMETRY input) | `test/sql/wkb_from_geometry.test` (the constructors' `GEOMETRY` argument) |
 | §22 (oracle) | Partly `test/sql/postgis_oracle.test`; the `spatial` cross-check here is manual |
 
 **Genuinely uncovered by any automated test:** the CityParquet write→read round trip
