@@ -41,11 +41,10 @@ inline void FlattenIfNeeded(Vector &vec, idx_t count) {
 //! GeometryMetadata. Resolves `type` and `shells` children by case-insensitive
 //! name, applies FlattenIfNeeded at every nesting level before dereferencing,
 //! and accepts both HUGEINT face counts (the (BLOB, ANY) bind normalises
-//! shells to HUGEINT[][]) and INTEGER face counts (the arrow-native overloads
-//! bind the producer's INTEGER[][] directly). `struct_vec` must already be
+//! shells to HUGEINT[][]) and INTEGER face counts, which a producer or a
+//! hand-built SQL struct may carry directly. `struct_vec` must already be
 //! flattened to `count` rows by the caller. Defined in
-//! functions/struct_metadata.cpp; shared because the WKB (solid_io) and
-//! arrow-native STRUCT overloads live in different translation units.
+//! functions/struct_metadata.cpp.
 duckdb_3d::GeometryMetadata ReadGeometryPropertiesStructRow(Vector &struct_vec, idx_t count, idx_t row);
 
 //! The coordinate dimension every v1 value carries. Defined in
@@ -63,7 +62,5 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_3d_type);
 void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                 const LogicalType &geom_3d_type);
-void RegisterArrowNativeFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
-                                  const LogicalType &geom_3d_type);
 
 } // namespace duckdb

@@ -121,15 +121,11 @@ Convert between them via WKB: `ST_Geom3DFromWKB(ST_3DAsWKB(solid))` goes solid �
 
 ## Conventions
 
-**Null propagation.** Any `NULL` argument yields `NULL`, with two deliberate exceptions:
+**Null propagation.** Any `NULL` argument yields `NULL`, with one deliberate exception:
+`ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a non-`NULL`
+result — a missing sidecar is not an error.
 
-- `ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a non-`NULL`
-  result — a missing sidecar is not an error.
-- The arrow-native constructors return `NULL` if *any* argument is `NULL`, because
-  `geometry_properties.type` is load-bearing there.
-
-**`TRY` variants** (`ST_3DTryFromWKB`, `ST_3DTryFromArrowNative`, `ST_Geom3DTryFromArrowNative`)
-catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
+**`TRY` variants** (`ST_3DTryFromWKB`) catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
 STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFromWKB`.
 
 **Errors, not repair.** The extension never silently fixes geometry. `ST_3DVolume` on a
@@ -209,32 +205,6 @@ SELECT ST_3DGeometryType(ST_Geom3DFromWKB(geometry)) AS gtype FROM ex;
 │ ST_PolyhedralSurface │
 └──────────────────────┘
 ```
-
-### Arrow-native constructors (experimental)
-
-`ST_3DFromArrowNative`, `ST_3DTryFromArrowNative`, `ST_Geom3DFromArrowNative`,
-`ST_Geom3DTryFromArrowNative` ingest nested `LIST`/`STRUCT` boundary columns plus a vertex
-pool **directly, bypassing WKB** — while producing exactly the same payload.
-
-```
-ST_3DFromArrowNative(boundaries, vertices, geometry_properties) → SOLID_3D
-```
-
-- `boundaries` — `INTEGER[][][][][]` (solid → shell → face → ring → vertex index)
-- `vertices` — `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]`
-- `geometry_properties` — JSON `VARCHAR` **or** the CityParquet `STRUCT`; **required**
-
-`geometry_properties.type` is load-bearing and dispatches solid-family
-(`Solid`/`MultiSolid`/`CompositeSolid`, the `ST_3D*` pair) versus surface-family
-(`MultiSurface`/`CompositeSurface`, the `ST_Geom3D*` pair). A single-shell `Solid` and a
-padded `MultiSurface` are physically indistinguishable, so the family cannot be inferred from
-shape — passing the wrong family raises (or yields `NULL` in the `TRY` form).
-
-> **Experimental.** These are part of an in-progress cross-repo experiment with
-> `cityparquet-rs` and `duckdb-cityjson`, not part of the settled v1 surface. The producing
-> readers are not yet released upstream.
-
----
 
 ## Export / serialization
 
@@ -702,15 +672,13 @@ FROM ex;
 
 | Category | Functions |
 | --- | --- |
-| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_3DFromArrowNative`*, `ST_3DTryFromArrowNative`*, `ST_Geom3DFromArrowNative`*, `ST_Geom3DTryFromArrowNative`* |
+| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB` |
 | **Export** | `ST_3DAsWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
 | **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DZMin`, `ST_3DZMax`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
 | **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
 | **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D` |
-
-`*` experimental (arrow-native ingestion).
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
 registered: `ST_3DIsValid` (validity is a field of `ST_3DValidationReport`), `ST_3DUnion` /

@@ -69,9 +69,9 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 // so it is a strict superset of the VARCHAR overload.
 //
 // The struct itself is read row-by-row by the shared, name-resolved
-// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp), which the
-// arrow-native STRUCT overloads use too — so the bind needs no per-field index
-// bookkeeping, only the type normalisation and the missing-`shells` diagnosis.
+// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp) — so the
+// bind needs no per-field index bookkeeping, only the type normalisation and
+// the missing-`shells` diagnosis.
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────

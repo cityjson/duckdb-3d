@@ -259,11 +259,6 @@ cavities. The sidecar's `shells` key restores that grouping, which in turn enabl
 This keeps `duckdb-3d` ignorant of CityJSON files, LoD selection, and semantic surfaces —
 all of which stay upstream.
 
-An **experimental** arrow-native ingestion path (`ST_3DFromArrowNative` and siblings) reads
-nested `LIST`/`STRUCT` boundary columns directly, skipping WKB serialization entirely while
-producing the identical payload. It is part of a cross-repo experiment with `cityparquet-rs`
-and `duckdb-cityjson` and is **not** part of the settled v1 surface.
-
 ---
 
 ## 8. Validation & measurement semantics
@@ -457,6 +452,3 @@ surface; PROJ-backed `ST_3DTransform`. See the
 booleans (union / difference / intersection), true 3D convex hulls, tessellation, straight
 skeletons, medial axes, and topology-repair workflows. These are gated on whether to take on
 a CGAL or SFCGAL dependency — a decision deliberately not yet made, per §2.4.
-
-**Experimental.** Arrow-native ingestion (§7), pending the outcome of the cross-repo
-experiment with `cityparquet-rs` and `duckdb-cityjson`.
