@@ -68,6 +68,74 @@ cityjson_extension := env_var_or_default("CITYJSON_EXTENSION", "../duckdb-cityjs
 shell-cityjson:
     ./build/release/duckdb -unsigned -cmd "LOAD '{{cityjson_extension}}'; LOAD three_d;"
 
+# ── DuckDB-Wasm ──
+
+# Wasm toolchain pins, mirroring the CI distribution pipeline.
+# emsdk: extension-ci-tools v1.5.4 `_extension_distribution.yml` pins
+# emscripten-core/setup-emsdk@v13 with version 3.1.71.
+# vcpkg baseline: the `builtin-baseline` commit in vcpkg.json — a plain shallow clone
+# does NOT contain it, so `wasm-setup` fetches it explicitly (manifest resolution
+# fails otherwise).
+emsdk_version := "3.1.71"
+vcpkg_baseline := "84bab45d415d22042bd0b9081aea57f362da3f35"
+
+# Installs the pinned emsdk and a durable vcpkg checkout under the gitignored
+# .vendor/. Idempotent — safe to re-run. ~2 GB and ~10 min the first time.
+
+# One-time toolchain bootstrap for `just wasm` (emsdk + vcpkg into .vendor/).
+wasm-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .vendor
+    if [ ! -d .vendor/emsdk ]; then
+        git clone --depth 200 https://github.com/emscripten-core/emsdk .vendor/emsdk
+    fi
+    (cd .vendor/emsdk && ./emsdk install {{emsdk_version}} && ./emsdk activate {{emsdk_version}})
+    # A blobless partial clone, NOT a shallow one. vcpkg resolves `proj` through its
+    # versions database to a specific *port tree* — 62e9ace for 9.4.0 — and a shallow
+    # clone contains no history to find it in, so the install dies with "failed to
+    # unpack tree object ... vcpkg was cloned as a shallow repository". `--filter`
+    # keeps every commit and tree while fetching blobs on demand, which resolves any
+    # port version at a fraction of a full clone's size.
+    if [ ! -d .vendor/vcpkg ]; then
+        git clone --filter=blob:none https://github.com/microsoft/vcpkg .vendor/vcpkg
+        (cd .vendor/vcpkg && ./bootstrap-vcpkg.sh -disableMetrics)
+    fi
+
+# Build the DuckDB-Wasm extension. Run `just wasm-setup` once first. The first build
+# is slow — vcpkg compiles PROJ and its dependencies for wasm32-emscripten — and
+# later builds reuse those binaries. Output lands in
+# build/<flavour>/extension/three_d/three_d.duckdb_extension.wasm, and the build also
+# writes a loadable extension repository at build/<flavour>/repository/.
+#
+# The default is `wasm_eh`, not `wasm_mvp` as in the sibling duckdb-cityjson repo,
+# because the consumers differ: that repo's default serves its wasm_mvp smoke
+# harness, whereas here a browser is the only consumer. duckdb-wasm's selectBundle()
+# picks the `eh` bundle wherever native wasm exceptions are available, and an `eh`
+# instance can only load `eh` extensions.
+#
+# NOTE: no ninja here, unlike every other build recipe. The wasm targets in
+# extension-ci-tools' duckdb_extension.Makefile hardcode
+# `emmake make -j8 -Cbuild/<flavour>`, so a Ninja-generated tree has no makefile and
+# the build dies with "No targets specified and no makefile found". Recovering also
+# needs `rm -rf build/<flavour>` — CMake refuses to switch generator in place.
+#
+# ST_3DTransform calls proj_create_crs_to_crs, which reads PROJ's EPSG database at
+# runtime. That database is not in the Emscripten filesystem, so expect that one
+# function to fail under wasm; the other ST_3D* functions do not touch it.
+
+# Build the DuckDB-Wasm extension (eh by default) with the pinned emsdk + .vendor/vcpkg.
+wasm flavour="wasm_eh":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{flavour}}" in
+        wasm_mvp|wasm_eh|wasm_threads) ;;
+        *) echo "unknown wasm flavour: {{flavour}} (want wasm_mvp, wasm_eh or wasm_threads)" >&2; exit 2 ;;
+    esac
+    source .vendor/emsdk/emsdk_env.sh
+    VCPKG_TOOLCHAIN_PATH="$(pwd)/.vendor/vcpkg/scripts/buildsystems/vcpkg.cmake" make {{flavour}}
+    echo "-> build/{{flavour}}/extension/three_d/three_d.duckdb_extension.wasm"
+
 # Remove build artifacts.
 clean:
     make clean
