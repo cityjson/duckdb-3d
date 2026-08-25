@@ -5,12 +5,25 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # This test streams real 3D building models — the 3DBAG "Delft" tile, CityJSON
 # 2.0 / EPSG:7415 — from a remote server and checks three_d's measurements
-# against 3DBAG's own published attributes (`b3_volume_lod22`, `b3_opp_grond`).
+# against the figures 3DBAG's own reconstruction pipeline published for them:
+#
+#   b3_volume_lod12/13/22                         ST_3DVolume, per LoD
+#   b3_opp_grond + dak_plat + dak_schuin
+#     + buitenmuur + scheidingsmuur               ST_3DSurfaceArea at LoD2.2
+#   b3_opp_grond                                  ST_3DFootprintArea
+#   b3_h_maaiveld                                 ST_3DZMin
+#   b3_h_dak_70p                                  ST_3DZMax at LoD1.2
+#   b3_val3dity_lod22                             ST_3DValidationReport
+#
+# `test/sql/cityjson_3dbag_attributes.test` runs the same comparisons offline,
+# against a frozen nine-building slice and at far tighter tolerances. This file
+# is the one that runs them at tile scale, where the thresholds have to be
+# fractions rather than bounds.
 #
 # It needs BOTH:
 #   1. the `cityjson` extension staged for the sqllogic runner — a build of the
 #      sibling duckdb-cityjson checkout, which emits the per-LoD
-#      `geometry_lod2_2` / `geometry_properties_lod2_2` columns aliased below
+#      `geometry_lod<X>` / `geometry_properties_lod<X>` columns read below
 #      (the published community build's flat `geometry` will not bind), and
 #   2. network access to
 #      https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl
@@ -36,22 +49,53 @@ statement ok
 CREATE TABLE feats AS
 SELECT id, parents, children,
        geometry_lod2_2 AS geometry, geometry_properties_lod2_2 AS geometry_properties,
-       b3_volume_lod22, b3_opp_grond
-FROM read_cityjsonseq(
-    'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl',
-    lod => '2.2')
+       geometry_lod1_2, geometry_properties_lod1_2,
+       geometry_lod1_3, geometry_properties_lod1_3,
+       b3_volume_lod12, b3_volume_lod13, b3_volume_lod22,
+       b3_opp_grond,
+       b3_opp_grond + b3_opp_dak_plat + b3_opp_dak_schuin
+         + b3_opp_buitenmuur + b3_opp_scheidingsmuur AS b3_opp_totaal,
+       b3_h_maaiveld, b3_h_dak_70p, b3_val3dity_lod22
+FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
 LIMIT 400;
 
 statement ok
 CREATE TABLE parts AS
 SELECT p.id,
        ST_3DTryFromWKB(p.geometry, p.geometry_properties) AS solid,
+       ST_3DTryFromWKB(p.geometry_lod1_2, p.geometry_properties_lod1_2) AS solid12,
+       ST_3DTryFromWKB(p.geometry_lod1_3, p.geometry_properties_lod1_3) AS solid13,
+       b.b3_volume_lod12,
+       b.b3_volume_lod13,
        b.b3_volume_lod22,
        b.b3_opp_grond,
+       b.b3_opp_totaal,
+       b.b3_h_maaiveld,
+       b.b3_h_dak_70p,
+       b.b3_val3dity_lod22,
        len(b.children) AS n_parts
 FROM feats p
 JOIN feats b ON b.id = p.parents[1]
 WHERE p.geometry IS NOT NULL;
+
+# The measurement assertions below run over the LoD1.2, LoD1.3 and LoD2.2 solids
+# of the same building, so restrict to the parts that carry, and import, all
+# three. ST_3DVolume and ST_3DSurfaceArea raise rather than repair, so the
+# volume and area comparisons are further restricted to the solids this
+# extension reports as valid.
+statement ok
+CREATE TABLE triples AS
+SELECT *, ST_3DValidationReport(solid).is_valid AS valid22
+FROM parts
+WHERE n_parts = 1
+  AND solid IS NOT NULL AND solid12 IS NOT NULL AND solid13 IS NOT NULL;
+
+statement ok
+CREATE TABLE valid_triples AS
+SELECT * FROM triples
+WHERE valid22
+  AND ST_3DValidationReport(solid12).is_valid
+  AND ST_3DValidationReport(solid13).is_valid;
 
 # Sanity: we actually pulled a non-trivial number of buildings.
 query I
@@ -108,17 +152,123 @@ SELECT bool_and((ST_3DZMax(solid) - ST_3DZMin(solid)) > 0) FROM parts;
 ----
 true
 
+# Every part carries all three LoDs, and all three import.
+query I
+SELECT count(*) > 100 FROM triples;
+----
+true
+
+# GROUND TRUTH — volume at LoD1.2 and LoD1.3. The block models are a separate
+# reconstruction from the LoD2.2 roof, so they exercise ST_3DVolume on geometry
+# the LoD2.2 assertion above never sees. Measured agreement is within 0.08 %.
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_3DVolume(solid12) - b3_volume_lod12)
+                <= 0.02 * b3_volume_lod12 + 0.1))
+       >= 0.95 * count(*)
+FROM valid_triples
+WHERE b3_volume_lod12 > 0;
+----
+true
+
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_3DVolume(solid13) - b3_volume_lod13)
+                <= 0.02 * b3_volume_lod13 + 0.1))
+       >= 0.95 * count(*)
+FROM valid_triples
+WHERE b3_volume_lod13 > 0;
+----
+true
+
+# GROUND TRUTH — surface area. Every face of the LoD2.2 solid carries exactly one
+# semantic role, so 3DBAG's five published surface areas — ground, flat roof,
+# sloped roof, exterior wall, party wall — sum to its whole boundary. This is
+# the only check ST_3DSurfaceArea has against an independent measurement of real
+# reconstructed geometry: SFCGAL rejects these roofs for non-planarity. Measured
+# median disagreement is 0.007 %, with ~99 % of buildings inside 2 %.
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_3DSurfaceArea(solid) - b3_opp_totaal)
+                <= 0.02 * b3_opp_totaal + 0.1))
+       >= 0.95 * count(*)
+FROM valid_triples
+WHERE b3_opp_totaal > 0;
+----
+true
+
+# GROUND TRUTH — ground elevation. b3_h_maaiveld is the height 3DBAG places the
+# ground surface at, and every LoD is built down to it, so ST_3DZMin must return
+# it — to within the 1 mm quantisation step of the tile's transform. On the
+# extruded blocks that holds for every building, not a fraction of them.
+query I
+SELECT bool_and(abs(ST_3DZMin(solid12) - b3_h_maaiveld) <= 0.01
+            AND abs(ST_3DZMin(solid13) - b3_h_maaiveld) <= 0.01)
+FROM triples;
+----
+true
+
+# At LoD2.2 it holds over the solids that reconstruct validly. It is stated over
+# those rather than over all of them because a broken LoD2.2 roof can drag a
+# vertex metres below the ground surface — the tile carries one such building,
+# and this extension reports it as invalid rather than measuring it.
+query I
+SELECT bool_and(abs(ST_3DZMin(solid) - b3_h_maaiveld) <= 0.01)
+FROM valid_triples;
+----
+true
+
+# GROUND TRUTH — extrusion height. The LoD1.2 block is extruded to the 70th
+# percentile roof elevation, so ST_3DZMax on it recovers b3_h_dak_70p.
+# Reconstruction snaps that height, so this is a decimetre-scale agreement over
+# most buildings rather than an exact one — measured 95th percentile 9 cm.
+query I
+SELECT (count(*) FILTER (WHERE abs(ST_3DZMax(solid12) - b3_h_dak_70p) <= 0.15))
+       >= 0.90 * count(*)
+FROM triples;
+----
+true
+
+# The footprint does not move between LoDs: the same ground surface is carried
+# at every level, remeshed but not reshaped.
+query I
+SELECT (count(*) FILTER (
+          WHERE abs(ST_3DFootprintArea(solid) - ST_3DFootprintArea(solid12))
+                <= 0.01 * ST_3DFootprintArea(solid12)))
+       = count(*)
+FROM triples
+WHERE ST_3DFootprintArea(solid12) > 0;
+----
+true
+
+# CROSS-CHECK — validity. b3_val3dity_lod22 is val3dity's error list for the
+# LoD2.2 solid; `[]` means it found none. val3dity checks strictly more than this
+# extension does, so the implication runs one way: what val3dity passes,
+# ST_3DValidationReport should pass too. It is a fraction rather than a bound
+# because the two disagree on a handful of solids that carry a single collapsed
+# face — val3dity tolerates it, this extension reports the duplicated edge it
+# creates as non-manifold and refuses to measure the solid. Measured 98.5 %.
+query I
+SELECT (count(*) FILTER (WHERE valid22)) >= 0.95 * count(*)
+FROM triples
+WHERE b3_val3dity_lod22 = '[]';
+----
+true
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Deterministic per-building pins (selected by id, independent of row order).
 # NL.IMBAG.Pand.0503100000012869-0 is a small flat-roof house whose 3DBAG
 # LoD2.2 solid has 6 faces; published b3_volume_lod22 ≈ 19.52, b3_opp_grond ≈ 7.21.
 # ─────────────────────────────────────────────────────────────────────────────
-query IIIII
+# The measured figures are formatted and compared as text: sqllogic compares
+# numeric results with a 1 % relative tolerance, so a bare ROUND(...) pin would
+# wave through drift an order of magnitude larger than the rounding it shows.
+query IITTT
 SELECT ST_3DNumFaces(solid),
        ST_3DIsClosed(solid),
-       ROUND(ST_3DVolume(solid), 1),
-       ROUND(ST_3DFootprintArea(solid), 1),
-       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2)
+       printf('%.1f', ST_3DVolume(solid)),
+       printf('%.1f', ST_3DFootprintArea(solid)),
+       printf('%.2f', ST_3DZMax(solid) - ST_3DZMin(solid))
 FROM parts
 WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
 ----
@@ -133,6 +283,12 @@ SELECT ROUND(ST_3DDistance(
 ), 0) > 1000;
 ----
 true
+
+statement ok
+DROP TABLE valid_triples;
+
+statement ok
+DROP TABLE triples;
 
 statement ok
 DROP TABLE parts;

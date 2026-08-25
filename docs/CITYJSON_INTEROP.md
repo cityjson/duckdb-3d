@@ -202,9 +202,10 @@ LIMIT 10;
 make test_full
 ```
 
-Four test files are gated on `require cityjson`
+Five test files are gated on `require cityjson`
 (`cityjson_interop`, `cityjson_hollow_solid`, `cityjson_multisolid`,
-`cityjson_delft_remote`), and one on `require spatial` (`spatial_coexist`).
+`cityjson_3dbag_attributes`, `cityjson_delft_remote`), and one on
+`require spatial` (`spatial_coexist`).
 Under `make test` / `make test_debug` they skip; `make test_full` does the setup
 that makes them execute, and treats a skip as a failure. It needs network access
 — the httpfs/spatial download on the first run, and the remote Delft fixture on
