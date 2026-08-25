@@ -574,7 +574,7 @@ FROM good;
 └─────────────────┴─────────────────┴─────────────────┘
 ```
 
-Unrounded, the same three maxima are **2.6e-11**, **6.2e-12** and **3.0e-11**, and the
+Unrounded, the same three maxima are **1.8e-11**, **5.0e-12** and **4.4e-11**, and the
 translation maximum is *exactly* 0.0. Rotation is the looser case for a reason that has
 nothing to do with the volume sum: rotating absolute RD coordinates injects `|p|·eps`
 rounding into the vertices themselves before any measurement runs, so ~1e-11 is the floor
@@ -753,7 +753,7 @@ SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out', crs => 'EPSG:7415
 ┌────────────┬────────┐        ┌──────────────────┬─────────┬──────┬─────────┐
 │ table_name │  role  │        │       file       │ action  │ rows │  bytes  │
 ├────────────┼────────┤        ├──────────────────┼─────────┼──────┼─────────┤
-│ building   │ object │        │ building.parquet │ written │ 2231 │ 3690150 │
+│ building   │ object │        │ building.parquet │ written │ 2231 │ 3675602 │
 └────────────┴────────┘        │ metadata.json    │ written │    0 │    6722 │
                                └──────────────────┴─────────┴──────┴─────────┘
 ```
@@ -940,7 +940,7 @@ FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0
 ┌──────┬───────────────┐
 │  n   │ max_abs_diff  │
 ├──────┼───────────────┤
-│ 1115 │ 6.6742601e-05 │
+│ 1115 │ 4.7214047e-05 │
 └──────┴───────────────┘
 ```
 
@@ -962,8 +962,8 @@ FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0
 ```
 
 This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
-`spatial`'s GEOS-backed `ST_Area` to 6.7e-5 m² worst case across 1115 footprints — about
-4e-9 relative on areas up to 15 000 m².
+`spatial`'s GEOS-backed `ST_Area` to 4.7e-5 m² worst case across 1115 footprints — about
+3e-9 relative on areas up to 15 000 m².
 
 ## 23 — All LoDs of one building, side by side
 
@@ -1015,7 +1015,7 @@ northing into Z, which is why Z rotation looked fine and hid the problem. A tetr
 translated to 1e8 reported `1.67e7` instead of `1/6`.
 
 Fixed by referencing each tetrahedron to a point on the shell it belongs to — a no-op in
-exact arithmetic. Drift across all 1098 valid Delft solids is now at most **3.0e-11**
+exact arithmetic. Drift across all 1098 valid Delft solids is now at most **4.4e-11**
 relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is the floor
 imposed by rotating absolute RD coordinates, not a residue of the cancellation.
 Untransformed measurements did not change: agreement with 3DBAG's `b3_volume_lod22` is
