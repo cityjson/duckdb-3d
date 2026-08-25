@@ -1,0 +1,196 @@
+# name: test/sql/cityjson_3dbag_attributes.test
+# description: three_d measurements cross-checked against 3DBAG's own published attributes, on the frozen local tile slice
+# group: [sql]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3DBAG publishes, per building, the figures its own reconstruction pipeline
+# measured: volume per LoD, the areas of ground / roof / wall surfaces, and the
+# ground elevation. Those are an oracle computed by an independent toolchain on
+# the same geometry, so they check `ST_3D*` measurement end to end.
+#
+# `test/data/3dbag.city.jsonl` is a frozen nine-building slice — the same nine
+# solids the PostGIS oracle freezes as its `NL.IMBAG.Pand.*` rows
+# (test/data/postgis_oracle/README.md). SFCGAL rejects eight of the nine for
+# non-planarity and measures neither their area nor their volume, so for those
+# this is the only oracle there is. It is also offline: unlike
+# cityjson_delft_remote.test it needs no network, so the tolerances are pinned
+# to what this frozen slice actually produces rather than left loose for drift.
+#
+# Which attribute checks which function:
+#
+#   b3_volume_lod12/13/22                         ST_3DVolume, per LoD
+#   b3_opp_grond + dak_plat + dak_schuin
+#     + buitenmuur + scheidingsmuur               ST_3DSurfaceArea at LoD2.2
+#   b3_opp_grond                                  ST_3DFootprintArea
+#   b3_h_maaiveld                                 ST_3DZMin
+#   b3_h_dak_70p                                  ST_3DZMax at LoD1.2
+#   b3_val3dity_lod22                             ST_3DValidationReport
+#
+# The area identity holds at LoD2.2 only: the five `b3_opp_*` attributes
+# describe the LoD2.2 model, and every face of that solid carries exactly one of
+# those semantic roles, so they sum to its whole boundary. The LoD1.2/1.3 blocks
+# extrude to a single roof height and their walls are a different surface.
+#
+# Requires the `cityjson` extension — a build of the sibling duckdb-cityjson
+# checkout, which emits the per-LoD geometry_lod<X> columns read below. See
+# docs/CITYJSON_INTEROP.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+require cityjson
+
+require three_d
+
+# One read yields every LoD present. Geometry lives on the `BuildingPart`
+# features and the attributes on the parent `Building`, so each part is joined
+# back to its parent.
+statement ok
+CREATE TABLE feats AS SELECT * FROM read_cityjsonseq('test/data/3dbag.city.jsonl');
+
+statement ok
+CREATE TABLE parts AS
+SELECT p.id,
+       ST_3DFromWKB(p.geometry_lod1_2, p.geometry_properties_lod1_2) AS s12,
+       ST_3DFromWKB(p.geometry_lod1_3, p.geometry_properties_lod1_3) AS s13,
+       ST_3DFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2) AS s22,
+       b.b3_volume_lod12, b.b3_volume_lod13, b.b3_volume_lod22,
+       b.b3_opp_grond,
+       b.b3_opp_grond + b.b3_opp_dak_plat + b.b3_opp_dak_schuin
+         + b.b3_opp_buitenmuur + b.b3_opp_scheidingsmuur AS b3_opp_totaal,
+       b.b3_h_maaiveld, b.b3_h_dak_70p,
+       CAST(b.b3_val3dity_lod22 AS VARCHAR) AS b3_val3dity_lod22,
+       len(b.children) AS n_parts
+FROM feats p
+JOIN feats b ON b.id = p.parents[1]
+WHERE p.geometry_lod2_2 IS NOT NULL;
+
+# The slice is nine single-part buildings, each carrying all three LoDs, and
+# every geometry imports. Attributes describe the whole Building, so a
+# multi-part building would need its parts summed before any comparison below
+# held — this slice has none, and the assertion keeps it that way.
+query IIIII
+SELECT count(*), count(s12), count(s13), count(s22), max(n_parts) FROM parts;
+----
+9	9	9	9	1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volume, per LoD. Measured agreement on this slice is within 0.035 % at every
+# LoD; the 0.1 % bound leaves room for the vertex quantisation 3DBAG applies on
+# export (scale 0.001) without admitting a real regression.
+#
+# Each assertion lists the buildings that fail, so a failure names its rows.
+# ─────────────────────────────────────────────────────────────────────────────
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DVolume(s12) - b3_volume_lod12) > 0.001 * b3_volume_lod12
+ORDER BY id;
+----
+
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DVolume(s13) - b3_volume_lod13) > 0.001 * b3_volume_lod13
+ORDER BY id;
+----
+
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DVolume(s22) - b3_volume_lod22) > 0.001 * b3_volume_lod22
+ORDER BY id;
+----
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Surface area at LoD2.2 against the five semantic-surface areas summed. This is
+# the only oracle `ST_3DSurfaceArea` has on real reconstructed geometry.
+# Measured worst case on this slice is 0.55 %, on buildings where 3DBAG's
+# published roof area disagrees with the roof it shipped; 1 % is the bound.
+# ─────────────────────────────────────────────────────────────────────────────
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DSurfaceArea(s22) - b3_opp_totaal) > 0.01 * b3_opp_totaal
+ORDER BY id;
+----
+
+# Footprint area against the published ground area. The ground surface is
+# horizontal, so its 3D area and its XY projection are the same number, and
+# agreement is near-exact — within 0.005 m² measured, 0.02 m² asserted.
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DFootprintArea(s22) - b3_opp_grond) > 0.02
+ORDER BY id;
+----
+
+# The footprint does not move between LoDs: the same ground surface is carried
+# at every level, remeshed but not reshaped.
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DFootprintArea(s22) - ST_3DFootprintArea(s12)) > 0.01
+   OR abs(ST_3DFootprintArea(s22) - ST_3DFootprintArea(s13)) > 0.01
+ORDER BY id;
+----
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Heights. ZMin is the ground elevation 3DBAG publishes, to within the 1 mm
+# quantisation step of the file's transform. ZMax at LoD1.2 is the 70th
+# percentile roof elevation the block was extruded to — reconstruction snaps
+# that height, so it is checked at 5 cm, not at the quantisation step.
+# ─────────────────────────────────────────────────────────────────────────────
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DZMin(s22) - b3_h_maaiveld) > 0.002
+   OR abs(ST_3DZMin(s12) - b3_h_maaiveld) > 0.002
+   OR abs(ST_3DZMin(s13) - b3_h_maaiveld) > 0.002
+ORDER BY id;
+----
+
+query I
+SELECT id FROM parts
+WHERE abs(ST_3DZMax(s12) - b3_h_dak_70p) > 0.05
+ORDER BY id;
+----
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Validity. `b3_val3dity_lod22` is val3dity's error list for the LoD2.2 solid,
+# and `[]` means it found none. val3dity checks strictly more than this
+# extension does, so the implication runs one way only: what val3dity passes,
+# ST_3DValidationReport must also pass. All nine are clean under both.
+# ─────────────────────────────────────────────────────────────────────────────
+query I
+SELECT id FROM parts
+WHERE b3_val3dity_lod22 = '[]' AND NOT ST_3DValidationReport(s22).is_valid
+ORDER BY id;
+----
+
+query I
+SELECT count(*) FROM parts WHERE b3_val3dity_lod22 = '[]';
+----
+9
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-building pins. Face counts are structural — they come from the file, not
+# from a measurement. The measured figures are formatted to a fixed number of
+# decimals and compared as text: sqllogic compares numeric results with a 1 %
+# relative tolerance, which would wave through drift far larger than anything
+# the assertions above allow, so every pinned number here is a string.
+# ─────────────────────────────────────────────────────────────────────────────
+query TIITTTTTT
+SELECT id,
+       ST_3DNumFaces(s12), ST_3DNumFaces(s22),
+       printf('%.2f', ST_3DVolume(s22)),      printf('%.2f', b3_volume_lod22),
+       printf('%.2f', ST_3DSurfaceArea(s22)), printf('%.2f', ST_3DFootprintArea(s22)),
+       printf('%.3f', ST_3DZMin(s22)),        printf('%.3f', ST_3DZMax(s22))
+FROM parts ORDER BY id;
+----
+NL.IMBAG.Pand.0703100000027940-0	10	10	1399.54	1399.74	876.41	196.79	2.560	10.400
+NL.IMBAG.Pand.0703100000028278-0	15	40	3474.99	3475.19	1805.90	581.67	3.722	11.074
+NL.IMBAG.Pand.0703100000028817-0	6	6	1545.20	1545.00	1162.05	336.02	2.547	7.439
+NL.IMBAG.Pand.0703100000030681-0	6	6	550.97	551.01	470.15	88.74	-1.666	4.622
+NL.IMBAG.Pand.0703100000031557-0	6	6	46.82	46.82	79.10	15.21	2.835	5.921
+NL.IMBAG.Pand.0703100000031696-0	6	6	60.34	60.36	94.10	15.46	2.412	6.349
+NL.IMBAG.Pand.0703100000035296-0	8	8	37.25	37.26	70.32	14.86	4.329	6.861
+NL.IMBAG.Pand.0703100000035935-0	6	6	375.06	375.19	420.82	143.92	3.296	5.902
+NL.IMBAG.Pand.0703100000193621-0	8	12	1483.16	1483.55	1049.01	251.22	3.279	15.133
+
+statement ok
+DROP TABLE parts;
+
+statement ok
+DROP TABLE feats;

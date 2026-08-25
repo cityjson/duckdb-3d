@@ -523,7 +523,11 @@ FROM good WHERE n_parts = 1 AND b3_volume_lod22 > 0 AND b3_opp_grond > 0;
 ```
 
 The automated version of this check is
-[`test/sql/cityjson_delft_remote.test`](../test/sql/cityjson_delft_remote.test).
+[`test/sql/cityjson_delft_remote.test`](../test/sql/cityjson_delft_remote.test), which extends
+it to volume at LoD1.2 and LoD1.3, surface area against the five `b3_opp_*` attributes summed,
+`ST_3DZMin` against `b3_h_maaiveld` and the LoD1.2 extrusion height against `b3_h_dak_70p`.
+[`test/sql/cityjson_3dbag_attributes.test`](../test/sql/cityjson_3dbag_attributes.test) runs
+the same comparisons offline, over the frozen nine-building slice.
 
 ## 14 — Transforms: rigid motions and the cube law
 
@@ -1095,7 +1099,7 @@ The behaviours it demonstrates are covered automatically as follows:
 | §2 | `test/sql/cityjson_hollow_solid.test`, `test/sql/st_3d_hollow_solid.test`, `test/cpp/test_inner_shell.cpp` |
 | §3 | `test/sql/cityjson_multisolid.test`, `test/sql/st_3d_multisolid.test` |
 | §5, §6, §17 | `test/sql/geom_3d_accessors.test`, `geom_3d_measurements.test`, `geom_3d_serialize.test` |
-| §8–§13 | `test/sql/cityjson_delft_remote.test` (the 3DBAG oracle), `test/sql/st_3d_validation.test`, `test/sql/geom_3d_distance.test` |
+| §8–§13 | `test/sql/cityjson_delft_remote.test` and `test/sql/cityjson_3dbag_attributes.test` (the 3DBAG oracle, remote and offline), `test/sql/st_3d_validation.test`, `test/sql/geom_3d_distance.test` |
 | §14 | `test/sql/metamorphic_transforms.test` — **extended by this walkthrough** with the RotateX/RotateY cases from the quirks section |
 | §14 (kernel) | `test/cpp/test_measurements.cpp` — **added by this walkthrough**: far-from-origin precision |
 | §15 | `test/sql/st_transform.test`, `test/cpp/test_crs_transform.cpp` |

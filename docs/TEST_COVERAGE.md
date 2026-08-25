@@ -12,7 +12,7 @@ Suite layout and the TDD workflow are in [AGENTS.md](../AGENTS.md); this file re
 | `test/cpp/` | `make test_cpp`, `make test_all`, `make test_full` | Kernel logic with no database: WKB parsing, model construction, payload round-trips, validation, triangulation, area/volume math |
 | `test/sql/` | `make test`, `make test_debug`, `make test_full` (release, gated tests included) | SQL surface: binding, null propagation, `TRY` semantics, result contracts, interop |
 
-Four tests gated on `require cityjson` skip unless a **locally built** `duckdb-cityjson` is
+Five tests gated on `require cityjson` skip unless a **locally built** `duckdb-cityjson` is
 staged for the sqllogic runner — the community-published extension emits an older column
 shape these tests no longer target. `make test_full` stages it (and fails the run on any
 skip); see [CITYJSON_INTEROP.md](./CITYJSON_INTEROP.md#running-the-gated-tests-under-sqllogic)
@@ -25,13 +25,40 @@ Three independent sources, each authoritative for a different class of claim.
 
 ### 3DBAG published attributes — real-geometry measurement
 
-`test/sql/cityjson_delft_remote.test` streams the 3DBAG Delft tile and compares
-`ST_3DVolume` against `b3_volume_lod22` and `ST_3DFootprintArea` against `b3_opp_grond`.
-This is the oracle of record for measurement on **real reconstructed geometry**, because
-SFCGAL rejects most real roofs for non-planarity while this extension measures them by
-triangulation.
+3DBAG publishes, per building, what its own reconstruction pipeline measured. Those figures
+are an independent toolchain's answer for the very geometry it shipped, which makes them the
+oracle of record for measurement on **real reconstructed geometry** — the case SFCGAL cannot
+serve, because it rejects most real roofs for non-planarity while this extension measures
+them by triangulation.
 
-Requires network access and the `cityjson` extension.
+| Attribute | Oracles |
+| --- | --- |
+| `b3_volume_lod12`, `b3_volume_lod13`, `b3_volume_lod22` | `ST_3DVolume`, at each LoD |
+| `b3_opp_grond` + `b3_opp_dak_plat` + `b3_opp_dak_schuin` + `b3_opp_buitenmuur` + `b3_opp_scheidingsmuur` | `ST_3DSurfaceArea` / `ST_3DArea` at LoD2.2 — every face of that solid carries exactly one of the five semantic roles, so they sum to its whole boundary |
+| `b3_opp_grond` | `ST_3DFootprintArea` — the ground surface is horizontal, so its 3D area and its XY projection are one number |
+| `b3_h_maaiveld` | `ST_3DZMin`, at every LoD |
+| `b3_h_dak_70p` | `ST_3DZMax` at LoD1.2 — the height the block was extruded to |
+| `b3_val3dity_lod22` | `ST_3DValidationReport` — one-way: what val3dity passes, this extension must pass |
+
+Two tests run those comparisons.
+
+- **`test/sql/cityjson_3dbag_attributes.test`** — offline, over the frozen nine-building slice
+  in `test/data/3dbag.city.jsonl`, at the tolerances that slice actually meets (0.1 % on
+  volume, 1 % on surface area, 2 mm on ZMin) plus string-exact per-building pins. Needs the
+  `cityjson` extension but **no network**, so it is the one that runs anywhere.
+- **`test/sql/cityjson_delft_remote.test`** — the same comparisons at tile scale, streamed
+  from the remote Delft tile. At that scale the thresholds are fractions ("≥95 % of buildings
+  within 2 %") rather than bounds, because a tile contains reconstructions that are simply
+  broken. Requires network access.
+
+The val3dity cross-check is a fraction, not a bound, and deliberately: the two disagree on a
+handful of tile solids that carry a single collapsed face. val3dity tolerates it; this
+extension reports the duplicated edge it creates as non-manifold and refuses to measure the
+solid, which is the documented no-silent-repair behaviour rather than a defect.
+
+Numeric pins in both files are formatted with `printf` and compared as text. sqllogic compares
+numeric results with a **1 % relative tolerance**, so a bare `ROUND(...)` pin admits drift an
+order of magnitude larger than the decimals it displays.
 
 ### PostGIS + SFCGAL — analytic measurement math
 
@@ -111,6 +138,7 @@ over the whole frozen 3DBAG corpus.
 | `ST_AsWKBMultiCube(separation)` | Volume conditioning when a collection's parts are spatially separated — the per-shell reference point of DESIGN_DOC §8.2. Total volume stays 16 at separations of 1e4–1e10, and the 1e6 case is oracled against SFCGAL as `fixture:multi_cube_far` |
 | `test/data/multisolid.city.json`, `compositesolid.city.json` | `MultiSolid` / `CompositeSolid` import per solid, with shell grouping recovered from the sidecar (`test/sql/cityjson_multisolid.test`). Import does **not** raise on either class |
 | `test/data/unit_cube.city.json` | End-to-end `cityjson` → `three_d` smoke test |
+| `test/data/3dbag.city.jsonl` | Nine real 3DBAG buildings at LoD1.2 / 1.3 / 2.2. The WKB the PostGIS oracle freezes as its `NL.IMBAG.Pand.*` rows comes from here, and `test/sql/cityjson_3dbag_attributes.test` measures the same nine against 3DBAG's published attributes offline |
 
 ## Open work
 
