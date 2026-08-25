@@ -1,0 +1,86 @@
+# name: test/sql/wkb_from_geometry.test
+# description: the WKB constructors accept a core GEOMETRY value directly, with no ST_AsWKB bridge
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# CityParquet annotates its GeoParquet-legal geometry columns with the Parquet
+# GEOMETRY logical type, so DuckDB hands them to a query as GEOMETRY rather than
+# BLOB. Reading such a column used to need ST_AsWKB in between. These overloads
+# remove that step; the bytes and the answers are identical either way.
+#
+# Only the footprint constructor has a reachable positive case. DuckDB v1.5.4's
+# geometry model has no polyhedral surface, so ST_GeomFromWKB raises
+# `Unsupported geometry type in WKB` on solid bytes and a solid cannot become a
+# GEOMETRY at all; the kernel in turn takes a GeometryCollection Z only when its
+# members are PolyhedralSurface Z. The solid constructors therefore carry the
+# overload for the shape of the family and for foreign GeoParquet columns, where
+# MultiPolygon Z is common, and are exercised here through their null and error
+# contracts.
+
+# ST_Geom3DFromWKB accepts GEOMETRY.
+query I
+SELECT ST_3DGeometryType(ST_Geom3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ())));
+----
+ST_Polygon
+
+# ...and agrees with the ST_AsWKB bridge byte for byte.
+query I
+SELECT ST_Geom3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()))
+     = ST_Geom3DFromWKB(ST_AsWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ())));
+----
+true
+
+# Measurement straight off the GEOMETRY matches the bridged route.
+query I
+SELECT ST_3DFootprintArea(ST_Geom3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ())))
+     = ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()))));
+----
+true
+
+# ST_3DTryFromWKB accepts GEOMETRY and keeps its TRY contract — a lone Polygon Z
+# is not a solid, so it yields NULL rather than raising.
+query I
+SELECT ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ())) IS NULL;
+----
+true
+
+# The strict form binds the same argument and raises on it, as it does for BLOB.
+statement error
+SELECT ST_3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()));
+----
+Unsupported WKB geometry type for SOLID_3D import: type code 1003
+
+# NULL in, NULL out, on all three.
+query III
+SELECT ST_Geom3DFromWKB(NULL::GEOMETRY) IS NULL,
+       ST_3DFromWKB(NULL::GEOMETRY) IS NULL,
+       ST_3DTryFromWKB(NULL::GEOMETRY) IS NULL;
+----
+true	true	true
+
+# An untyped NULL still binds. It is castable to both BLOB and GEOMETRY at equal
+# cost, so a second overload would have made it ambiguous; the single ANY
+# candidate dispatched at bind time keeps it unambiguous.
+query III
+SELECT ST_Geom3DFromWKB(NULL) IS NULL,
+       ST_3DFromWKB(NULL) IS NULL,
+       ST_3DTryFromWKB(NULL) IS NULL;
+----
+true	true	true
+
+# A GEOMETRY carrying a CRS binds the same way — the overload is declared on the
+# bare type, which a CRS-parameterised value still matches.
+query I
+SELECT ST_3DGeometryType(ST_Geom3DFromWKB(ST_SetCRS(ST_GeomFromWKB(ST_AsWKBPolygonZ()), 'EPSG:7415')));
+----
+ST_Polygon
+
+# The BLOB overloads are untouched.
+query II
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube())),
+       ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
+----
+56.0	ST_Polygon

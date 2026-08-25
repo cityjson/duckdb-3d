@@ -60,8 +60,7 @@ SELECT ST_3DTryFromWKB(NULL, '{}') IS NULL;
 true
 
 # ──────────────────────────────────────────────────────────────
-# STRUCT geometry_properties overload (Task 1, arrow-native-type):
-# duckdb-cityjson's arrow-native-type branch (commit d334b26) types
+# STRUCT geometry_properties overload: CityParquet types
 # geometry_properties_lod* as STRUCT("type" VARCHAR, surfaces JSON,
 # face_semantics INTEGER[], shells INTEGER[][]), not VARCHAR JSON text.
 # ST_3DFromWKB/ST_3DTryFromWKB must bind directly against that STRUCT

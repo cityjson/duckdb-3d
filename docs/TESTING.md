@@ -1,9 +1,8 @@
 # Manual testing notebook — every public function against real data
 
-A copy-pasteable SQL walkthrough that exercises **all 49 public `duckdb-3d` functions**
+A copy-pasteable SQL walkthrough that exercises **all 45 public `duckdb-3d` functions**
 against real 3D city models: local CityJSON, remote CityJSONSeq (3DBAG Delft and
-Helsinki), an on-disk **CityParquet** package, and the **arrow-native** geometry
-encoding. Every cell below was executed and its printed output is the real output,
+Helsinki) and an on-disk **CityParquet** package. Every cell below was executed and its printed output is the real output,
 not an illustration.
 
 This complements the other docs rather than repeating them:
@@ -25,7 +24,8 @@ this walkthrough found and fixed.
 
 Two extensions are needed: `three_d` (this repo) and `cityjson` (the sibling
 [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) repo) for the readers.
-`spatial` and `json` are used by a handful of cells and autoload.
+`spatial` and `json` are used by a handful of cells. The extension build ships with
+`autoload_known_extensions` off, so `LOAD` them explicitly where a cell needs them.
 
 ```sh
 GEN=ninja make release        # builds ./build/release/duckdb with three_d linked in
@@ -749,7 +749,7 @@ SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out', crs => 'EPSG:7415
 ┌────────────┬────────┐        ┌──────────────────┬─────────┬──────┬─────────┐
 │ table_name │  role  │        │       file       │ action  │ rows │  bytes  │
 ├────────────┼────────┤        ├──────────────────┼─────────┼──────┼─────────┤
-│ building   │ object │        │ building.parquet │ written │ 2231 │ 4235239 │
+│ building   │ object │        │ building.parquet │ written │ 2231 │ 3690150 │
 └────────────┴────────┘        │ metadata.json    │ written │    0 │    6722 │
                                └──────────────────┴─────────┴──────┴─────────┘
 ```
@@ -790,6 +790,7 @@ shells = [[6]]
 ```
 
 ```sql
+LOAD json;
 CREATE TABLE cp AS
 SELECT id,
        ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2)                    AS s_struct,
@@ -867,37 +868,66 @@ FROM parts p JOIN cp c USING (id);
 **Every one of 1116 solids is byte-identical** whether it arrives via streamed
 CityJSONSeq or via a Parquet file on disk. That is the CityParquet round-trip guarantee.
 
-## 22 — LoD0 is GeoParquet, and needs a bridge
+## 22 — LoD0 is GeoParquet, and reads as GEOMETRY
 
-CityParquet's LoD0 footprint column is written as a **Parquet-native `GEOMETRY`** with an
-embedded PROJJSON CRS; the solid LoDs stay `BLOB` because solids are outside GeoParquet's
-WKB vocabulary. That asymmetry is visible on read-back:
+CityParquet's LoD0 footprint column carries the **Parquet-native `GEOMETRY`** logical
+type; the solid LoDs stay `BLOB`. A writer annotates a column exactly when it declares it
+in the `geo` footer, and a `PolyhedralSurface Z` is not legal GeoParquet — but the sharper
+reason is that DuckDB promotes any annotated column and converts it eagerly, and its
+geometry model has no polyhedral surface. Annotating a solid column would therefore make
+even `SELECT count(*)` over it fail, before any `ST_3D*` function saw a value. That
+asymmetry is visible on read-back:
 
 ```sql
-SELECT column_name, CASE WHEN column_type = 'BLOB' THEN 'BLOB' ELSE 'GEOMETRY(<projjson>)' END AS as_read
+LOAD spatial;
+SELECT column_name, column_type
 FROM (DESCRIBE SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
 WHERE column_name LIKE 'geometry_lod%' ORDER BY 1;
 ```
 
 ```
-┌─────────────────┬──────────────────────┐
-│   column_name   │       as_read        │
-├─────────────────┼──────────────────────┤
-│ geometry_lod0_0 │ GEOMETRY(<projjson>) │
-│ geometry_lod1_2 │ BLOB                 │
-│ geometry_lod1_3 │ BLOB                 │
-│ geometry_lod2_2 │ BLOB                 │
-└─────────────────┴──────────────────────┘
+┌─────────────────┬───────────────────────┐
+│   column_name   │      column_type      │
+├─────────────────┼───────────────────────┤
+│ geometry_lod0_0 │ GEOMETRY('EPSG:7415') │
+│ geometry_lod1_2 │ BLOB                  │
+│ geometry_lod1_3 │ BLOB                  │
+│ geometry_lod2_2 │ BLOB                  │
+└─────────────────┴───────────────────────┘
 ```
 
-`ST_Geom3DFromWKB` takes `BLOB`, and **`geometry_lod0_0::BLOB` does not work** — DuckDB
-v1.5.4 raises `Unimplemented type for cast (GEOMETRY(...) -> BLOB)`. Use `spatial`'s
-`ST_AsWKB` as the bridge:
+**`EPSG:7415` is a rendering, not what is stored.** `cityjson`'s writer puts the whole
+PROJJSON document in the logical type's `crs` parameter, and `spatial` — loaded here —
+resolves it back to its authority code for display. Without `spatial` the same column
+prints as `GEOMETRY('{"$schema":"https://proj.org/schemas/v0.5/projjson…')`. The Parquet
+side is unambiguous:
 
 ```sql
-LOAD spatial;
+SELECT name, logical_type IS NOT NULL AS annotated, length(logical_type) AS logical_type_len
+FROM parquet_schema('/tmp/cp_test/pkg_out/building.parquet')
+WHERE name LIKE 'geometry_lod%' ORDER BY 1;
+```
+
+```
+┌─────────────────┬───────────┬──────────────────┐
+│      name       │ annotated │ logical_type_len │
+├─────────────────┼───────────┼──────────────────┤
+│ geometry_lod0_0 │ true      │             2081 │
+│ geometry_lod1_2 │ false     │             NULL │
+│ geometry_lod1_3 │ false     │             NULL │
+│ geometry_lod2_2 │ false     │             NULL │
+└─────────────────┴───────────┴──────────────────┘
+```
+
+**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.4 raises
+`Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting from source
+column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not help either:
+the promotion follows the logical type, not the `geo` footer, so the column is still
+`GEOMETRY` with the setting off. The constructors take the column as it comes:
+
+```sql
 SELECT count(*) AS n,
-       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0)))
+       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
                      - ST_Area(geometry_lod0_0))), 12) AS max_abs_diff
 FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
 ```
@@ -910,6 +940,23 @@ FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0
 └──────┴───────────────┘
 ```
 
+Routing the same column through `spatial`'s `ST_AsWKB` first is still valid and gives the
+identical answer — it is simply no longer necessary:
+
+```sql
+SELECT ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
+                     - ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0))))), 12) AS direct_vs_bridged
+FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+```
+
+```
+┌───────────────────┐
+│ direct_vs_bridged │
+├───────────────────┤
+│               0.0 │
+└───────────────────┘
+```
+
 This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
 `spatial`'s GEOS-backed `ST_Area` to 6.7e-5 m² worst case across 1115 footprints — about
 4e-9 relative on areas up to 15 000 m².
@@ -919,7 +966,7 @@ This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
 ```sql
 WITH raw AS (SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
 SELECT b.id AS building,
-       ROUND(ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(b.geometry_lod0_0))), 2) AS lod0_area,
+       ROUND(ST_3DFootprintArea(ST_Geom3DFromWKB(b.geometry_lod0_0)), 2) AS lod0_area,
        ROUND(ST_3DVolume(ST_3DFromWKB(p.geometry_lod1_2, p.geometry_properties_lod1_2)), 1) AS lod12_vol,
        ROUND(ST_3DVolume(ST_3DFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2)), 1) AS lod22_vol,
        ROUND(ST_3DFootprintArea(ST_3DFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2)), 2) AS lod22_fp
@@ -949,153 +996,6 @@ rows — which is what happened on the first attempt and looked like a broken fi
 `lod0_area` tracks `lod22_fp` closely but not exactly (LoD0 is an independent
 generalisation), and diverges most on `…139`, a multi-part building where only one part
 is joined. LoD1.2 volume is a prism approximation and sits either side of LoD2.2.
-
----
-
-# Part D — Arrow-native encoding
-
-The arrow-native path skips WKB entirely: nested `INTEGER[][][][][]` boundaries plus a
-`STRUCT(x,y,z)[]` vertex pool go straight into the same payload. Before this notebook it
-was only exercised on hand-built synthetic fixtures
-(`test/sql/st_3d_from_arrow_native.test`, `test/cpp/test_arrow_native_import.cpp`); these
-are the first runs against real data.
-
-## 24 — The columns `cityjson` emits
-
-```sql
-SELECT column_name, column_type FROM (
-  DESCRIBE SELECT * FROM read_cityjsonseq('../cityparquet-rs/tests/fixtures/delft.city.jsonl',
-                                          lod => '2.2', geometry_encoding := 'arrow-native')
-) WHERE column_name LIKE '%geometry%';
-```
-
-```
-┌────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┐
-│        column_name         │                                      column_type                                       │
-├────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
-│ geometry_lod2_2            │ INTEGER[][][][][]                                                                      │
-│ geometry_vertices_lod2_2   │ STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]                                                 │
-│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][]) │
-└────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-Exactly the `(boundaries, vertices, geometry_properties)` triple the constructors expect.
-
-## 25 — Solid family: arrow-native equals WKB, byte for byte
-
-```sql
-CREATE TABLE an AS
-SELECT id,
-       ST_3DFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2, geometry_properties_lod2_2)    AS s,
-       ST_3DTryFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2, geometry_properties_lod2_2) AS s_try
-FROM read_cityjsonseq('../cityparquet-rs/tests/fixtures/delft.city.jsonl',
-                      lod => '2.2', geometry_encoding := 'arrow-native')
-WHERE geometry_lod2_2 IS NOT NULL;
-
-SELECT count(*) AS rows, count(s) AS imported, count(s_try) AS imported_try FROM an;
-
-SELECT count(*) AS joined,
-       count(*) FILTER (WHERE ST_3DAsWKB(a.s) = ST_3DAsWKB(c.s_struct))       AS identical_wkb,
-       count(*) FILTER (WHERE ST_3DNumFaces(a.s) = ST_3DNumFaces(c.s_struct)) AS same_faces,
-       ROUND(max(abs(ST_3DFootprintArea(a.s) - ST_3DFootprintArea(c.s_struct))), 12) AS max_fp_diff
-FROM an a JOIN cp c USING (id);
-```
-
-```
-┌──────┬──────────┬──────────────┐    ┌────────┬───────────────┬────────────┬─────────────┐
-│ rows │ imported │ imported_try │    │ joined │ identical_wkb │ same_faces │ max_fp_diff │
-├──────┼──────────┼──────────────┤    ├────────┼───────────────┼────────────┼─────────────┤
-│ 1116 │ 1116     │ 1116         │    │ 1116   │ 1116          │ 1116       │ 0.0         │
-└──────┴──────────┴──────────────┘    └────────┴───────────────┴────────────┴─────────────┘
-```
-
-All 1116 real solids canonicalise to identical bytes on both paths.
-
-## 26 — Surface family, and the family-dispatch contract
-
-`geometry_properties.type` decides which constructor pair applies. On the LoD3 model
-(all `MultiSurface`/`CompositeSurface`), the `ST_Geom3D*` pair succeeds and the `ST_3D*`
-pair returns `NULL`:
-
-```sql
-SELECT count(*) AS rows,
-       count(ST_3DTryFromArrowNative(geometry_lod3_0, geometry_vertices_lod3_0, geometry_properties_lod3_0))     AS as_solid_try,
-       count(ST_Geom3DTryFromArrowNative(geometry_lod3_0, geometry_vertices_lod3_0, geometry_properties_lod3_0)) AS as_geom_try,
-       count(ST_Geom3DFromArrowNative(geometry_lod3_0, geometry_vertices_lod3_0, geometry_properties_lod3_0))    AS as_geom_strict
-FROM read_cityjson('../cityparquet-rs/tests/fixtures/lod3_railway.city.json',
-                   lod => '3', geometry_encoding := 'arrow-native')
-WHERE geometry_lod3_0 IS NOT NULL;
-```
-
-```
-┌──────┬──────────────┬─────────────┬────────────────┐
-│ rows │ as_solid_try │ as_geom_try │ as_geom_strict │
-├──────┼──────────────┼─────────────┼────────────────┤
-│ 105  │ 0            │ 105         │ 105            │
-└──────┴──────────────┴─────────────┴────────────────┘
-```
-
-## 27 — Where arrow-native and WKB legitimately differ
-
-```sql
-WITH a AS (
-  SELECT id, ST_Geom3DFromArrowNative(geometry_lod3_0, geometry_vertices_lod3_0, geometry_properties_lod3_0) AS g
-  FROM read_cityjson('../cityparquet-rs/tests/fixtures/lod3_railway.city.json',
-                     lod => '3', geometry_encoding := 'arrow-native')
-  WHERE geometry_lod3_0 IS NOT NULL),
-w AS (
-  SELECT id, ST_Geom3DFromWKB(geometry_lod3_0) AS g
-  FROM read_cityjson('../cityparquet-rs/tests/fixtures/lod3_railway.city.json', lod => '3')
-  WHERE geometry_lod3_0 IS NOT NULL)
-SELECT count(*) AS joined,
-       count(*) FILTER (WHERE ST_3DAsBinary(a.g) = ST_3DAsBinary(w.g)) AS identical_wkb,
-       count(*) FILTER (WHERE ST_3DNumGeometries(a.g) = ST_3DNumGeometries(w.g)) AS same_patch_count,
-       ROUND(max(abs(ST_3DFootprintArea(a.g) - ST_3DFootprintArea(w.g))), 12) AS max_fp_diff
-FROM a JOIN w USING (id);
-```
-
-```
-┌────────┬───────────────┬──────────────────┬─────────────┐
-│ joined │ identical_wkb │ same_patch_count │ max_fp_diff │
-├────────┼───────────────┼──────────────────┼─────────────┤
-│ 105    │ 90            │ 105              │ 0.0         │
-└────────┴───────────────┴──────────────────┴─────────────┘
-```
-
-**15 of 105 are not byte-identical**, yet patch counts and areas match exactly. The
-arrow-native output is *smaller*, always by an exact multiple of 24 bytes (one XYZ
-vertex): the arrow-native importer collapses duplicate ring vertices — both repeated
-indices and distinct pool indices holding equal coordinates — while the WKB path
-preserves whatever the producer wrote. Verified on the source:
-
-```sql
-WITH rings AS (
-  SELECT id, unnest(ring) AS r FROM (
-    SELECT id, flatten(flatten(flatten(geometry_lod3_0))) AS ring
-    FROM read_cityjson('../cityparquet-rs/tests/fixtures/lod3_railway.city.json',
-                       lod => '3', geometry_encoding := 'arrow-native')
-    WHERE id IN ('GMLID_0373494_301709_129', 'GMLID_855011_330784_753')))
-SELECT id, count(*) AS rings,
-       count(*) FILTER (WHERE len(r) <> len(list_distinct(r))) AS rings_with_repeated_index
-FROM rings GROUP BY 1;
-```
-
-```
-┌──────────────────────────┬───────┬───────────────────────────┐
-│            id            │ rings │ rings_with_repeated_index │
-├──────────────────────────┼───────┼───────────────────────────┤
-│ GMLID_855011_330784_753  │ 102   │ 0                         │
-│ GMLID_0373494_301709_129 │ 102   │ 2                         │
-└──────────────────────────┴───────┴───────────────────────────┘
-```
-
-`…129` has two rings with a repeated *index* — exactly the 48-byte difference. `…753`
-has none, so its 48 bytes come from the other mechanism: distinct pool indices carrying
-equal coordinates. Both are deliberate (`test/cpp/test_arrow_native_import.cpp` pins
-them); neither changes the geometry. **Do not assert byte equality across the two
-encodings** — compare measurements or patch counts instead.
-
----
 
 ## Quirks and known gaps
 
@@ -1149,15 +1049,15 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
 - **§15 — Z changes under `ST_3DTransform` despite horizontal-only reprojection.** The
   centroid is area-weighted, so a reprojected XY footprint reweights it. The Z
   *coordinates* pass through untouched.
-- **§27 — 15 of 105 geometries differ bytewise between arrow-native and WKB.** Duplicate
-  ring vertices are collapsed on the arrow-native path only. Same geometry, same areas.
 
 ### Traps that cost time
 
 - **`FILTER` does not guard a raising function** (§18). `SUM(ST_3DVolume(s)) FILTER (WHERE
   …is_valid)` still evaluates `ST_3DVolume` on invalid rows and raises. Filter in `WHERE`.
-- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22). Bridge Parquet-native
-  `GEOMETRY` through `spatial`'s `ST_AsWKB`.
+- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22), and
+  `SET enable_geoparquet_conversion=false` is not a way out — the promotion follows the
+  Parquet logical type, not the `geo` footer. Pass the `GEOMETRY` column straight to
+  `ST_Geom3DFromWKB`, which takes it.
 - **LoD0 and the solid LoDs never share a row** in 3DBAG (§23). Join `parents`/`children`,
   or the query silently returns nothing.
 - **The LoD suffix is normalised**: `lod => '2'` yields `geometry_lod2_0`.
@@ -1178,8 +1078,6 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
   [FUTURE_WORK.md §1](./FUTURE_WORK.md).
 - **`ST_3DConvexHull` is a 2D XY hull** at minimum Z, not a true 3D hull — that needs the
   deferred CGAL/SFCGAL backend ([DESIGN_DOC.md §16](./DESIGN_DOC.md)).
-- **Arrow-native constructors are experimental** and not part of the settled v1 surface
-  ([FUNCTIONS.md](./FUNCTIONS.md#arrow-native-constructors-experimental)).
 
 ---
 
@@ -1203,12 +1101,11 @@ The behaviours it demonstrates are covered automatically as follows:
 | §15 | `test/sql/st_transform.test`, `test/cpp/test_crs_transform.cpp` |
 | §16 | `test/sql/geom_3d_construct.test`, `test/cpp/test_geom_construct.cpp` |
 | §20 | `test/sql/st_3d_from_wkb_struct.test` (the CityParquet STRUCT sidecar) |
-| §24–§27 | `test/sql/st_3d_from_arrow_native.test`, `st_geom3d_from_arrow_native.test`, `test/cpp/test_arrow_native_import.cpp` — all **synthetic**; §25/§27 are the only real-data runs |
+| §22 (GEOMETRY input) | `test/sql/wkb_from_geometry.test` (the constructors' `GEOMETRY` argument) |
 | §22 (oracle) | Partly `test/sql/postgis_oracle.test`; the `spatial` cross-check here is manual |
 
 **Genuinely uncovered by any automated test:** the CityParquet write→read round trip
-(§19–§23) and the arrow-native path on real data (§25–§27). Both are candidates for new
-gated test files; see [TEST_COVERAGE.md](./TEST_COVERAGE.md) for the oracle strategy.
+(§19–§23). It is a candidate for a new gated test file; see [TEST_COVERAGE.md](./TEST_COVERAGE.md) for the oracle strategy.
 
 Remember `THREE_D_TEST_FIXTURES=1` if you run `build/release/duckdb` directly — without
 it the `st_aswkb*` helpers are unregistered and every file declaring

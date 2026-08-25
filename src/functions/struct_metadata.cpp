@@ -14,7 +14,7 @@ namespace duckdb {
 namespace {
 
 //! One face count, dispatched on the bound child type: HUGEINT after the
-//! (BLOB, ANY) bind normalisation, INTEGER from the arrow-native overloads.
+//! (BLOB, ANY) bind normalisation; INTEGER from a producer or SQL struct.
 uint32_t ReadFaceCount(Vector &int_vec, idx_t pos) {
 	switch (int_vec.GetType().id()) {
 	case LogicalTypeId::HUGEINT: {

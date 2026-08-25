@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/geometry.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
@@ -24,11 +25,10 @@ using duckdb_3d::ParseWKB;
 using duckdb_3d::SolidModel;
 
 // ──────────────────────────────────────────────────────────────
-// ST_3DFromWKB(wkb BLOB) → SOLID_3D (BLOB)
+// ST_3DFromWKB(wkb BLOB | GEOMETRY) → SOLID_3D (BLOB)
 // ──────────────────────────────────────────────────────────────
-static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &wkb_vec = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, args.size(), [&](string_t wkb) {
+static void FromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, count, [&](string_t wkb) {
 		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto model = BuildSolidModel(surfaces);
 		auto payload = SerializePayload(model);
@@ -37,13 +37,16 @@ static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &res
 	});
 }
 
+static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	FromWKBVector(args.data[0], args.size(), result);
+}
+
 // ──────────────────────────────────────────────────────────────
-// ST_3DTryFromWKB(wkb BLOB) → SOLID_3D (BLOB) or NULL
+// ST_3DTryFromWKB(wkb BLOB | GEOMETRY) → SOLID_3D (BLOB) or NULL
 // ──────────────────────────────────────────────────────────────
-static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &wkb_vec = args.data[0];
+static void TryFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
 	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    wkb_vec, result, args.size(), [&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
+	    wkb_vec, result, count, [&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
 		    try {
 			    auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 			    auto model = BuildSolidModel(surfaces);
@@ -55,6 +58,40 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 			    return string_t();
 		    }
 	    });
+}
+
+static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	TryFromWKBVector(args.data[0], args.size(), result);
+}
+
+// ──────────────────────────────────────────────────────────────
+// ST_3DFromWKB / ST_3DTryFromWKB(geom GEOMETRY) → SOLID_3D
+//
+// A GeoParquet-legal column reaches a query as the Parquet GEOMETRY logical type
+// rather than BLOB. Geometry::ToBinary is the supported route down to WKB: the
+// storage is physically a string, but not contractually raw WKB, so the string_t
+// must not simply be reinterpreted.
+// ──────────────────────────────────────────────────────────────
+static void ST_3DFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	Vector wkb_vec(LogicalType::BLOB);
+	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
+	FromWKBVector(wkb_vec, args.size(), result);
+}
+
+static void ST_3DTryFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	Vector wkb_vec(LogicalType::BLOB);
+	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
+	TryFromWKBVector(wkb_vec, args.size(), result);
+}
+
+static unique_ptr<FunctionData> BindFromWkbArg(ClientContext &, ScalarFunction &bound_function,
+                                               vector<unique_ptr<Expression>> &arguments) {
+	return BindWkbArgument(bound_function, arguments, ST_3DFromWKBFun, ST_3DFromGeometryFun);
+}
+
+static unique_ptr<FunctionData> BindTryFromWkbArg(ClientContext &, ScalarFunction &bound_function,
+                                                  vector<unique_ptr<Expression>> &arguments) {
+	return BindWkbArgument(bound_function, arguments, ST_3DTryFromWKBFun, ST_3DTryFromGeometryFun);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -69,9 +106,9 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 // so it is a strict superset of the VARCHAR overload.
 //
 // The struct itself is read row-by-row by the shared, name-resolved
-// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp), which the
-// arrow-native STRUCT overloads use too — so the bind needs no per-field index
-// bookkeeping, only the type normalisation and the missing-`shells` diagnosis.
+// ReadGeometryPropertiesStructRow (functions/struct_metadata.cpp) — so the
+// bind needs no per-field index bookkeeping, only the type normalisation and
+// the missing-`shells` diagnosis.
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
@@ -241,11 +278,12 @@ static void ST_3DAsWKBFun(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type) {
-	// ST_3DFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads.
+	// ST_3DFromWKB: 1-arg (BLOB or GEOMETRY, dispatched at bind time), 2-arg
+	// (VARCHAR), and 2-arg (STRUCT) overloads.
 	// The constructors return the SOLID_3D alias so their result carries the type
 	// through to the typed consumer overloads without an explicit cast.
 	ScalarFunctionSet from_wkb_set("st_3dfromwkb");
-	from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, solid_3d_type, ST_3DFromWKBFun));
+	from_wkb_set.AddFunction(ScalarFunction({LogicalType::ANY}, solid_3d_type, ST_3DFromWKBFun, BindFromWkbArg));
 	auto from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, solid_3d_type,
 	                                    FromWKBWithMetaExecutor<false, MetaSource::JSON_TEXT>);
 	from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
@@ -258,9 +296,10 @@ void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_
 	from_wkb_set.AddFunction(from_wkb_any);
 	loader.RegisterFunction(from_wkb_set);
 
-	// ST_3DTryFromWKB: 1-arg, 2-arg (VARCHAR), and 2-arg (STRUCT) overloads
+	// ST_3DTryFromWKB: the same three shapes
 	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
-	try_from_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, solid_3d_type, ST_3DTryFromWKBFun));
+	try_from_wkb_set.AddFunction(
+	    ScalarFunction({LogicalType::ANY}, solid_3d_type, ST_3DTryFromWKBFun, BindTryFromWkbArg));
 	auto try_from_wkb_2arg = ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR}, solid_3d_type,
 	                                        FromWKBWithMetaExecutor<true, MetaSource::JSON_TEXT>);
 	try_from_wkb_2arg.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);

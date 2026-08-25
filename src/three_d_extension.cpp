@@ -27,7 +27,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterGeomAccessorFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterDistanceFunctions(loader, geom_3d_type);
 	RegisterTransformFunctions(loader, solid_3d_type, geom_3d_type);
-	RegisterArrowNativeFunctions(loader, solid_3d_type, geom_3d_type);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

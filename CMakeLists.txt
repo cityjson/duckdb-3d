@@ -23,7 +23,6 @@ set(EXTENSION_SOURCES
     src/functions/geom_accessors.cpp
     src/functions/distance.cpp
     src/functions/transforms.cpp
-    src/functions/arrow_native.cpp
     src/functions/struct_metadata.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
@@ -42,8 +41,7 @@ set(EXTENSION_SOURCES
     src/kernel/geom_construct.cpp
     src/kernel/geom_analysis.cpp
     src/kernel/geom_serialize.cpp
-    src/kernel/crs_transform.cpp
-    src/kernel/arrow_native_import.cpp)
+    src/kernel/crs_transform.cpp)
 
 # PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain
 # the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.

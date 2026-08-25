@@ -121,15 +121,11 @@ Convert between them via WKB: `ST_Geom3DFromWKB(ST_3DAsWKB(solid))` goes solid �
 
 ## Conventions
 
-**Null propagation.** Any `NULL` argument yields `NULL`, with two deliberate exceptions:
+**Null propagation.** Any `NULL` argument yields `NULL`, with one deliberate exception:
+`ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a non-`NULL`
+result — a missing sidecar is not an error.
 
-- `ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a non-`NULL`
-  result — a missing sidecar is not an error.
-- The arrow-native constructors return `NULL` if *any* argument is `NULL`, because
-  `geometry_properties.type` is load-bearing there.
-
-**`TRY` variants** (`ST_3DTryFromWKB`, `ST_3DTryFromArrowNative`, `ST_Geom3DTryFromArrowNative`)
-catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
+**`TRY` variants** (`ST_3DTryFromWKB`) catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
 STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFromWKB`.
 
 **Errors, not repair.** The extension never silently fixes geometry. `ST_3DVolume` on a
@@ -160,13 +156,51 @@ stay un-prefixed.
 
 ## Import / construction
 
+The single-argument constructors take either a `BLOB` of WKB or DuckDB's native
+`GEOMETRY`, so a GeoParquet column that arrives carrying the Parquet `GEOMETRY`
+logical type needs no `ST_AsWKB` in between — see
+[WKB or GEOMETRY](#wkb-or-geometry) below.
+
 | Function | Signature | Returns |
 | --- | --- | --- |
-| `ST_3DFromWKB` | `(wkb BLOB)` | `SOLID_3D` |
+| `ST_3DFromWKB` | `(wkb BLOB \| GEOMETRY)` | `SOLID_3D` |
 | `ST_3DFromWKB` | `(wkb BLOB, geometry_properties VARCHAR)` | `SOLID_3D` |
 | `ST_3DFromWKB` | `(wkb BLOB, geometry_properties STRUCT)` | `SOLID_3D` |
 | `ST_3DTryFromWKB` | same three overloads | `SOLID_3D` or `NULL` |
-| `ST_Geom3DFromWKB` | `(wkb BLOB)` | `GEOM_3D` |
+| `ST_Geom3DFromWKB` | `(wkb BLOB \| GEOMETRY)` | `GEOM_3D` |
+
+### WKB or GEOMETRY
+
+A CityParquet package annotates its GeoParquet-legal geometry columns with the Parquet
+`GEOMETRY` logical type, and DuckDB promotes such a column to its native `GEOMETRY` on
+read. `geometry_lod0_0::BLOB` is not a way back — the cast is unimplemented — so the
+single-argument constructors accept `GEOMETRY` directly:
+
+```sql
+SELECT count(*) AS n,
+       ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
+                     - ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0))))), 12) AS max_abs_diff
+FROM read_parquet('building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+```
+```
+┌───────┬──────────────┐
+│   n   │ max_abs_diff │
+├───────┼──────────────┤
+│  1115 │          0.0 │
+└───────┴──────────────┘
+```
+
+Two consequences worth knowing:
+
+- **Solid columns are unaffected**, because they never carry the annotation and could not
+  survive it: DuckDB's geometry model has no polyhedral surface, and `ST_GeomFromWKB`
+  raises `Unsupported geometry type in WKB` on solid bytes. A solid therefore cannot reach
+  these functions as `GEOMETRY` at all; on `ST_3DFromWKB` / `ST_3DTryFromWKB` the
+  `GEOMETRY` form matters for foreign GeoParquet columns, where `MultiPolygon Z` is common
+  and the `TRY` form's `NULL` is the useful answer.
+- The argument is bound through a single `ANY` candidate rather than one overload per
+  type, so an untyped `ST_3DFromWKB(NULL)` still binds. Anything that is neither
+  `GEOMETRY` nor implicitly castable to `BLOB` is rejected at bind time as before.
 
 ### `ST_3DFromWKB` / `ST_3DTryFromWKB`
 
@@ -209,32 +243,6 @@ SELECT ST_3DGeometryType(ST_Geom3DFromWKB(geometry)) AS gtype FROM ex;
 │ ST_PolyhedralSurface │
 └──────────────────────┘
 ```
-
-### Arrow-native constructors (experimental)
-
-`ST_3DFromArrowNative`, `ST_3DTryFromArrowNative`, `ST_Geom3DFromArrowNative`,
-`ST_Geom3DTryFromArrowNative` ingest nested `LIST`/`STRUCT` boundary columns plus a vertex
-pool **directly, bypassing WKB** — while producing exactly the same payload.
-
-```
-ST_3DFromArrowNative(boundaries, vertices, geometry_properties) → SOLID_3D
-```
-
-- `boundaries` — `INTEGER[][][][][]` (solid → shell → face → ring → vertex index)
-- `vertices` — `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[]`
-- `geometry_properties` — JSON `VARCHAR` **or** the CityParquet `STRUCT`; **required**
-
-`geometry_properties.type` is load-bearing and dispatches solid-family
-(`Solid`/`MultiSolid`/`CompositeSolid`, the `ST_3D*` pair) versus surface-family
-(`MultiSurface`/`CompositeSurface`, the `ST_Geom3D*` pair). A single-shell `Solid` and a
-padded `MultiSurface` are physically indistinguishable, so the family cannot be inferred from
-shape — passing the wrong family raises (or yields `NULL` in the `TRY` form).
-
-> **Experimental.** These are part of an in-progress cross-repo experiment with
-> `cityparquet-rs` and `duckdb-cityjson`, not part of the settled v1 surface. The producing
-> readers are not yet released upstream.
-
----
 
 ## Export / serialization
 
@@ -702,15 +710,13 @@ FROM ex;
 
 | Category | Functions |
 | --- | --- |
-| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_3DFromArrowNative`*, `ST_3DTryFromArrowNative`*, `ST_Geom3DFromArrowNative`*, `ST_Geom3DTryFromArrowNative`* |
+| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB` |
 | **Export** | `ST_3DAsWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
 | **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DZMin`, `ST_3DZMax`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
 | **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
 | **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D` |
-
-`*` experimental (arrow-native ingestion).
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
 registered: `ST_3DIsValid` (validity is a field of `ST_3DValidationReport`), `ST_3DUnion` /
