@@ -1,5 +1,5 @@
 #include "kernel/geom_serialize.hpp"
-#include "kernel/wkb_io.hpp"
+#include "kernel/byte_io.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -238,7 +238,7 @@ enum class WKBType : uint32_t {
 
 //! The shared little-endian writer plus this serialiser's own type-code and
 //! vertex writes.
-class WKBWriter : public WkbLEWriter {
+class WKBWriter : public ByteWriter {
 public:
 	void WriteType(WKBType type) {
 		WriteU32(static_cast<uint32_t>(type));

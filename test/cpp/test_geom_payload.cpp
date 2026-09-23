@@ -59,7 +59,7 @@ TEST_CASE("GeomPayload rejects non-monotone ring offsets", "[geom_payload]") {
 
 TEST_CASE("GeomPayload rejects ring offsets that decrease mid-sequence", "[geom_payload]") {
 	// front()==0 and back()==vertex count both hold, so only the monotonicity
-	// loop in ValidateGeomOffsets can catch this: {0,3} then a decrease to 2.
+	// loop in ValidateOffsets can catch this: {0,3} then a decrease to 2.
 	auto model = MakeRectanglePolygon();
 	model.ring_offsets = {0, 3, 2, 4};
 	auto bytes = SerializeGeomPayload(model);

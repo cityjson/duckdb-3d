@@ -1,6 +1,6 @@
 #include "kernel/wkb_parser.hpp"
 #include "kernel/geometry_math.hpp"
-#include "kernel/wkb_io.hpp"
+#include "kernel/byte_io.hpp"
 #include <stdexcept>
 
 namespace duckdb_3d {
