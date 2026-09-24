@@ -1,5 +1,5 @@
 #include "kernel/wkb_export.hpp"
-#include "kernel/wkb_io.hpp"
+#include "kernel/byte_io.hpp"
 #include "kernel/wkb_parser.hpp"
 
 namespace duckdb_3d {
@@ -7,7 +7,7 @@ namespace duckdb_3d {
 namespace {
 
 //! The shared little-endian writer plus this exporter's own type-code write.
-class WKBWriter : public WkbLEWriter {
+class WKBWriter : public ByteWriter {
 public:
 	void WriteGeometryType(WKBGeometryType type) {
 		WriteU32(static_cast<uint32_t>(type));
