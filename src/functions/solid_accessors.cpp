@@ -306,107 +306,200 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	ScalarFunctionSet num_solids_set("st_3dnumsolids");
 	num_solids_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumSolidsFun));
 	num_solids_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumSolidsFun));
-	loader.RegisterFunction(num_solids_set);
+	RegisterDocumented(loader, std::move(num_solids_set),
+	                   {{"solid"},
+	                    "Returns the number of solids in a SOLID_3D value: 1 for a solid, more for a multi-solid. "
+	                    "Reads the payload header only.",
+	                    "ST_3DNumSolids(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"introspection"}});
 
 	ScalarFunctionSet num_shells_set("st_3dnumshells");
 	num_shells_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumShellsFun));
 	num_shells_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumShellsFun));
-	loader.RegisterFunction(num_shells_set);
+	RegisterDocumented(loader, std::move(num_shells_set),
+	                   {{"solid"},
+	                    "Returns the number of shells (exterior and interior) across all solids of a SOLID_3D value. "
+	                    "Reads the payload header only.",
+	                    "ST_3DNumShells(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"introspection"}});
 
 	ScalarFunctionSet num_faces_set("st_3dnumfaces");
 	num_faces_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BIGINT, ST_3DNumFacesFun));
 	num_faces_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BIGINT, ST_3DNumFacesFun));
-	loader.RegisterFunction(num_faces_set);
+	RegisterDocumented(
+	    loader, std::move(num_faces_set),
+	    {{"solid"},
+	     "Returns the number of faces across all shells of a SOLID_3D value. Reads the payload header only.",
+	     "ST_3DNumFaces(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
+	     "3.0))",
+	     {"introspection"}});
 
-	// Introspection: bounds
+	// Introspection: bounds. Struct children name LogicalTypeId, not the
+	// LogicalType:: constants: pair's forwarding constructor would bind a
+	// reference to the constexpr member, which C++17 emits as an inline variable
+	// here and DuckDB (C++11) defines out of line, and the static link then sees
+	// two definitions.
 	child_list_t<LogicalType> bbox_children;
-	bbox_children.push_back({"min_x", LogicalType::DOUBLE});
-	bbox_children.push_back({"min_y", LogicalType::DOUBLE});
-	bbox_children.push_back({"min_z", LogicalType::DOUBLE});
-	bbox_children.push_back({"max_x", LogicalType::DOUBLE});
-	bbox_children.push_back({"max_y", LogicalType::DOUBLE});
-	bbox_children.push_back({"max_z", LogicalType::DOUBLE});
+	bbox_children.push_back({"min_x", LogicalTypeId::DOUBLE});
+	bbox_children.push_back({"min_y", LogicalTypeId::DOUBLE});
+	bbox_children.push_back({"min_z", LogicalTypeId::DOUBLE});
+	bbox_children.push_back({"max_x", LogicalTypeId::DOUBLE});
+	bbox_children.push_back({"max_y", LogicalTypeId::DOUBLE});
+	bbox_children.push_back({"max_z", LogicalTypeId::DOUBLE});
 	auto bbox_type = LogicalType::STRUCT(std::move(bbox_children));
 	ScalarFunctionSet bounds_set("st_3dbounds");
 	bounds_set.AddFunction(ScalarFunction({LogicalType::BLOB}, bbox_type, ST_3DBoundsFun));
 	bounds_set.AddFunction(ScalarFunction({solid_3d_type}, bbox_type, ST_3DBoundsFun));
-	loader.RegisterFunction(bounds_set);
+	RegisterDocumented(loader, std::move(bounds_set),
+	                   {{"solid"},
+	                    "Returns the 3D bounding box of a SOLID_3D value as STRUCT(min_x, min_y, min_z, max_x, max_y, "
+	                    "max_z), read from the cached box.",
+	                    "ST_3DBounds(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"introspection"}});
 
 	// Validation functions
 	ScalarFunctionSet is_closed_set("st_3disclosed");
 	is_closed_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
 	is_closed_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
-	loader.RegisterFunction(is_closed_set);
+	RegisterDocumented(loader, std::move(is_closed_set),
+	                   {{"solid"},
+	                    "Returns whether every shell of a SOLID_3D value is closed: each undirected edge used exactly "
+	                    "twice, in opposing directions. Read from the validation cached at import.",
+	                    "ST_3DIsClosed(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"validation"}});
 
 	ScalarFunctionSet is_manifold_set("st_3dismanifold");
 	is_manifold_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
 	is_manifold_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsManifoldFun));
-	loader.RegisterFunction(is_manifold_set);
+	RegisterDocumented(loader, std::move(is_manifold_set),
+	                   {{"solid"},
+	                    "Returns whether a SOLID_3D value is manifold: no edge belongs to more than two faces. Read "
+	                    "from the validation cached at import.",
+	                    "ST_3DIsManifold(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"validation"}});
 
 	ScalarFunctionSet is_oriented_set("st_3disoriented");
 	is_oriented_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
 	is_oriented_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsOrientedFun));
-	loader.RegisterFunction(is_oriented_set);
+	RegisterDocumented(loader, std::move(is_oriented_set),
+	                   {{"solid"},
+	                    "Returns whether face winding in a SOLID_3D value is consistent within each shell, with "
+	                    "interior shells wound opposite the exterior. Read from the validation cached at import.",
+	                    "ST_3DIsOriented(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"validation"}});
 
 	// Validation report
 	child_list_t<LogicalType> report_children;
-	report_children.push_back({"is_valid", LogicalType::BOOLEAN});
-	report_children.push_back({"is_closed", LogicalType::BOOLEAN});
-	report_children.push_back({"is_manifold", LogicalType::BOOLEAN});
-	report_children.push_back({"is_oriented", LogicalType::BOOLEAN});
-	report_children.push_back({"solid_count", LogicalType::BIGINT});
-	report_children.push_back({"shell_count", LogicalType::BIGINT});
-	report_children.push_back({"face_count", LogicalType::BIGINT});
-	report_children.push_back({"open_edge_count", LogicalType::BIGINT});
-	report_children.push_back({"non_manifold_edge_count", LogicalType::BIGINT});
-	report_children.push_back({"degenerate_face_count", LogicalType::BIGINT});
-	report_children.push_back({"orientation_error_count", LogicalType::BIGINT});
-	report_children.push_back({"code", LogicalType::VARCHAR});
-	report_children.push_back({"message", LogicalType::VARCHAR});
+	report_children.push_back({"is_valid", LogicalTypeId::BOOLEAN});
+	report_children.push_back({"is_closed", LogicalTypeId::BOOLEAN});
+	report_children.push_back({"is_manifold", LogicalTypeId::BOOLEAN});
+	report_children.push_back({"is_oriented", LogicalTypeId::BOOLEAN});
+	report_children.push_back({"solid_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"shell_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"face_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"open_edge_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"non_manifold_edge_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"degenerate_face_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"orientation_error_count", LogicalTypeId::BIGINT});
+	report_children.push_back({"code", LogicalTypeId::VARCHAR});
+	report_children.push_back({"message", LogicalTypeId::VARCHAR});
 	auto report_type = LogicalType::STRUCT(std::move(report_children));
 	ScalarFunctionSet report_set("st_3dvalidationreport");
 	report_set.AddFunction(ScalarFunction({LogicalType::BLOB}, report_type, ST_3DValidationReportFun));
 	report_set.AddFunction(ScalarFunction({solid_3d_type}, report_type, ST_3DValidationReportFun));
-	loader.RegisterFunction(report_set);
+	RegisterDocumented(loader, std::move(report_set),
+	                   {{"solid"},
+	                    "Returns a STRUCT reporting a SOLID_3D value's validity: the overall and per-check flags, "
+	                    "solid/shell/face counts, per-defect counters, a code ('VALID' or 'INVALID') and a message.",
+	                    "ST_3DValidationReport(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, "
+	                    "0 0 0))'::GEOMETRY), 3.0))",
+	                    {"validation"}});
 
 	// Measurement functions
 	ScalarFunctionSet surface_area_set("st_3dsurfacearea");
 	surface_area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	surface_area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
-	loader.RegisterFunction(surface_area_set);
+	RegisterDocumented(loader, std::move(surface_area_set),
+	                   {{"solid"},
+	                    "Returns the total area of all faces of a SOLID_3D value in input units, interior-shell faces "
+	                    "included. Raises on degenerate faces.",
+	                    "ST_3DSurfaceArea(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"measurement"}});
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
 	ScalarFunctionSet area3d_set("st_3darea");
 	area3d_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
 	area3d_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
-	loader.RegisterFunction(area3d_set);
+	RegisterDocumented(
+	    loader, std::move(area3d_set),
+	    {{"solid"},
+	     "Alias of ST_3DSurfaceArea: the total area of all faces of a SOLID_3D value in input units. Raises on "
+	     "degenerate faces.",
+	     "ST_3DArea(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
+	     {"measurement"}});
 	ScalarFunctionSet volume_set("st_3dvolume");
 	volume_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DVolumeFun));
 	volume_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DVolumeFun));
-	loader.RegisterFunction(volume_set);
+	RegisterDocumented(
+	    loader, std::move(volume_set),
+	    {{"solid"},
+	     "Returns the volume of a SOLID_3D value in input units; interior shells (cavities) subtract and multi-solids "
+	     "sum. Raises unless the solid is closed, manifold, oriented and free of degenerate faces.",
+	     "ST_3DVolume(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
+	     "3.0))",
+	     {"measurement"}});
 	// ST_3DFootprintArea dispatches by payload magic, so accept SOLID_3D and GEOM_3D (and
 	// raw BLOB) — same pattern as ST_3DZMin/ST_3DZMax.
 	ScalarFunctionSet area_set("st_3dfootprintarea");
 	area_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
 	area_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
 	area_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DFootprintAreaFun));
-	loader.RegisterFunction(area_set);
+	RegisterDocumented(loader, std::move(area_set),
+	                   {{"geom"},
+	                    "Returns the area of a SOLID_3D or GEOM_3D value projected onto the XY plane, in input units. "
+	                    "Has no validity precondition.",
+	                    "ST_3DFootprintArea(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"measurement"}});
 	ScalarFunctionSet perimeter_set("st_3dperimeter");
 	perimeter_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DPerimeterFun));
 	perimeter_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DPerimeterFun));
-	loader.RegisterFunction(perimeter_set);
+	RegisterDocumented(loader, std::move(perimeter_set),
+	                   {{"solid"},
+	                    "Returns the total length of a SOLID_3D value's boundary edges, those used by exactly one "
+	                    "face; a closed solid returns 0.",
+	                    "ST_3DPerimeter(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"measurement"}});
 
 	// Accessor functions
 	ScalarFunctionSet ndims_set("st_ndims");
 	ndims_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::INTEGER, ST_NDimsFun));
 	ndims_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::INTEGER, ST_NDimsFun));
 	ndims_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::INTEGER, ST_NDimsFun));
-	loader.RegisterFunction(ndims_set);
+	RegisterDocumented(loader, std::move(ndims_set),
+	                   {{"geom"},
+	                    "Returns the coordinate dimension of a SOLID_3D or GEOM_3D value, always 3. A constant for "
+	                    "PostGIS compatibility; the payload is not read.",
+	                    "ST_NDims(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
 
 	ScalarFunctionSet hasz_set("st_3dhasz");
 	hasz_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BOOLEAN, ST_3DHasZFun));
 	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DHasZFun));
 	hasz_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::BOOLEAN, ST_3DHasZFun));
-	loader.RegisterFunction(hasz_set);
+	RegisterDocumented(loader, std::move(hasz_set),
+	                   {{"geom"},
+	                    "Returns whether a SOLID_3D or GEOM_3D value has Z coordinates, always true. A constant for "
+	                    "PostGIS compatibility; the payload is not read.",
+	                    "ST_3DHasZ(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
 
 	// ST_3DZMin / ST_3DZMax: class-generic bbox accessors, accept SOLID_3D, GEOM_3D,
 	// and plain BLOB values. Multiple overloads are needed because DuckDB treats
@@ -415,13 +508,23 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	zmin_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DZMinFun));
 	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
 	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
-	loader.RegisterFunction(zmin_set);
+	RegisterDocumented(
+	    loader, std::move(zmin_set),
+	    {{"geom"},
+	     "Returns the minimum Z coordinate of a SOLID_3D or GEOM_3D value, read from its cached bounding box.",
+	     "ST_3DZMin(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
+	     {"introspection"}});
 
 	ScalarFunctionSet zmax_set("st_3dzmax");
 	zmax_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::DOUBLE, ST_3DZMaxFun));
 	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
 	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
-	loader.RegisterFunction(zmax_set);
+	RegisterDocumented(
+	    loader, std::move(zmax_set),
+	    {{"geom"},
+	     "Returns the maximum Z coordinate of a SOLID_3D or GEOM_3D value, read from its cached bounding box.",
+	     "ST_3DZMax(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
+	     {"introspection"}});
 }
 
 } // namespace duckdb

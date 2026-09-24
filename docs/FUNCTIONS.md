@@ -152,6 +152,16 @@ overload is bound to the **solid** executor — pass `GEOM_3D` values as their o
 (`ST_Force3D`, `ST_MakeSolid`, `ST_NDims`, `ST_CoordDim`, `ST_IsPlanar`, `ST_Geom3DFromWKB`)
 stay un-prefixed.
 
+**Discoverable from SQL.** Every public function carries a one-sentence description, real
+parameter names, a runnable example and a category (the headings of the
+[function index](#function-index)) in `duckdb_functions()`, so a client holding only a
+database connection can find and call it:
+
+```sql
+SELECT function_name, parameters, description, examples
+FROM duckdb_functions() WHERE function_name = 'st_3dvolume' LIMIT 1;
+```
+
 ---
 
 ## Import / construction
@@ -706,7 +716,7 @@ FROM ex;
 
 ## Function index
 
-55 public functions.
+51 public functions.
 
 | Category | Functions |
 | --- | --- |

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "kernel/geom_payload.hpp"
 #include "kernel/metadata_parser.hpp"
 #include "kernel/payload.hpp"
@@ -75,6 +77,38 @@ duckdb_3d::GeometryMetadata ReadGeometryPropertiesStructRow(Vector &struct_vec, 
 //! functions/solid_accessors.cpp; shared because ST_NDims (solid accessors) and
 //! ST_CoordDim (geom accessors) live in different translation units.
 int32_t CoordinateDimension3D();
+
+//! What duckdb_functions() reports for a function: the only documentation an
+//! agent on a SQL connection can reach. One description covers every overload
+//! because it carries no parameter_types; parameter_names is the longest
+//! overload's list, and shorter overloads take its prefix.
+struct FunctionDocs {
+	vector<string> parameter_names;
+	string description;
+	string example;
+	vector<string> categories;
+};
+
+//! Register a function set with its documentation attached. Conflicts resolve
+//! as the bare RegisterFunction(ScalarFunctionSet) overload resolves them.
+inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunctionSet set, FunctionDocs docs) {
+	CreateScalarFunctionInfo info(std::move(set));
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+	FunctionDescription description;
+	description.parameter_names = std::move(docs.parameter_names);
+	description.description = std::move(docs.description);
+	description.examples = {std::move(docs.example)};
+	description.categories = std::move(docs.categories);
+	info.descriptions.push_back(std::move(description));
+	loader.RegisterFunction(std::move(info));
+}
+
+//! Single-overload form of RegisterDocumented.
+inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunction function, FunctionDocs docs) {
+	ScalarFunctionSet set(function.name);
+	set.AddFunction(std::move(function));
+	RegisterDocumented(loader, std::move(set), std::move(docs));
+}
 
 //! Per-domain registration hooks, called from LoadInternal.
 void RegisterFixtureFunctions(ExtensionLoader &loader);

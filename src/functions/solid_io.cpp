@@ -294,7 +294,15 @@ void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_
 	                                   FromWKBWithMetaExecutor<false, MetaSource::STRUCT_FIELDS>, FromWkbAnyBind);
 	from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	from_wkb_set.AddFunction(from_wkb_any);
-	loader.RegisterFunction(from_wkb_set);
+	RegisterDocumented(
+	    loader, std::move(from_wkb_set),
+	    {{"wkb", "geometry_properties"},
+	     "Builds a SOLID_3D from PolyhedralSurface Z WKB, or a GeometryCollection Z of them for a "
+	     "multi-solid; the optional geometry_properties (CityJSON JSON text or a CityParquet STRUCT) "
+	     "restores the shell grouping WKB cannot carry. Raises on unparseable WKB or unsupported topology.",
+	     "ST_3DFromWKB(ST_3DAsWKB(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	     "0))'::GEOMETRY), 3.0)))",
+	     {"import"}});
 
 	// ST_3DTryFromWKB: the same three shapes
 	ScalarFunctionSet try_from_wkb_set("st_3dtryfromwkb");
@@ -308,14 +316,25 @@ void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_
 	                                       FromWKBWithMetaExecutor<true, MetaSource::STRUCT_FIELDS>, TryFromWkbAnyBind);
 	try_from_wkb_any.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	try_from_wkb_set.AddFunction(try_from_wkb_any);
-	loader.RegisterFunction(try_from_wkb_set);
+	RegisterDocumented(loader, std::move(try_from_wkb_set),
+	                   {{"wkb", "geometry_properties"},
+	                    "Like ST_3DFromWKB, but returns NULL for a row whose WKB is unparseable or not a solid instead "
+	                    "of raising; bind-time errors still raise.",
+	                    "ST_3DTryFromWKB('POINT Z (1 2 3)'::GEOMETRY)",
+	                    {"import"}});
 
 	// ST_3DAsWKB(solid SOLID_3D) -> BLOB. The BLOB overload keeps stored/legacy
 	// payloads working; DuckDB resolves the alias exactly, so both are needed.
 	ScalarFunctionSet as_wkb_set("st_3daswkb");
 	as_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
 	as_wkb_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BLOB, ST_3DAsWKBFun));
-	loader.RegisterFunction(as_wkb_set);
+	RegisterDocumented(
+	    loader, std::move(as_wkb_set),
+	    {{"solid"},
+	     "Exports a SOLID_3D as OGC WKB: a PolyhedralSurface Z for one solid, a GeometryCollection Z for "
+	     "a multi-solid.",
+	     "ST_3DAsWKB(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
+	     {"export"}});
 }
 
 } // namespace duckdb

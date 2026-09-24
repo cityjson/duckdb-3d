@@ -1,0 +1,44 @@
+# name: test/sql/function_catalog.test
+# description: every public function is discoverable from duckdb_functions()
+# group: [sql]
+
+require three_d
+
+statement ok
+CREATE VIEW three_d_functions AS
+SELECT * FROM duckdb_functions()
+WHERE function_name LIKE 'st\_3d%' ESCAPE '\'
+   OR function_name IN ('st_ndims', 'st_coorddim', 'st_isplanar', 'st_force3d', 'st_makesolid', 'st_geom3dfromwkb');
+
+# The public surface, pinned so an added or dropped function is a deliberate change.
+query I
+SELECT count(DISTINCT function_name) FROM three_d_functions;
+----
+51
+
+# Every overload carries a description, an example, and a category.
+query I
+SELECT count(*) FROM three_d_functions
+WHERE description IS NULL OR len(examples) = 0 OR len(categories) = 0;
+----
+0
+
+# Every parameter has a real name, never the col0/col1 placeholder.
+query I
+SELECT count(*) FROM three_d_functions
+WHERE len(list_filter(parameters, p -> regexp_full_match(p, 'col[0-9]+'))) > 0;
+----
+0
+
+query T
+SELECT parameters FROM three_d_functions
+WHERE function_name = 'st_3dfromwkb' ORDER BY len(parameters), parameter_types::VARCHAR;
+----
+[wkb]
+[wkb, geometry_properties]
+[wkb, geometry_properties]
+
+query T
+SELECT DISTINCT parameters FROM three_d_functions WHERE function_name = 'st_3dtransform';
+----
+[geom, source_crs, target_crs]

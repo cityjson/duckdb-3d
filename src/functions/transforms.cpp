@@ -505,7 +505,11 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	translate_set.AddFunction(
 	    ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, geom_3d_type,
 	                   ST_3DTranslateGeomFun));
-	loader.RegisterFunction(translate_set);
+	RegisterDocumented(loader, std::move(translate_set),
+	                   {{"geom", "dx", "dy", "dz"},
+	                    "Translates a SOLID_3D or GEOM_3D value by (dx, dy, dz); the result has the input's type.",
+	                    "ST_3DTranslate(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 10.0, 0.0, -1.0)",
+	                    {"transform"}});
 	ScalarFunctionSet scale_set("st_3dscale");
 	scale_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
@@ -514,27 +518,47 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                                     solid_3d_type, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                     geom_3d_type, ST_3DScaleGeomFun));
-	loader.RegisterFunction(scale_set);
+	RegisterDocumented(
+	    loader, std::move(scale_set),
+	    {{"geom", "sx", "sy", "sz"},
+	     "Scales a SOLID_3D or GEOM_3D value about the origin by (sx, sy, sz); the result has the input's type.",
+	     "ST_3DScale(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 2.0, 2.0, 2.0)",
+	     {"transform"}});
 	ScalarFunctionSet rotatex_set("st_3drotatex");
 	rotatex_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateXGeomFun));
-	loader.RegisterFunction(rotatex_set);
+	RegisterDocumented(loader, std::move(rotatex_set),
+	                   {{"geom", "radians"},
+	                    "Rotates a SOLID_3D or GEOM_3D value about the X axis by an angle in radians, right-handed and "
+	                    "counter-clockwise; the result has the input's type.",
+	                    "ST_3DRotateX(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), pi() / 2)",
+	                    {"transform"}});
 
 	ScalarFunctionSet rotatey_set("st_3drotatey");
 	rotatey_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateYGeomFun));
-	loader.RegisterFunction(rotatey_set);
+	RegisterDocumented(loader, std::move(rotatey_set),
+	                   {{"geom", "radians"},
+	                    "Rotates a SOLID_3D or GEOM_3D value about the Y axis by an angle in radians, right-handed and "
+	                    "counter-clockwise; the result has the input's type.",
+	                    "ST_3DRotateY(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), pi() / 2)",
+	                    {"transform"}});
 
 	ScalarFunctionSet rotatez_set("st_3drotatez");
 	rotatez_set.AddFunction(
 	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateZGeomFun));
-	loader.RegisterFunction(rotatez_set);
+	RegisterDocumented(loader, std::move(rotatez_set),
+	                   {{"geom", "radians"},
+	                    "Rotates a SOLID_3D or GEOM_3D value about the Z axis by an angle in radians, right-handed and "
+	                    "counter-clockwise; the result has the input's type.",
+	                    "ST_3DRotateZ(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), pi() / 2)",
+	                    {"transform"}});
 
 	// ST_3DTransform: 2D CRS reprojection. EPSG-integer and CRS-string forms, each
 	// on SOLID_3D and GEOM_3D. Output type equals input type. Every overload gets
@@ -557,7 +581,12 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                             ST_3DTransformStrFun));
 	add_transform(
 	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_3DTransformStrFun));
-	loader.RegisterFunction(transform_set);
+	RegisterDocumented(loader, std::move(transform_set),
+	                   {{"geom", "source_crs", "target_crs"},
+	                    "Reprojects a SOLID_3D or GEOM_3D value between CRSs given as EPSG integers or CRS strings; X "
+	                    "and Y are reprojected and Z passes through unchanged. Solids are re-validated afterwards.",
+	                    "ST_3DTransform(ST_Geom3DFromWKB('POINT Z (85000 446800 5)'::GEOMETRY), 28992, 4326)",
+	                    {"transform"}});
 }
 
 } // namespace duckdb

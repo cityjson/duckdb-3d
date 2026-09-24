@@ -130,20 +130,61 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 }
 
 void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_3d_type) {
-	loader.RegisterFunction(
-	    ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
-	loader.RegisterFunction(ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
-	                                       LogicalType::BOOLEAN, ST_3DDWithinFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DMaxDistanceFun));
-	loader.RegisterFunction(ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
-	                                       LogicalType::BOOLEAN, ST_3DDFullyWithinFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun));
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun),
+	    {{"geom1", "geom2"},
+	     "Returns the minimum 3D Euclidean distance between two GEOM_3D values in input units.",
+	     "ST_3DDistance(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY))",
+	     {"distance"}});
+	RegisterDocumented(
+	    loader,
+	    ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
+	                   ST_3DDWithinFun),
+	    {{"geom1", "geom2", "distance"},
+	     "Returns whether two GEOM_3D values are within the given 3D distance of each other; prunes on bounding boxes, "
+	     "so it is cheaper than comparing ST_3DDistance. A negative distance returns false.",
+	     "ST_3DDWithin(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY), "
+	     "5.0)",
+	     {"distance"}});
+	RegisterDocumented(
+	    loader,
+	    ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DMaxDistanceFun),
+	    {{"geom1", "geom2"},
+	     "Returns the maximum 3D Euclidean distance between any two vertices of two GEOM_3D values, in input units.",
+	     "ST_3DMaxDistance(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 "
+	     "3)'::GEOMETRY))",
+	     {"distance"}});
+	RegisterDocumented(loader,
+	                   ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
+	                                  LogicalType::BOOLEAN, ST_3DDFullyWithinFun),
+	                   {{"geom1", "geom2", "distance"},
+	                    "Returns whether the maximum 3D distance between two GEOM_3D values is within the given "
+	                    "distance. A negative distance returns false.",
+	                    "ST_3DDFullyWithin(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 "
+	                    "6 3)'::GEOMETRY), 10.0)",
+	                    {"distance"}});
+	RegisterDocumented(
+	    loader,
+	    ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsFun),
+	    {{"geom1", "geom2"},
+	     "Returns whether two GEOM_3D values intersect in 3D; touching counts as intersecting.",
+	     "ST_3DIntersects(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
+	     "ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	     {"distance"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun),
+	    {{"geom1", "geom2"},
+	     "Returns the Point Z on the first GEOM_3D value nearest to the second.",
+	     "ST_3DClosestPoint(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
+	     "ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY))",
+	     {"distance"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun),
+	    {{"geom1", "geom2"},
+	     "Returns the 2-vertex LineString Z joining the closest points of two GEOM_3D values.",
+	     "ST_3DShortestLine(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
+	     "ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY))",
+	     {"distance"}});
 }
 
 } // namespace duckdb
