@@ -196,6 +196,12 @@ SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size) {
 }
 
 SolidModel DeserializePayload(const uint8_t *data, size_t size) {
+	SolidModel model;
+	DeserializePayloadInto(data, size, model);
+	return model;
+}
+
+void DeserializePayloadInto(const uint8_t *data, size_t size, SolidModel &model) {
 	ByteReader reader(data, size, kTruncationMessage);
 
 	// Verify magic
@@ -222,8 +228,6 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	uint32_t face_count = reader.ReadU32();
 	uint32_t ring_count = reader.ReadU32();
 	uint32_t triangle_count = reader.ReadU32();
-
-	SolidModel model;
 
 	// BBox
 	model.bbox.min_x = reader.ReadF64();
@@ -287,8 +291,6 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	model.validation.is_valid = (summary_flags & 0x08) != 0;
 
 	ValidatePayloadModel(model, vertex_count, solid_count, shell_count, face_count, ring_count, triangle_count);
-
-	return model;
 }
 
 } // namespace duckdb_3d

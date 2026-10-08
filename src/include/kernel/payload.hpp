@@ -43,6 +43,11 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model);
 //! Throws std::runtime_error on invalid or unsupported payloads.
 SolidModel DeserializePayload(const uint8_t *data, size_t size);
 
+//! DeserializePayload into an existing model, overwriting every field and
+//! reusing its arrays' storage, so a per-row caller allocates once rather than
+//! once per row. `model`'s contents are unspecified after a throw.
+void DeserializePayloadInto(const uint8_t *data, size_t size, SolidModel &model);
+
 //! Lightweight view of a SOLID_3D payload: element counts, bounding box, and the
 //! cached validation summary — everything stored outside the variable-length
 //! body. Reading this is O(1) and avoids materialising vertices/topology, which

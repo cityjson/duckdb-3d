@@ -16,7 +16,7 @@ namespace duckdb {
 // Kernel names this file uses unqualified. Using-declarations rather than a
 // using-directive, which clang-tidy's google-build-using-namespace rejects.
 using duckdb_3d::DeserializeGeomPayload;
-using duckdb_3d::DeserializePayload;
+using duckdb_3d::DeserializePayloadInto;
 using duckdb_3d::ReadGeomPayloadHeader;
 using duckdb_3d::ReadSolidPayloadHeader;
 
@@ -201,9 +201,12 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 // ──────────────────────────────────────────────────────────────
 // Measurements: ST_3DSurfaceArea, ST_3DVolume
 // ──────────────────────────────────────────────────────────────
+// Each measurement decodes its rows into one SolidModel reused across the
+// chunk, so a row costs no allocation once the arrays have grown to fit.
 static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
 		}
@@ -212,8 +215,9 @@ static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector 
 }
 
 static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
 		}
@@ -222,8 +226,9 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 static void ST_3DPerimeterFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t solid) {
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		return ComputePerimeter(model);
 	});
 }
@@ -282,12 +287,14 @@ static void ST_3DZMaxFun(DataChunk &args, ExpressionState &state, Vector &result
 // ST_3DFootprintArea accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
 static void ST_3DFootprintAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t blob) {
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
 		case PayloadKind::Solid:
-			return ComputeFootprintArea(DeserializePayload(data, size));
+			DeserializePayloadInto(data, size, model);
+			return ComputeFootprintArea(model);
 		case PayloadKind::Geom:
 			return Geom3DFootprintArea(DeserializeGeomPayload(data, size));
 		default:

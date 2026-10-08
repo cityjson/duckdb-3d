@@ -129,6 +129,22 @@ TEST_CASE("SerializedPayloadSize is the serialized size", "[payload]") {
 	REQUIRE(SerializedPayloadSize(model) == SerializePayload(model).size());
 }
 
+TEST_CASE("DeserializePayloadInto overwrites every field of a reused model", "[payload]") {
+	auto bytes = SerializePayload(MakeTetrahedron());
+
+	// A model left over from a previous, larger row with a different cache.
+	SolidModel reused = MakeTetrahedron();
+	reused.vertices.push_back({9, 9, 9});
+	reused.ring_vertex_indices.push_back(4);
+	reused.triangle_vertex_indices.insert(reused.triangle_vertex_indices.end(), {0, 1, 4});
+	reused.face_triangle_offsets.back() = 5;
+	reused.bbox.max_x = 9;
+	reused.validation = {7, 7, 7, 7, false, false, false, false};
+
+	DeserializePayloadInto(bytes.data(), bytes.size(), reused);
+	REQUIRE(SerializePayload(reused) == bytes);
+}
+
 TEST_CASE("Payload rejects invalid magic", "[payload]") {
 	SolidModel model = MakeTetrahedron();
 	auto bytes = SerializePayload(model);
