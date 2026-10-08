@@ -71,13 +71,34 @@ any time. Nothing may treat the triangulation as authoritative, because doing so
 quietly discard the face structure that WKB export and semantic-surface interoperability
 depend on.
 
-Ear-clipping runs on coordinates referenced to the ring's own first vertex, for the same
-conditioning reason volume does (§8.2), one power lower: the handedness shoelace and the
-convexity tests are signed areas whose products scale as `|position|²` against an answer of
-`|extent|²`. Left absolute, the handedness sum collapsed for a 1 mm face at RD New northings
-and for a 2 m face at ~10⁹; the convexity test then inverted, no ear was ever found, and the
-face emitted **zero** triangles — a wrong `ST_3DVolume` with every validity flag still green,
-because validation reads rings, not triangles. Pinned by `test/cpp/test_triangulation.cpp`.
+A face is triangulated as a whole: its exterior ring and its holes go to one ear-clipping
+pass (the vendored `mapbox/earcut.hpp`), which bridges each hole into the exterior. Holes are
+never triangulated as polygons of their own — that would lay their triangles over the
+exterior's, and only an opposite winding would cancel them out of the volume sum. Every
+triangle is wound like the exterior ring, so a triangle's orientation follows its face's.
+
+The rings are projected into the face's own plane — an orthonormal frame perpendicular to its
+Newell normal — rather than onto the coordinate plane the normal leans on most. On a
+near-vertical sliver whose normal sits between two axes, dropping an axis can put two
+distinct vertices on one 2D point, and one of them would vanish from the triangulation.
+Coordinates are referenced to the exterior ring's first vertex, for the same conditioning
+reason volume is (§8.2), one power lower: every test the triangulation makes is a signed area
+whose products scale as `|position|²` against an answer of `|extent|²`.
+
+earcut drops a vertex that is collinear with its neighbours in the plane. On a face that is
+only nearly planar such a vertex can still sit off the face in 3D while its neighbouring face
+uses it, and skipping it would open a sliver gap in the triangulated surface. Every dropped
+vertex is therefore put back by splitting the one triangle on the boundary edge it lies along,
+so the triangles use every ring vertex.
+
+**A triangulation is all or nothing.** The triangles are accepted only if they tile the face —
+all wound one way, their areas summing to the exterior's area less the holes'. A ring that
+crosses itself, or a hole that leaves its exterior, has no such tiling; the face then keeps
+**no** triangles rather than a partial set, and validation counts it degenerate (§8.1), which
+`ST_3DVolume` and `ST_3DSurfaceArea` refuse. A partial triangulation would be worse than
+none: volume sums triangles while validation reads rings, so a silently incomplete face would
+give a wrong `ST_3DVolume` with every validity flag still green. Pinned by
+`test/cpp/test_triangulation.cpp`, on real 3DBAG and railway faces.
 
 ### 2.3 Fail clearly at the boundary
 
@@ -90,7 +111,8 @@ The current function set runs on a pure C++ geometry kernel with no CGAL or SFCG
 dependency. This keeps the extension small, portable, and cheap to build. Everything that
 would genuinely require a robust exact-arithmetic backend — 3D booleans, true 3D convex
 hulls, skeletons, medial axes — is deliberately **out of scope** rather than approximated.
-PROJ is the one external dependency, confined to CRS reprojection.
+PROJ is the one external library, confined to CRS reprojection; face triangulation uses the
+header-only `mapbox/earcut.hpp`, vendored under `third_party/`.
 
 ### 2.5 Coexist with `spatial`, don't compete
 
@@ -277,7 +299,7 @@ The definitions below are contract, not implementation notes — they are what t
   wound opposite the exterior shell.
 
 A face is **degenerate** if fewer than 3 distinct vertices survive normalization,
-triangulation fails, or its area is zero within tolerance.
+triangulation fails (the face cannot be tiled, §2.2), or its area is zero within tolerance.
 
 Validation runs at import and its result is cached in the payload, so the predicates are
 reads rather than recomputation.

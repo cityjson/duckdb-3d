@@ -1,168 +1,283 @@
 #include "kernel/triangulation.hpp"
 #include "kernel/geometry_math.hpp"
+
+// earcut.hpp reads points through std::tuple_element / std::get, so the point
+// type's headers must precede it.
+#include <array>
+#include <tuple>
+
+#include "mapbox/earcut.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
-#include <algorithm>
 
 namespace duckdb_3d {
 
 namespace {
 
-//! Compute face normal using Newell's method
-Vertex3D ComputeFaceNormal(const SolidModel &model, uint32_t face_idx) {
-	uint32_t ring_start = model.face_ring_offsets[face_idx];
-	double nx = 0, ny = 0, nz = 0;
-	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+using Point2D = std::array<double, 2>;
 
-	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+//! Unnormalised face area vector: the sum of the face's ring Newell vectors.
+Vertex3D FaceAreaVector(const SolidModel &model, uint32_t face_idx) {
+	Vertex3D n = {0, 0, 0};
+	for (uint32_t ring_idx = model.face_ring_offsets[face_idx]; ring_idx < model.face_ring_offsets[face_idx + 1];
+	     ring_idx++) {
 		auto ring_normal = NewellRingAreaVector(model, ring_idx);
-		nx += ring_normal.x;
-		ny += ring_normal.y;
-		nz += ring_normal.z;
+		n.x += ring_normal.x;
+		n.y += ring_normal.y;
+		n.z += ring_normal.z;
 	}
-
-	double len = std::sqrt(nx * nx + ny * ny + nz * nz);
-	if (len < kEpsAbsolute) {
-		return {0, 0, 1}; // fallback for degenerate faces
-	}
-	return {nx / len, ny / len, nz / len};
+	return n;
 }
 
-//! Project a 3D point to 2D given a face normal.
-//! Chooses the two axes that maximize projection quality.
-void ProjectTo2D(const Vertex3D &v, const Vertex3D &normal, double &out_x, double &out_y) {
-	// Drop the axis aligned with the largest normal component
-	double ax = std::abs(normal.x), ay = std::abs(normal.y), az = std::abs(normal.z);
-	if (az >= ax && az >= ay) {
-		out_x = v.x;
-		out_y = v.y;
-	} else if (ay >= ax) {
-		out_x = v.x;
-		out_y = v.z;
-	} else {
-		out_x = v.y;
-		out_y = v.z;
-	}
+//! An orthonormal frame (u, v) spanning the plane perpendicular to a face's
+//! unit normal n, with (u, v, n) right-handed.
+struct PlaneFrame {
+	Vertex3D u;
+	Vertex3D v;
+};
+
+PlaneFrame FrameFor(const Vertex3D &n) {
+	// Cross n with the coordinate axis it is least aligned with, so u is never
+	// close to degenerate.
+	double ax = std::abs(n.x), ay = std::abs(n.y), az = std::abs(n.z);
+	Vertex3D e = (ax <= ay && ax <= az) ? Vertex3D {1, 0, 0} : (ay <= az ? Vertex3D {0, 1, 0} : Vertex3D {0, 0, 1});
+	Vertex3D u = {n.y * e.z - n.z * e.y, n.z * e.x - n.x * e.z, n.x * e.y - n.y * e.x};
+	double len = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+	u = {u.x / len, u.y / len, u.z / len};
+	Vertex3D v = {n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
+	return {u, v};
 }
 
-//! Compute signed area of 2D triangle
-double SignedArea2D(double ax, double ay, double bx, double by, double cx, double cy) {
-	return 0.5 * ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay));
+//! Coordinates of `p` in the face plane, relative to `origin`.
+//!
+//! Projecting onto the plane itself, rather than dropping the coordinate axis the
+//! normal leans on most, keeps distinct vertices distinct: on a near-vertical
+//! sliver whose normal sits between two axes, dropping an axis can land two
+//! vertices on one 2D point, and the triangulation would silently lose one.
+Point2D ToPlane(const Vertex3D &p, const Vertex3D &origin, const PlaneFrame &frame) {
+	double dx = p.x - origin.x, dy = p.y - origin.y, dz = p.z - origin.z;
+	return {dx * frame.u.x + dy * frame.u.y + dz * frame.u.z, dx * frame.v.x + dy * frame.v.y + dz * frame.v.z};
 }
 
-//! Simple ear-clipping triangulation for a convex or simple polygon.
-//! Takes ring vertex indices, projects to 2D, and outputs triangle indices.
-void EarClipTriangulate(const SolidModel &model, const Vertex3D &normal, uint32_t vi_start, uint32_t vi_end,
-                        std::vector<uint32_t> &out_triangles) {
-	uint32_t n = vi_end - vi_start;
-	if (n < 3) {
-		return;
+//! Twice the signed area of a 2D ring (shoelace).
+double SignedArea2(const std::vector<Point2D> &ring) {
+	double sum = 0;
+	for (size_t i = 0, n = ring.size(); i < n; i++) {
+		const auto &a = ring[i];
+		const auto &b = ring[(i + 1) % n];
+		sum += a[0] * b[1] - b[0] * a[1];
 	}
+	return sum;
+}
 
-	// Build working list of vertex indices
-	std::vector<uint32_t> indices(n);
-	for (uint32_t i = 0; i < n; i++) {
-		indices[i] = model.ring_vertex_indices[vi_start + i];
+//! Twice the signed area of a 2D triangle.
+double SignedArea2(const Point2D &a, const Point2D &b, const Point2D &c) {
+	return (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+}
+
+//! Put back every ring vertex earcut left out of the triangles.
+//!
+//! earcut drops a vertex that is collinear with its neighbours in 2D, or that
+//! coincides with one. That is harmless for a planar face, but a face that is
+//! only nearly planar can have a vertex that is collinear in the face plane yet
+//! off it in 3D, and the neighbouring face still uses that vertex: skipping it
+//! leaves a sliver gap between the two faces' triangles, so the triangulated
+//! surface is no longer closed and the signed-volume sum is off by the sliver.
+//!
+//! Each run of dropped vertices on a ring lies along the boundary edge (p, q)
+//! joining the kept vertices around it, and that edge belongs to exactly one
+//! triangle (p, q, c). Fanning that triangle from c through the run restores
+//! every vertex without changing the covered 2D area. `ring_offsets` are the
+//! rings' start positions in earcut's flattened index space, plus the end.
+//! Returns false when a run's boundary edge is not in the triangulation, which
+//! means the triangles do not follow the ring and cannot be repaired here.
+bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<uint32_t> &ring_offsets) {
+	uint32_t total = ring_offsets.back();
+	std::vector<bool> used(total, false);
+	for (auto i : indices) {
+		used[i] = true;
 	}
-
-	// Project all vertices to 2D, referenced to the ring's first vertex.
-	//
-	// The local origin is not cosmetic. Every downstream test here is a signed
-	// area, i.e. a difference of products of coordinates; on absolute projected
-	// coordinates those products scale as |position|^2 while the answer scales as
-	// |extent|^2, so the small ones drown (DESIGN_DOC §8.2 makes the same point
-	// about volume, one power higher). Shifting is exact for the handedness sum —
-	// it is translation-invariant — and it keeps the products at ring scale.
-	std::vector<double> px(n), py(n);
-	double ox = 0, oy = 0;
-	ProjectTo2D(model.vertices[indices[0]], normal, ox, oy);
-	for (uint32_t i = 0; i < n; i++) {
-		ProjectTo2D(model.vertices[indices[i]], normal, px[i], py[i]);
-		px[i] -= ox;
-		py[i] -= oy;
-	}
-
-	// Ensure CCW winding in 2D. Left in absolute coordinates this collapsed to
-	// zero (read as clockwise) for a 1 mm face at RD New northings and for a 2 m
-	// face at ~1e9; the convexity test then inverted, no ear was ever found and
-	// the face silently produced NO triangles — a wrong ST_3DVolume with every
-	// validity flag still green, since validation works on rings, not triangles.
-	double total_area = 0;
-	for (uint32_t i = 0; i < n; i++) {
-		uint32_t j = (i + 1) % n;
-		total_area += px[i] * py[j] - px[j] * py[i];
-	}
-	bool ccw = (total_area > 0);
-
-	// Simple ear-clipping
-	std::vector<uint32_t> remaining(n);
-	for (uint32_t i = 0; i < n; i++) {
-		remaining[i] = i;
-	}
-
-	int max_iter = static_cast<int>(n) * static_cast<int>(n);
-	int iter = 0;
-
-	while (remaining.size() > 2 && iter < max_iter) {
-		bool found_ear = false;
-		size_t rn = remaining.size();
-
-		for (size_t i = 0; i < rn; i++) {
-			size_t prev = (i + rn - 1) % rn;
-			size_t next = (i + 1) % rn;
-
-			uint32_t pi = remaining[prev];
-			uint32_t ci = remaining[i];
-			uint32_t ni = remaining[next];
-
-			double area = SignedArea2D(px[pi], py[pi], px[ci], py[ci], px[ni], py[ni]);
-
-			// Check correct winding
-			bool convex = ccw ? (area > 0) : (area < 0);
-			if (!convex) {
-				iter++;
-				continue;
-			}
-
-			// Check no other vertex inside this triangle
-			bool has_point_inside = false;
-			for (size_t j = 0; j < rn; j++) {
-				if (j == prev || j == i || j == next) {
-					continue;
-				}
-				uint32_t ti = remaining[j];
-				double a1 = SignedArea2D(px[pi], py[pi], px[ci], py[ci], px[ti], py[ti]);
-				double a2 = SignedArea2D(px[ci], py[ci], px[ni], py[ni], px[ti], py[ti]);
-				double a3 = SignedArea2D(px[ni], py[ni], px[pi], py[pi], px[ti], py[ti]);
-
-				bool inside;
-				if (ccw) {
-					inside = (a1 >= 0 && a2 >= 0 && a3 >= 0);
-				} else {
-					inside = (a1 <= 0 && a2 <= 0 && a3 <= 0);
-				}
-				if (inside) {
-					has_point_inside = true;
-					break;
-				}
-			}
-
-			if (!has_point_inside) {
-				out_triangles.push_back(indices[pi]);
-				out_triangles.push_back(indices[ci]);
-				out_triangles.push_back(indices[ni]);
-				remaining.erase(remaining.begin() + static_cast<ptrdiff_t>(i));
-				found_ear = true;
+	for (size_t r = 0; r + 1 < ring_offsets.size(); r++) {
+		uint32_t start = ring_offsets[r];
+		uint32_t n = ring_offsets[r + 1] - start;
+		uint32_t first_kept = n;
+		for (uint32_t k = 0; k < n; k++) {
+			if (used[start + k]) {
+				first_kept = k;
 				break;
 			}
-			iter++;
 		}
-
-		if (!found_ear) {
-			break;
+		if (first_kept == n) {
+			return false; // a whole ring dropped: the triangles do not cover it
+		}
+		// Walk the ring once from a kept vertex, collecting each run of dropped
+		// vertices between two kept ones.
+		uint32_t p = start + first_kept;
+		std::vector<uint32_t> run;
+		for (uint32_t step = 1; step <= n; step++) {
+			uint32_t cur = start + (first_kept + step) % n;
+			if (!used[cur]) {
+				run.push_back(cur);
+				continue;
+			}
+			if (!run.empty()) {
+				// Find the triangle holding boundary edge {p, cur}.
+				size_t tri = indices.size();
+				bool forward = false;
+				for (size_t t = 0; t + 2 < indices.size() && tri == indices.size(); t += 3) {
+					for (int e = 0; e < 3; e++) {
+						uint32_t a = indices[t + e], b = indices[t + (e + 1) % 3];
+						if (a == p && b == cur) {
+							tri = t + e;
+							forward = true;
+						} else if (a == cur && b == p) {
+							tri = t + e;
+							forward = false;
+						}
+						if (tri != indices.size()) {
+							break;
+						}
+					}
+				}
+				if (tri == indices.size()) {
+					return false;
+				}
+				size_t base = tri - tri % 3;
+				uint32_t a = indices[tri];
+				uint32_t c = indices[base + (tri - base + 2) % 3];
+				uint32_t b = indices[base + (tri - base + 1) % 3];
+				// Triangle (a, b, c) keeps its winding: replace it by the fan
+				// a -> run... -> b, each closed by c.
+				std::vector<uint32_t> chain;
+				chain.push_back(a);
+				if (forward) {
+					chain.insert(chain.end(), run.begin(), run.end());
+				} else {
+					chain.insert(chain.end(), run.rbegin(), run.rend());
+				}
+				chain.push_back(b);
+				indices[base] = chain[0];
+				indices[base + 1] = chain[1];
+				indices[base + 2] = c;
+				for (size_t k = 1; k + 1 < chain.size(); k++) {
+					indices.push_back(chain[k]);
+					indices.push_back(chain[k + 1]);
+					indices.push_back(c);
+				}
+				for (auto v : run) {
+					used[v] = true;
+				}
+				run.clear();
+			}
+			p = cur;
 		}
 	}
+	return true;
+}
+
+//! Triangulate one face — its exterior ring and any holes together, the holes
+//! bridged into the exterior — and append the triangles to `out`, wound like the
+//! exterior ring. Returns false, appending nothing, when the triangles would not
+//! tile the face: a ring that self-intersects or a hole that leaves the exterior
+//! has no triangulation whose area matches the polygon's, and handing back a
+//! partial one would silently corrupt every measurement that sums triangles.
+bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uint32_t> &out) {
+	uint32_t ring_start = model.face_ring_offsets[face_idx];
+	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
+	if (ring_start == ring_end) {
+		return false;
+	}
+
+	auto normal = FaceAreaVector(model, face_idx);
+	double normal_len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+	if (normal_len < kEpsAbsolute) {
+		return false; // zero-area face: nothing to tile
+	}
+	auto frame = FrameFor({normal.x / normal_len, normal.y / normal_len, normal.z / normal_len});
+
+	// Project every ring into the face plane, referenced to the exterior ring's
+	// first vertex.
+	//
+	// The local origin is not cosmetic. Every quantity below is a signed area, a
+	// difference of products of coordinates; on absolute projected coordinates
+	// those products scale as |position|^2 while the answer scales as |extent|^2,
+	// so the small ones drown (DESIGN_DOC §8.2 makes the same point about volume,
+	// one power higher). Shifting is exact for areas, which are
+	// translation-invariant, and keeps the products at face scale.
+	const auto &origin = model.vertices[model.ring_vertex_indices[model.ring_vertex_offsets[ring_start]]];
+	std::vector<std::vector<Point2D>> polygon;
+	std::vector<uint32_t> flat_to_vertex; // earcut's flattened index -> model vertex index
+	std::vector<uint32_t> ring_offsets;   // each ring's start in the flattened index space
+	polygon.reserve(ring_end - ring_start);
+	double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
+		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+		uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+		if (vi_end - vi_start < 3) {
+			return false;
+		}
+		ring_offsets.push_back(static_cast<uint32_t>(flat_to_vertex.size()));
+		std::vector<Point2D> ring;
+		ring.reserve(vi_end - vi_start);
+		for (uint32_t vi = vi_start; vi < vi_end; vi++) {
+			uint32_t vertex = model.ring_vertex_indices[vi];
+			auto p = ToPlane(model.vertices[vertex], origin, frame);
+			min_x = std::min(min_x, p[0]);
+			max_x = std::max(max_x, p[0]);
+			min_y = std::min(min_y, p[1]);
+			max_y = std::max(max_y, p[1]);
+			ring.push_back(p);
+			flat_to_vertex.push_back(vertex);
+		}
+		polygon.push_back(std::move(ring));
+	}
+	ring_offsets.push_back(static_cast<uint32_t>(flat_to_vertex.size()));
+
+	// The area the triangles must cover: the exterior less its holes, whichever
+	// way each ring happens to be wound.
+	double exterior2 = SignedArea2(polygon[0]);
+	double expected2 = std::abs(exterior2);
+	for (size_t h = 1; h < polygon.size(); h++) {
+		expected2 -= std::abs(SignedArea2(polygon[h]));
+	}
+
+	auto indices = mapbox::earcut<uint32_t>(polygon);
+
+	// Accept the result only if it tiles the face: every triangle faces one way,
+	// and together they cover exactly the expected area. Rounding is relative to
+	// the face's 2D extent, the scale of the products the areas are built from.
+	std::vector<Point2D> flat;
+	flat.reserve(flat_to_vertex.size());
+	for (const auto &ring : polygon) {
+		flat.insert(flat.end(), ring.begin(), ring.end());
+	}
+	double signed2 = 0, abs2 = 0;
+	for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+		double a = SignedArea2(flat[indices[t]], flat[indices[t + 1]], flat[indices[t + 2]]);
+		signed2 += a;
+		abs2 += std::abs(a);
+	}
+	double tolerance2 = kEpsRelative * std::max((max_x - min_x) * (max_y - min_y), expected2);
+	if (indices.empty() || expected2 <= 0 || std::abs(abs2 - expected2) > tolerance2 ||
+	    std::abs(abs2 - std::abs(signed2)) > tolerance2) {
+		return false;
+	}
+	if (!RestoreDroppedVertices(indices, ring_offsets)) {
+		return false;
+	}
+
+	// Wind every triangle like the exterior ring, so a triangle's orientation in
+	// 3D follows the face's and signed volume sums stay meaningful.
+	bool flip = (signed2 > 0) != (exterior2 > 0);
+	for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+		out.push_back(flat_to_vertex[indices[t]]);
+		out.push_back(flat_to_vertex[indices[flip ? t + 2 : t + 1]]);
+		out.push_back(flat_to_vertex[indices[flip ? t + 1 : t + 2]]);
+	}
+	return true;
 }
 
 } // anonymous namespace
@@ -172,26 +287,13 @@ void TriangulateSolidModel(SolidModel &model) {
 	model.face_triangle_offsets.resize(face_count + 1);
 	model.triangle_vertex_indices.clear();
 
-	uint32_t tri_offset = 0;
-
 	for (uint32_t f = 0; f < face_count; f++) {
-		model.face_triangle_offsets[f] = tri_offset;
-
-		auto normal = ComputeFaceNormal(model, f);
-
-		uint32_t ring_start = model.face_ring_offsets[f];
-		uint32_t ring_end = model.face_ring_offsets[f + 1];
-		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-			uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-			EarClipTriangulate(model, normal, vi_start, vi_end, model.triangle_vertex_indices);
-		}
-
-		uint32_t new_tris = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3) - tri_offset;
-		tri_offset += new_tris;
+		model.face_triangle_offsets[f] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
+		// A face that cannot be tiled keeps an empty triangle range; validation
+		// counts it degenerate (DESIGN_DOC §8.1), which gates volume and area.
+		TriangulateFace(model, f, model.triangle_vertex_indices);
 	}
-
-	model.face_triangle_offsets[face_count] = tri_offset;
+	model.face_triangle_offsets[face_count] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
 }
 
 } // namespace duckdb_3d

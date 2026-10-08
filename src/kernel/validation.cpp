@@ -40,8 +40,9 @@ double Magnitude(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-//! Check if a face is degenerate (area near zero).
-//! Uses the sum of all ring area vectors to account for faces with holes.
+//! Check if a face is degenerate: fewer than 3 distinct vertices in a ring, an
+//! area near zero (the sum of all ring area vectors, to account for holes), or
+//! a triangulation that failed.
 bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 	uint32_t ring_start = model.face_ring_offsets[face_idx];
 	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
@@ -67,7 +68,18 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 		face_area.z += ring_area.z;
 	}
 
-	return Magnitude(face_area) < kEpsAbsolute;
+	if (Magnitude(face_area) < kEpsAbsolute) {
+		return true;
+	}
+
+	// A face the triangulator could not tile keeps an empty triangle range
+	// rather than a partial one (kernel/triangulation.cpp); it has no usable
+	// triangles for volume, so it is degenerate.
+	if (model.face_triangle_offsets.size() == model.FaceCount() + 1 &&
+	    model.face_triangle_offsets[face_idx + 1] == model.face_triangle_offsets[face_idx]) {
+		return true;
+	}
+	return false;
 }
 
 //! Collect directed edges from a shell's faces

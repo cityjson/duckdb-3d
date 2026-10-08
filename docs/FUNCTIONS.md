@@ -411,7 +411,7 @@ The one function to reach for when something fails. Returns:
 | `solid_count`, `shell_count`, `face_count` | `BIGINT` | structure counts |
 | `open_edge_count` | `BIGINT` | edges used by only one face |
 | `non_manifold_edge_count` | `BIGINT` | edges used by more than two faces |
-| `degenerate_face_count` | `BIGINT` | zero-area / collapsed faces |
+| `degenerate_face_count` | `BIGINT` | faces that are zero-area or collapsed, or that cannot be triangulated (a ring that crosses itself, a hole outside its face) |
 | `orientation_error_count` | `BIGINT` | inconsistently wound face pairs |
 | `code` | `VARCHAR` | `'VALID'` or `'INVALID'` |
 | `message` | `VARCHAR` | human-readable summary |
