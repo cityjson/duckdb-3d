@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <initializer_list>
 #include <vector>
 
 namespace duckdb_3d {
@@ -45,7 +46,7 @@ PlaneFrame FrameFor(const Vertex3D &n) {
 	double ax = std::abs(n.x), ay = std::abs(n.y), az = std::abs(n.z);
 	Vertex3D e = (ax <= ay && ax <= az) ? Vertex3D {1, 0, 0} : (ay <= az ? Vertex3D {0, 1, 0} : Vertex3D {0, 0, 1});
 	Vertex3D u = {n.y * e.z - n.z * e.y, n.z * e.x - n.x * e.z, n.x * e.y - n.y * e.x};
-	double len = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+	double len = std::hypot(std::hypot(u.x, u.y), u.z);
 	u = {u.x / len, u.y / len, u.z / len};
 	Vertex3D v = {n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
 	return {u, v};
@@ -60,6 +61,16 @@ PlaneFrame FrameFor(const Vertex3D &n) {
 Point2D ToPlane(const Vertex3D &p, const Vertex3D &origin, const PlaneFrame &frame) {
 	double dx = p.x - origin.x, dy = p.y - origin.y, dz = p.z - origin.z;
 	return {dx * frame.u.x + dy * frame.u.y + dz * frame.u.z, dx * frame.v.x + dy * frame.v.y + dz * frame.v.z};
+}
+
+//! True when every value is finite (neither infinite nor NaN).
+bool AllFinite(std::initializer_list<double> values) {
+	for (double v : values) {
+		if (!std::isfinite(v)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 //! Twice the signed area of a 2D ring (shoelace).
@@ -191,12 +202,27 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 		return false;
 	}
 
+	// Every quantity from here to earcut must be finite. A face whose area
+	// overflows the double range (coordinates near 1e154 and beyond) has a
+	// non-finite normal, hence a NaN frame and NaN 2D coordinates; earcut's
+	// z-order hash would cast those to int32 (undefined behaviour), and every
+	// comparison in the tiling check is false for NaN. Such a face is rejected
+	// here, and validation reports it degenerate.
 	auto normal = FaceAreaVector(model, face_idx);
-	double normal_len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+	if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) {
+		return false;
+	}
+	double normal_len = std::hypot(std::hypot(normal.x, normal.y), normal.z); // no intermediate overflow
+	if (!std::isfinite(normal_len)) {
+		return false;
+	}
 	if (normal_len < kEpsAbsolute) {
 		return false; // zero-area face: nothing to tile
 	}
 	auto frame = FrameFor({normal.x / normal_len, normal.y / normal_len, normal.z / normal_len});
+	if (!AllFinite({frame.u.x, frame.u.y, frame.u.z, frame.v.x, frame.v.y, frame.v.z})) {
+		return false;
+	}
 
 	// Project every ring into the face plane, referenced to the exterior ring's
 	// first vertex.
@@ -225,6 +251,9 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 		for (uint32_t vi = vi_start; vi < vi_end; vi++) {
 			uint32_t vertex = model.ring_vertex_indices[vi];
 			auto p = ToPlane(model.vertices[vertex], origin, frame);
+			if (!std::isfinite(p[0]) || !std::isfinite(p[1])) {
+				return false;
+			}
 			min_x = std::min(min_x, p[0]);
 			max_x = std::max(max_x, p[0]);
 			min_y = std::min(min_y, p[1]);
@@ -242,6 +271,12 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	double expected2 = std::abs(exterior2);
 	for (size_t h = 1; h < polygon.size(); h++) {
 		expected2 -= std::abs(SignedArea2(polygon[h]));
+	}
+
+	// The face's 2D extent and area feed the tiling tolerance; they too must be
+	// representable.
+	if (!AllFinite({(max_x - min_x) * (max_y - min_y), expected2})) {
+		return false;
 	}
 
 	// earcut's fallback splits nest, and the vendored copy caps the nesting so a

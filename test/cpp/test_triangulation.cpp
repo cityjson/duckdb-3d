@@ -291,3 +291,30 @@ TEST_CASE("Triangulation: a face that hits earcut's split bound gets no triangle
 	ValidateSolidModel(m);
 	REQUIRE(m.validation.degenerate_face_count == 1);
 }
+
+TEST_CASE("Triangulation: a face whose areas overflow is degenerate, not handed to earcut", "[triangulation]") {
+	// An 81-vertex polygon (one more than earcut's 80-vertex threshold for its
+	// z-order hash, which casts projected coordinates to int32) of radius 1e200
+	// centred at 1e200. Its area, and so its Newell normal, is about 1e400:
+	// past the double range. A non-finite normal yields a non-finite plane frame
+	// and NaN 2D coordinates, which earcut's hash would convert to an integer —
+	// undefined behaviour — and the tiling check, all of whose comparisons with NaN
+	// are false, would wave the result through. The face must be rejected first.
+	const double pi = std::acos(-1.0);
+	std::vector<Vertex3D> ring;
+	for (int i = 0; i < 81; i++) {
+		double a = 2 * pi * i / 81;
+		ring.push_back({1e200 + 1e200 * std::cos(a), 1e200 + 1e200 * std::sin(a), 0});
+	}
+	auto m = FaceWithRings({ring});
+	REQUIRE(m.TriangleCount() == 0);
+	ValidateSolidModel(m);
+	REQUIRE(m.validation.degenerate_face_count == 1);
+}
+
+TEST_CASE("Triangulation: a face of large but representable extent still triangulates", "[triangulation]") {
+	// Coordinates of 1e150 square to 1e300, inside the double range: such a face
+	// is not rejected for its size alone. Area of the 2e150-sided square: 4e300.
+	auto m = FaceWithRings({{{0, 0, 0}, {2e150, 0, 0}, {2e150, 2e150, 0}, {0, 2e150, 0}}});
+	REQUIRE(m.TriangleCount() == 2);
+}
