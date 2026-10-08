@@ -1,6 +1,5 @@
 #include "kernel/validation.hpp"
 #include "kernel/geometry_math.hpp"
-#include <unordered_map>
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -8,33 +7,6 @@
 namespace duckdb_3d {
 
 namespace {
-
-//! An ordered edge (v_from, v_to)
-struct DirectedEdge {
-	uint32_t from;
-	uint32_t to;
-};
-
-//! An unordered edge for counting (min, max)
-struct UndirectedEdge {
-	uint32_t a;
-	uint32_t b;
-
-	UndirectedEdge(uint32_t from, uint32_t to) : a(std::min(from, to)), b(std::max(from, to)) {
-	}
-
-	bool operator==(const UndirectedEdge &other) const {
-		return a == other.a && b == other.b;
-	}
-};
-
-struct UndirectedEdgeHash {
-	size_t operator()(const UndirectedEdge &e) const {
-		size_t h = std::hash<uint32_t> {}(e.a);
-		h ^= std::hash<uint32_t> {}(e.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
-		return h;
-	}
-};
 
 double Magnitude(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -82,29 +54,6 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 	return false;
 }
 
-//! Collect directed edges from a shell's faces
-void CollectShellEdges(const SolidModel &model, uint32_t shell_idx, std::vector<DirectedEdge> &directed_edges) {
-	uint32_t face_start = model.shell_face_offsets[shell_idx];
-	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
-
-	for (uint32_t f = face_start; f < face_end; f++) {
-		uint32_t ring_start = model.face_ring_offsets[f];
-		uint32_t ring_end = model.face_ring_offsets[f + 1];
-
-		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-			uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-			uint32_t n = vi_end - vi_start;
-
-			for (uint32_t i = 0; i < n; i++) {
-				uint32_t from = model.ring_vertex_indices[vi_start + i];
-				uint32_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-				directed_edges.push_back({from, to});
-			}
-		}
-	}
-}
-
 struct ShellValidationResult {
 	uint32_t open_edges = 0;
 	uint32_t non_manifold_edges = 0;
@@ -114,61 +63,70 @@ struct ShellValidationResult {
 	bool is_oriented = true;
 };
 
-ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t shell_idx) {
+//! Edge keys for one shell, reused from shell to shell so validation allocates
+//! once per solid rather than once per shell.
+struct EdgeScratch {
+	std::vector<uint64_t> directed;   //!< (from << 32) | to, one per ring edge
+	std::vector<uint64_t> undirected; //!< (min << 32) | max, one per ring edge
+};
+
+//! Calls `f(run_length)` for each run of equal values in a sorted vector.
+template <class F>
+void ForEachRun(const std::vector<uint64_t> &sorted, F &&f) {
+	for (size_t i = 0, n = sorted.size(); i < n;) {
+		size_t j = i + 1;
+		while (j < n && sorted[j] == sorted[i]) {
+			j++;
+		}
+		f(j - i);
+		i = j;
+	}
+}
+
+//! Closedness, manifoldness and winding consistency of one shell, from its ring
+//! edges. An undirected edge used once is open and one used more than twice is
+//! non-manifold; a directed edge used more than once means two faces traverse it
+//! the same way, an orientation error. (A directed edge used once with no reverse
+//! is used once undirected, so it is open, not an orientation error.) Counting by
+//! sorting the edge keys gives the same counts a hash map would.
+ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t shell_idx, EdgeScratch &edges) {
 	ShellValidationResult result;
+	edges.directed.clear();
+	edges.undirected.clear();
 
-	std::vector<DirectedEdge> directed_edges;
-	CollectShellEdges(model, shell_idx, directed_edges);
-
-	// Count directed edges per undirected edge
-	// For closedness: each undirected edge should appear exactly 2 times total
-	// For orientation: each directed edge (a,b) should have a matching (b,a)
-	std::unordered_map<UndirectedEdge, uint32_t, UndirectedEdgeHash> undirected_count;
-	// Count directed edge occurrences using a pair hash
-	struct PairHash {
-		size_t operator()(const std::pair<uint32_t, uint32_t> &p) const {
-			size_t h = std::hash<uint32_t> {}(p.first);
-			h ^= std::hash<uint32_t> {}(p.second) + 0x9e3779b9 + (h << 6) + (h >> 2);
-			return h;
-		}
-	};
-	std::unordered_map<std::pair<uint32_t, uint32_t>, uint32_t, PairHash> directed_count;
-
-	for (auto &e : directed_edges) {
-		undirected_count[UndirectedEdge(e.from, e.to)]++;
-		directed_count[{e.from, e.to}]++;
-	}
-
-	for (auto it = undirected_count.begin(); it != undirected_count.end(); ++it) {
-		if (it->second < 2) {
-			result.open_edges++;
-			result.is_closed = false;
-		} else if (it->second > 2) {
-			result.non_manifold_edges++;
-			result.is_manifold = false;
-		}
-	}
-
-	// Orientation check: for each directed edge (a,b), the reverse (b,a) should exist exactly once
-	for (auto dit = directed_count.begin(); dit != directed_count.end(); ++dit) {
-		auto reverse = std::make_pair(dit->first.second, dit->first.first);
-		auto rit = directed_count.find(reverse);
-		if (dit->second > 1) {
-			// Same directed edge appears more than once — orientation error or non-manifold
-			result.orientation_errors++;
-			result.is_oriented = false;
-		} else if (rit == directed_count.end() || rit->second == 0) {
-			// No reverse edge — this is an orientation issue (if closed, edges should cancel)
-			// But only flag as orientation error if the edge exists twice undirected
-			UndirectedEdge ue(dit->first.first, dit->first.second);
-			auto uit = undirected_count.find(ue);
-			if (uit != undirected_count.end() && uit->second == 2) {
-				// Edge exists twice but both in same direction — orientation error
-				result.orientation_errors++;
-				result.is_oriented = false;
+	uint32_t face_start = model.shell_face_offsets[shell_idx];
+	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
+	for (uint32_t f = face_start; f < face_end; f++) {
+		for (uint32_t ring_idx = model.face_ring_offsets[f]; ring_idx < model.face_ring_offsets[f + 1]; ring_idx++) {
+			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+			uint32_t n = model.ring_vertex_offsets[ring_idx + 1] - vi_start;
+			for (uint32_t i = 0; i < n; i++) {
+				uint64_t from = model.ring_vertex_indices[vi_start + i];
+				uint64_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+				edges.directed.push_back((from << 32) | to);
+				edges.undirected.push_back(from < to ? ((from << 32) | to) : ((to << 32) | from));
 			}
 		}
 	}
+
+	std::sort(edges.undirected.begin(), edges.undirected.end());
+	ForEachRun(edges.undirected, [&](size_t uses) {
+		if (uses < 2) {
+			result.open_edges++;
+			result.is_closed = false;
+		} else if (uses > 2) {
+			result.non_manifold_edges++;
+			result.is_manifold = false;
+		}
+	});
+
+	std::sort(edges.directed.begin(), edges.directed.end());
+	ForEachRun(edges.directed, [&](size_t uses) {
+		if (uses > 1) {
+			result.orientation_errors++;
+			result.is_oriented = false;
+		}
+	});
 
 	return result;
 }
@@ -311,8 +269,9 @@ void ValidateSolidModel(SolidModel &model) {
 
 	// Validate each shell
 	uint32_t shell_count = model.ShellCount();
+	EdgeScratch edges;
 	for (uint32_t s = 0; s < shell_count; s++) {
-		auto result = ValidateShellTopology(model, s);
+		auto result = ValidateShellTopology(model, s, edges);
 		total_open += result.open_edges;
 		total_non_manifold += result.non_manifold_edges;
 		total_orientation_errors += result.orientation_errors;
