@@ -73,3 +73,25 @@ reproject into a suitable metric CRS before measuring. See
    distributable `.duckdb_extension` (as `duckdb_spatial` does, via
    `proj_context_set_search_paths`) is still outstanding and is the main gap before shipping
    CRS support in a released binary.
+
+## 3. Triangulation Outside The Solid Kernel
+
+### The constraint
+
+`SOLID_3D` faces are triangulated whole (holes bridged, every vertex kept, never partially;
+DESIGN_DOC *Topology is the source of truth*). The distance family on `GEOM_3D` does not use
+that triangulator: `geom_distance.cpp` fan-triangulates each face's exterior ring and ignores
+its holes. A fan is only correct for a convex ring, so on a concave face some fan triangles lie
+outside it, and a point there can measure distance 0 to the face; a point over a hole measures
+distance to the hole's interior.
+
+### Open work
+
+1. **Route `GEOM_3D` surfaces through the face triangulator.** It works on a ring list and a
+   vertex array, so the change is in `Decompose`; done means a concave-face and a holed-face
+   distance case pinned against the PostGIS oracle.
+2. **Bound triangulation time on adversarial rings.** The vendored earcut bounds its split
+   recursion, so a self-overlapping ring cannot exhaust the stack, but `splitEarcut`'s diagonal
+   search is still roughly cubic in the ring size before the bound trips. Done means a cap on
+   work (or ring size) that fails the face as degenerate, with a test on a ring large enough to
+   take seconds without it.
