@@ -53,15 +53,19 @@ WHERE extension_name IN ('cityjson', 'spatial', 'three_d') ORDER BY 1;
 ```
 
 ```
-┌────────────────┬───────────────────┬──────────────┐
-│ extension_name │ extension_version │ install_mode │
-│    varchar     │      varchar      │   varchar    │
-├────────────────┼───────────────────┼──────────────┤
-│ cityjson       │ 6937c06           │ REPOSITORY   │
-│ spatial        │ 28db190           │ REPOSITORY   │
-│ three_d        │ 28ca835           │ REPOSITORY   │
-└────────────────┴───────────────────┴──────────────┘
+┌────────────────┬───────────────────┬───────────────────┐
+│ extension_name │ extension_version │   install_mode    │
+│    varchar     │      varchar      │      varchar      │
+├────────────────┼───────────────────┼───────────────────┤
+│ cityjson       │ 6937c06           │ NOT_INSTALLED     │
+│ spatial        │ 28db190           │ REPOSITORY        │
+│ three_d        │ 72961f9           │ STATICALLY_LINKED │
+└────────────────┴───────────────────┴───────────────────┘
 ```
+
+`three_d` is the copy linked into the shell. If an older `three_d` is installed under
+`~/.duckdb`, `install_mode` reads `REPOSITORY` instead, but `extension_version` still names the
+linked build, which is the one that runs.
 
 **This choice changes the SQL you write.** The current `cityjson` and the community build
 that `INSTALL cityjson FROM community` still serves (`d511bdb`) expose *different column
