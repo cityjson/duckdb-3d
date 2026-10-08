@@ -1,7 +1,10 @@
 #include "kernel/metadata_parser.hpp"
 #include <cctype>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace duckdb_3d {
 
@@ -9,7 +12,7 @@ namespace {
 
 class JSONParser {
 public:
-	explicit JSONParser(const std::string &input_p) : input(input_p) {
+	explicit JSONParser(std::string_view input_p) : input(input_p) {
 	}
 
 	bool End() const {
@@ -45,24 +48,50 @@ public:
 	}
 
 	std::string ParseString() {
+		std::string result;
+		ScanString(&result);
+		return result;
+	}
+
+	//! Consumes one JSON string, checking its escapes, and appends its decoded
+	//! value to `out` unless `out` is null: a skipped value is validated exactly
+	//! as a parsed one, without building a copy nobody reads.
+	void ScanString(std::string *out) {
 		SkipWS();
 		if (pos >= input.size() || input[pos] != '"') {
 			throw std::runtime_error("geometry_properties JSON: expected string");
 		}
 		pos++;
 
-		std::string result;
-		while (pos < input.size()) {
-			char ch = input[pos++];
-			if (ch == '"') {
-				return result;
+		auto emit = [out](char c) {
+			if (out) {
+				out->push_back(c);
 			}
-			if (ch != '\\') {
-				result.push_back(ch);
-				continue;
+		};
+		const char *base = input.data();
+		const size_t n = input.size();
+		while (true) {
+			// Jump to the next quote or escape: everything before it is plain
+			// characters, copied (or skipped) as one run.
+			size_t stop = n;
+			if (const void *quote = std::memchr(base + pos, '"', n - pos)) {
+				stop = static_cast<size_t>(static_cast<const char *>(quote) - base);
+			}
+			if (const void *escape = std::memchr(base + pos, '\\', stop - pos)) {
+				stop = static_cast<size_t>(static_cast<const char *>(escape) - base);
+			}
+			if (out) {
+				out->append(base + pos, stop - pos);
+			}
+			pos = stop;
+			if (pos >= n) {
+				throw std::runtime_error("geometry_properties JSON: unterminated string");
+			}
+			if (input[pos++] == '"') {
+				return;
 			}
 
-			if (pos >= input.size()) {
+			if (pos >= n) {
 				throw std::runtime_error("geometry_properties JSON: unterminated escape sequence");
 			}
 
@@ -71,22 +100,22 @@ public:
 			case '"':
 			case '\\':
 			case '/':
-				result.push_back(escaped);
+				emit(escaped);
 				break;
 			case 'b':
-				result.push_back('\b');
+				emit('\b');
 				break;
 			case 'f':
-				result.push_back('\f');
+				emit('\f');
 				break;
 			case 'n':
-				result.push_back('\n');
+				emit('\n');
 				break;
 			case 'r':
-				result.push_back('\r');
+				emit('\r');
 				break;
 			case 't':
-				result.push_back('\t');
+				emit('\t');
 				break;
 			// KNOWN LIMITATION: \uXXXX escapes are validated then replaced with '?' — non-ASCII
 			// geometry_properties strings are corrupted. Follow-up: decode to UTF-8 or swap in a
@@ -98,14 +127,12 @@ public:
 					}
 					pos++;
 				}
-				result.push_back('?');
+				emit('?');
 				break;
 			default:
 				throw std::runtime_error("geometry_properties JSON: invalid escape sequence");
 			}
 		}
-
-		throw std::runtime_error("geometry_properties JSON: unterminated string");
 	}
 
 	int64_t ParseInteger() {
@@ -126,7 +153,7 @@ public:
 		}
 
 		try {
-			return std::stoll(input.substr(start, pos - start));
+			return std::stoll(std::string(input.substr(start, pos - start)));
 		} catch (...) {
 			throw std::runtime_error("geometry_properties JSON: integer out of range");
 		}
@@ -185,7 +212,7 @@ public:
 
 		char ch = input[pos];
 		if (ch == '"') {
-			ParseString();
+			ScanString(nullptr);
 			return;
 		}
 		if (ch == '{') {
@@ -218,7 +245,7 @@ private:
 			return;
 		}
 		while (true) {
-			ParseString();
+			ScanString(nullptr);
 			Expect(':', "':'");
 			SkipValue();
 			if (Consume('}')) {
@@ -280,13 +307,13 @@ private:
 		}
 	}
 
-	const std::string &input;
+	std::string_view input;
 	size_t pos = 0;
 };
 
 } // anonymous namespace
 
-GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
+GeometryMetadata ParseGeometryProperties(std::string_view json_text) {
 	GeometryMetadata meta;
 
 	if (json_text.empty()) {

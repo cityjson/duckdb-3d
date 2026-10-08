@@ -263,3 +263,21 @@ TEST_CASE("BuildSolidModel with metadata: shells member count mismatch raises", 
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("solid count"));
 }
+
+TEST_CASE("ParseGeometryProperties skips other keys' strings but still validates them", "[metadata]") {
+	// `surfaces` is skipped, escapes and all, without disturbing the keys after it.
+	auto meta = ParseGeometryProperties(
+	    R"({"surfaces": "[{\"type\": \"RoofSurface\", \"name\": \"café \\ \/ \b\f\n\r\t\"}]", "type": "Solid", "shells": [[4]]})");
+	REQUIRE(meta.type == "Solid");
+	REQUIRE(meta.shells.has_value());
+	REQUIRE((*meta.shells)[0][0] == 4);
+
+	// A skipped string is still checked as a JSON string.
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "bad \q escape", "shells": [[4]]})"),
+	                    Catch::Contains("invalid escape sequence"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "\u12G4", "shells": [[4]]})"),
+	                    Catch::Contains("invalid unicode escape"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "open)"), Catch::Contains("unterminated string"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties("{\"surfaces\": \"open\\"),
+	                    Catch::Contains("unterminated escape sequence"));
+}

@@ -4,6 +4,7 @@
 #include <optional>
 #include <vector>
 #include <string>
+#include <string_view>
 
 namespace duckdb_3d {
 
@@ -27,6 +28,6 @@ struct GeometryMetadata {
 //! Parse geometry_properties JSON text into GeometryMetadata.
 //! Throws std::runtime_error if the JSON is malformed or contains
 //! conflicting information.
-GeometryMetadata ParseGeometryProperties(const std::string &json_text);
+GeometryMetadata ParseGeometryProperties(std::string_view json_text);
 
 } // namespace duckdb_3d

@@ -12,6 +12,7 @@
 #include "kernel/wkb_parser.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace duckdb {
@@ -173,7 +174,7 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 					metadata = ReadGeometryPropertiesStructRow(meta_vec, count, i);
 				} else {
 					auto &meta_str = meta_strings[meta_data.sel->get_index(i)];
-					metadata = ParseGeometryProperties(std::string(meta_str.GetData(), meta_str.GetSize()));
+					metadata = ParseGeometryProperties(std::string_view(meta_str.GetData(), meta_str.GetSize()));
 				}
 				model = BuildSolidModel(surfaces, metadata);
 			} else {
