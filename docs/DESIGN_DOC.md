@@ -183,7 +183,7 @@ Class-generic operations (distance, serialization, most accessors) take `GEOM_3D
 
 **Null semantics.** Standard DuckDB propagation: a `NULL` required argument gives `NULL`.
 `TRY` constructors return `NULL` instead of raising on unsupported input; non-`TRY`
-constructors raise descriptive errors. The two deliberate exceptions are documented in
+constructors raise descriptive errors. The deliberate exceptions, all optional inputs, are documented in
 [FUNCTIONS.md](./FUNCTIONS.md#conventions).
 
 ---

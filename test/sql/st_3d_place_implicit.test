@@ -1,0 +1,170 @@
+# name: test/sql/st_3d_place_implicit.test
+# description: ST_3DPlaceImplicit materialises an implicit geometry at its reference point
+# group: [sql]
+
+require three_d
+
+require parquet
+
+require-env THREE_D_TEST_FIXTURES
+
+# An implicit geometry places a relative geometry, stored once in local
+# coordinates, at an object: each relative vertex v lands at M * v + p, with M the
+# row-major 4x4 transformation matrix and p the reference point.
+
+# ──────────────────────────────────────────────────────────────
+# The matrix by hand: tree-2 of duckdb-cityjson's geometry_templates.city.json,
+# a 2 x 2 square template scaled by 2 and anchored at (5, 6, 0), covers
+# (3, 4, 0) .. (7, 8, 0), footprint area 16.
+# ──────────────────────────────────────────────────────────────
+query II
+SELECT ST_3DAsText(g), ST_3DFootprintArea(g)
+FROM (SELECT ST_3DPlaceImplicit(
+          ST_Geom3DFromWKB('POLYGON Z ((-1 -1 0, 1 -1 0, 1 1 0, -1 1 0, -1 -1 0))'::GEOMETRY),
+          ST_Geom3DFromWKB('POINT Z (5 6 0)'::GEOMETRY),
+          [2.0, 0, 0, 0, 0, 2.0, 0, 0, 0, 0, 2.0, 0, 0, 0, 0, 1]) AS g);
+----
+POLYGON Z ((3 4 0, 7 4 0, 7 8 0, 3 8 0, 3 4 0))	16.0
+
+# Rotation by 90 degrees about Z, with the matrix's own translation (1, 2, 3)
+# applied before the reference point (10, 20, 30): (1, 0, 0) -> (0, 1, 0) + (1, 2, 3)
+# + (10, 20, 30) = (11, 23, 33).
+query I
+SELECT ST_3DAsText(ST_3DPlaceImplicit(
+    ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+    ST_Geom3DFromWKB('POINT Z (10 20 30)'::GEOMETRY),
+    [0.0, -1, 0, 1, 1, 0, 0, 2, 0, 0, 1, 3, 0, 0, 0, 1]));
+----
+POINT Z (11 23 33)
+
+# A NULL matrix is the identity (the matrix is optional; absent means identity).
+query I
+SELECT ST_3DAsText(ST_3DPlaceImplicit(
+    ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+    ST_Geom3DFromWKB('POINT Z (10 20 30)'::GEOMETRY),
+    NULL));
+----
+POINT Z (11 20 30)
+
+# NULL geometry or NULL reference point gives NULL.
+query II
+SELECT ST_3DPlaceImplicit(NULL::GEOM_3D, ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY), NULL) IS NULL,
+       ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY), NULL::GEOM_3D, NULL) IS NULL;
+----
+true	true
+
+# Malformed input fails clearly.
+statement error
+SELECT ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+                          ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY), [1.0, 0, 0, 0]);
+----
+16 values
+
+statement error
+SELECT ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+                          ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
+                          [1.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1]);
+----
+last row must be 0, 0, 0, 1
+
+statement error
+SELECT ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+                          ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+                          [1.0, NULL, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+----
+NULL
+
+statement error
+SELECT ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY),
+                          ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 1 1 1)'::GEOMETRY), NULL);
+----
+reference point must be a Point
+
+# ──────────────────────────────────────────────────────────────
+# Solids: the result is re-validated, so a mirroring matrix keeps a valid solid
+# (winding stays consistent, only its handedness flips) and the volume scales by
+# |det M|. The hollow cube's volume is 56.
+# ──────────────────────────────────────────────────────────────
+query III
+SELECT ST_3DValidationReport(s).is_valid, ST_3DVolume(s), ST_3DNumShells(s)
+FROM (SELECT ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'),
+                                ST_Geom3DFromWKB('POINT Z (85000 446000 0)'::GEOMETRY),
+                                [-2.0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]) AS s);
+----
+true	448.0	2
+
+# A matrix that collapses a dimension leaves degenerate faces, which validation
+# reports and ST_3DVolume refuses.
+query I
+SELECT ST_3DValidationReport(ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube()),
+                                       ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
+                                       [1.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])).is_valid;
+----
+false
+
+# ──────────────────────────────────────────────────────────────
+# Real data: lod3_railway.city.json's 15 SolitaryVegetationObjects, converted to a
+# CityParquet package by cityparquet-rs (test/data/railway_implicit). Each object
+# row's implicit_geometry struct references a relative geometry in
+# implicit_geometries.parquet by id. The expected bounds are computed from the
+# CityJSON source directly — template vertices, transformationMatrix, and the
+# decoded reference vertex — independently of either writer or this extension.
+# ──────────────────────────────────────────────────────────────
+statement ok
+CREATE TEMP TABLE expected (id VARCHAR, template BIGINT,
+    min_x DOUBLE, min_y DOUBLE, min_z DOUBLE, max_x DOUBLE, max_y DOUBLE, max_z DOUBLE);
+
+statement ok
+INSERT INTO expected VALUES
+('GMLID_SO0107241_3793_12555', 1, 1.046, 6.519, 8.798, 1.2710000000000001, 6.744, 9.246),
+('GMLID_SO0124800_3522_13577', 0, 0.7190000000000001, 7.4399999999999995, 9.1, 0.9380000000000001, 7.659, 9.602),
+('GMLID_SO015374_872_14131', 0, 0.6940000000000001, 6.827999999999999, 8.949, 0.913, 7.047, 9.451),
+('GMLID_SO0158953_776_12462', 1, 1.314, 7.346, 8.949, 1.5390000000000001, 7.571, 9.397),
+('GMLID_SO0200811_525_4986', 0, 1.12, 6.88, 8.85, 1.3390000000000002, 7.099, 9.352),
+('GMLID_SO0260143_1214_1315', 0, 2.2140000000000004, 7.351999999999999, 8.8, 2.4330000000000003, 7.571, 9.302000000000001),
+('GMLID_SO0283142_1335_8999', 0, 0.7010000000000001, 6.16, 8.8, 0.92, 6.3790000000000004, 9.302000000000001),
+('GMLID_SO0286258_965_2893', 1, 1.625, 7.163, 8.8, 1.85, 7.388, 9.248000000000001),
+('GMLID_SO0321978_1466_7441', 1, 0.8, 7.04, 8.952, 1.0250000000000001, 7.265, 9.4),
+('GMLID_SO0400934_2926_3381', 0, 1.397, 7.12, 8.84, 1.616, 7.339, 9.342),
+('GMLID_SO0410128_214_10515', 0, 1.885, 7.272, 8.8, 2.104, 7.4910000000000005, 9.302000000000001),
+('GMLID_SO0443764_1492_9667', 0, 1.304, 6.803, 8.798, 1.5230000000000001, 7.022, 9.3),
+('GMLID_SO081792_2341_11961', 0, 1.038, 7.129, 8.949, 1.2570000000000001, 7.348, 9.451),
+('GMLID_SO086970_1053_8814', 0, 0.65, 5.803999999999999, 8.8, 0.869, 6.023, 9.302000000000001),
+('GMLID_SO092422_3593_9527', 2, 1.04, 1.919, 8.5, 1.2590000000000001, 2.138, 9.002);
+
+statement ok
+CREATE TEMP TABLE placed AS
+SELECT o.id, o.implicit_geometry.id AS template,
+       ST_3DPlaceImplicit(ST_Geom3DFromWKB(t.geometry_lod3_0),
+                          ST_Geom3DFromWKB(o.implicit_geometry.point),
+                          o.implicit_geometry.transformationMatrix) AS g,
+       ST_Geom3DFromWKB(t.geometry_lod3_0) AS relative
+FROM 'test/data/railway_implicit/vegetation.parquet' o
+JOIN 'test/data/railway_implicit/implicit_geometries.parquet' t ON t.id = o.implicit_geometry.id;
+
+# Every instance resolves, references the template the source names, and lands
+# where the source places it. GEOM_3D has no bounds accessor, so the placed
+# vertices are read back from the WKT (Z via ST_3DZMin / ST_3DZMax).
+query III
+WITH coords AS (
+    SELECT id, template, g,
+           list_transform(regexp_extract_all(ST_3DAsText(g), '(-?[0-9.e+-]+) (-?[0-9.e+-]+) (-?[0-9.e+-]+)', 1),
+                          x -> x::DOUBLE) AS xs,
+           list_transform(regexp_extract_all(ST_3DAsText(g), '(-?[0-9.e+-]+) (-?[0-9.e+-]+) (-?[0-9.e+-]+)', 2),
+                          y -> y::DOUBLE) AS ys
+    FROM placed
+)
+SELECT count(*),
+       count(*) FILTER (WHERE c.template = e.template),
+       max(greatest(abs(list_min(c.xs) - e.min_x), abs(list_min(c.ys) - e.min_y), abs(ST_3DZMin(c.g) - e.min_z),
+                    abs(list_max(c.xs) - e.max_x), abs(list_max(c.ys) - e.max_y), abs(ST_3DZMax(c.g) - e.max_z))) < 1e-9
+FROM coords c JOIN expected e USING (id);
+----
+15	15	true
+
+# The railway matrices are all the identity, so placement is a pure translation:
+# footprint area is unchanged.
+query I
+SELECT max(abs(ST_3DFootprintArea(g) - ST_3DFootprintArea(relative))) < 1e-12 FROM placed;
+----
+true

@@ -121,9 +121,10 @@ Convert between them via WKB: `ST_Geom3DFromWKB(ST_3DAsWKB(solid))` goes solid �
 
 ## Conventions
 
-**Null propagation.** Any `NULL` argument yields `NULL`, with one deliberate exception:
-`ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a non-`NULL`
-result — a missing sidecar is not an error.
+**Null propagation.** Any `NULL` argument yields `NULL`, with two deliberate exceptions, both
+optional inputs: `ST_3DFromWKB(wkb, NULL)` builds the solid *without* metadata and returns a
+non-`NULL` result — a missing sidecar is not an error — and
+`ST_3DPlaceImplicit(geom, point, NULL)` places with the identity matrix.
 
 **`TRY` variants** (`ST_3DTryFromWKB`) catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
 STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFromWKB`.
@@ -610,6 +611,7 @@ WHERE p.id <> 'NL.IMBAG.Pand.0503100000018426-0'
 | `ST_3DScale` | `(SOLID_3D \| GEOM_3D, sx, sy, sz DOUBLE)` | same type as input |
 | `ST_3DRotateX/Y/Z` | `(SOLID_3D \| GEOM_3D, radians DOUBLE)` | same type as input |
 | `ST_3DTransform` | `(SOLID_3D \| GEOM_3D, src, tgt)` | same type as input |
+| `ST_3DPlaceImplicit` | `(relative_geometry SOLID_3D \| GEOM_3D, reference_point GEOM_3D, transformation_matrix DOUBLE[])` | same type as `relative_geometry` |
 | `ST_3DExtrude` | `(GEOM_3D polygon, height DOUBLE)` | `SOLID_3D` |
 | `ST_MakeSolid` | `(GEOM_3D)` | `SOLID_3D` |
 | `ST_3DCentroid` | `(GEOM_3D)` | `GEOM_3D` (Point) |
@@ -635,6 +637,63 @@ FROM ex;
 Translation and rotation are rigid motions and preserve volume; scaling by 2 in each axis
 multiplies it by 8, as expected. Rotations follow the PostGIS convention: **right-handed,
 counter-clockwise, in radians**.
+
+### `ST_3DPlaceImplicit` — implicit geometries
+
+An implicit geometry stores a *relative geometry* once, in its own local coordinates, and
+places it at each object by a **transformation matrix** and a **reference point**. In a
+CityParquet package the relative geometries are the rows of `implicit_geometries.parquet`, and
+an object's `implicit_geometry` struct carries the `id` to join on, the reference `point` (WKB
+`Point Z`) and the `transformationMatrix`. `ST_3DPlaceImplicit` materialises one instance:
+every relative vertex `v` lands at `M · v + p`.
+
+- `transformation_matrix` is a flat, **row-major** 4×4: exactly 16 finite values whose last row
+  is `0, 0, 0, 1`. Its own translation column is applied before the reference point is added.
+  A `NULL` matrix is the **identity** — the matrix is optional — which makes this one of the
+  functions whose `NULL` handling is not plain propagation. A `NULL` element, a length other
+  than 16, or a projective last row raises.
+- `reference_point` must be a `GEOM_3D` `Point`; a `NULL` relative geometry or reference point
+  gives `NULL`.
+- The result has the relative geometry's type. A `SOLID_3D` is re-validated: a mirroring
+  matrix keeps it valid (winding stays consistent, only its handedness flips), and its volume
+  scales by `|det M|`; a matrix that collapses a dimension leaves degenerate faces.
+- The result is in the reference point's coordinates — the file CRS in a CityParquet package —
+  while the relative geometry, in local coordinates, is exempt from it.
+
+```sql
+SELECT o.id, ST_3DAsText(ST_3DCentroid(ST_3DPlaceImplicit(
+         ST_Geom3DFromWKB(t.geometry_lod3_0),
+         ST_Geom3DFromWKB(o.implicit_geometry.point),
+         o.implicit_geometry.transformationMatrix))) AS placed_centroid
+FROM 'test/data/railway_implicit/vegetation.parquet' o
+JOIN 'test/data/railway_implicit/implicit_geometries.parquet' t ON t.id = o.implicit_geometry.id
+ORDER BY o.id LIMIT 3;
+```
+```
+┌────────────────────────────┬─────────────────────────────────────────────┐
+│             id             │               placed_centroid               │
+├────────────────────────────┼─────────────────────────────────────────────┤
+│ GMLID_SO0107241_3793_12555 │ POINT Z (1.15844898 6.6314892 9.0743353)    │
+│ GMLID_SO0124800_3522_13577 │ POINT Z (0.828664787 7.54983942 9.32059222) │
+│ GMLID_SO015374_872_14131   │ POINT Z (0.803664787 6.93783942 9.16959222) │
+└────────────────────────────┴─────────────────────────────────────────────┘
+```
+
+The railway fixture's matrices are all the identity. A scaling matrix, by hand:
+
+```sql
+SELECT ST_3DAsText(ST_3DPlaceImplicit(
+    ST_Geom3DFromWKB('POLYGON Z ((-1 -1 0, 1 -1 0, 1 1 0, -1 1 0, -1 -1 0))'::GEOMETRY),
+    ST_Geom3DFromWKB('POINT Z (5 6 0)'::GEOMETRY),
+    [2.0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1])) AS placed;
+```
+```
+┌─────────────────────────────────────────────────┐
+│                     placed                      │
+├─────────────────────────────────────────────────┤
+│ POLYGON Z ((3 4 0, 7 4 0, 7 8 0, 3 8 0, 3 4 0)) │
+└─────────────────────────────────────────────────┘
+```
 
 ### `ST_3DTransform` — CRS reprojection
 
@@ -723,7 +782,7 @@ FROM ex;
 
 ## Function index
 
-51 public functions.
+52 public functions.
 
 | Category | Functions |
 | --- | --- |
@@ -733,7 +792,7 @@ FROM ex;
 | **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
-| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D` |
+| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DPlaceImplicit`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D` |
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
 registered: `ST_3DIsValid` (validity is a field of `ST_3DValidationReport`), `ST_3DUnion` /

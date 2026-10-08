@@ -6,6 +6,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
+#include "kernel/affine.hpp"
 #include "kernel/crs_transform.hpp"
 #include "kernel/validation.hpp"
 
@@ -21,6 +22,7 @@ namespace duckdb {
 
 // Kernel names this file uses unqualified. Using-declarations rather than a
 // using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::AffineTransform3D;
 using duckdb_3d::CrsTransform;
 using duckdb_3d::DeserializeGeomPayload;
 using duckdb_3d::DeserializePayload;
@@ -492,6 +494,99 @@ static void ST_3DTransformIntFun(DataChunk &args, ExpressionState &state, Vector
 	});
 }
 
+// ──────────────────────────────────────────────────────────────
+// ST_3DPlaceImplicit(relative SOLID_3D | GEOM_3D, reference_point GEOM_3D,
+//                    transformation_matrix DOUBLE[]) → same type as `relative`
+//
+// Materialises an implicit geometry: every relative vertex v lands at
+// M * v + p, M the row-major 4x4 matrix and p the reference point. A NULL
+// matrix is the identity, so the NULL handling is special; a NULL relative
+// geometry or reference point gives NULL. The transform itself is kernel math
+// (kernel/affine), with no knowledge of where the arguments came from.
+// ──────────────────────────────────────────────────────────────
+
+//! The placement transform for one row: the matrix (identity when NULL), then a
+//! translation to the reference point.
+static AffineTransform3D PlacementFor(Vector &point_vec, const UnifiedVectorFormat &point_data, idx_t point_idx,
+                                      Vector &matrix_vec, const UnifiedVectorFormat &matrix_data, idx_t matrix_idx) {
+	auto &point_blob = UnifiedVectorFormat::GetData<string_t>(point_data)[point_idx];
+	auto point = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(point_blob.GetData()), point_blob.GetSize());
+	if (point.type != duckdb_3d::GeomType::Point || point.vertices.size() != 1) {
+		throw InvalidInputException("ST_3DPlaceImplicit: reference point must be a Point");
+	}
+
+	AffineTransform3D placement = duckdb_3d::AffineIdentity();
+	if (matrix_data.validity.RowIsValid(matrix_idx)) {
+		auto entry = UnifiedVectorFormat::GetData<list_entry_t>(matrix_data)[matrix_idx];
+		auto &child = ListVector::GetEntry(matrix_vec);
+		UnifiedVectorFormat child_data;
+		child.ToUnifiedFormat(ListVector::GetListSize(matrix_vec), child_data);
+		auto child_values = UnifiedVectorFormat::GetData<double>(child_data);
+		std::vector<double> values;
+		values.reserve(entry.length);
+		for (idx_t k = 0; k < entry.length; k++) {
+			auto child_idx = child_data.sel->get_index(entry.offset + k);
+			if (!child_data.validity.RowIsValid(child_idx)) {
+				throw InvalidInputException("ST_3DPlaceImplicit: transformation matrix contains a NULL value");
+			}
+			values.push_back(child_values[child_idx]);
+		}
+		try {
+			placement = duckdb_3d::AffineFromMatrix4x4(values);
+		} catch (const std::runtime_error &e) {
+			throw InvalidInputException(std::string("ST_3DPlaceImplicit: ") + e.what());
+		}
+	}
+	return duckdb_3d::ThenTranslate(placement, point.vertices[0]);
+}
+
+template <bool SOLID>
+static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto count = args.size();
+	UnifiedVectorFormat geom_data, point_data, matrix_data;
+	args.data[0].ToUnifiedFormat(count, geom_data);
+	args.data[1].ToUnifiedFormat(count, point_data);
+	args.data[2].ToUnifiedFormat(count, matrix_data);
+	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
+	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetData<string_t>(result);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto geom_idx = geom_data.sel->get_index(i);
+		auto point_idx = point_data.sel->get_index(i);
+		if (!geom_data.validity.RowIsValid(geom_idx) || !point_data.validity.RowIsValid(point_idx)) {
+			result_validity.SetInvalid(i);
+			result_data[i] = string_t();
+			continue;
+		}
+		auto placement =
+		    PlacementFor(args.data[1], point_data, point_idx, args.data[2], matrix_data, matrix_data.sel->get_index(i));
+		auto &blob = geom_strings[geom_idx];
+		std::vector<uint8_t> payload;
+		if constexpr (SOLID) {
+			auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+			duckdb_3d::ApplyAffine(placement, model.vertices);
+			// The triangulation's indices still tile each face under an affine map;
+			// what can change is validity — a mirroring matrix reverses handedness,
+			// a collapsing one degenerates faces — so re-validate.
+			model.ComputeBBox();
+			ValidateSolidModel(model);
+			payload = SerializePayload(model);
+		} else {
+			auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
+			duckdb_3d::ApplyAffine(placement, model.vertices);
+			model.ComputeBBox();
+			payload = SerializeGeomPayload(model);
+		}
+		result_data[i] = StringVector::AddStringOrBlob(
+		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
 void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                 const LogicalType &geom_3d_type) {
 	// Transform functions
@@ -587,6 +682,27 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    "and Y are reprojected and Z passes through unchanged. Solids are re-validated afterwards.",
 	                    "ST_3DTransform(ST_Geom3DFromWKB('POINT Z (85000 446800 5)'::GEOMETRY), 28992, 4326)",
 	                    {"transform"}});
+	// ST_3DPlaceImplicit: an implicit geometry's relative geometry placed by its
+	// transformation matrix and reference point. NULL matrix = identity, hence
+	// SPECIAL_HANDLING.
+	ScalarFunctionSet place_set("st_3dplaceimplicit");
+	auto matrix_type = LogicalType::LIST(LogicalType::DOUBLE);
+	ScalarFunction place_solid({solid_3d_type, geom_3d_type, matrix_type}, solid_3d_type, ST_3DPlaceImplicitFun<true>);
+	place_solid.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	place_set.AddFunction(place_solid);
+	ScalarFunction place_geom({geom_3d_type, geom_3d_type, matrix_type}, geom_3d_type, ST_3DPlaceImplicitFun<false>);
+	place_geom.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	place_set.AddFunction(place_geom);
+	RegisterDocumented(
+	    loader, std::move(place_set),
+	    {{"relative_geometry", "reference_point", "transformation_matrix"},
+	     "Places an implicit geometry: maps each vertex v of the relative geometry (SOLID_3D or GEOM_3D) to M * v + p, "
+	     "with M the row-major 4x4 transformation matrix (16 values, last row 0 0 0 1; NULL means identity) and p the "
+	     "reference point (a GEOM_3D Point). The result has the input's type; solids are re-validated.",
+	     "ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (10 20 "
+	     "30)'::GEOMETRY), "
+	     "[2.0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1])",
+	     {"transform"}});
 }
 
 } // namespace duckdb

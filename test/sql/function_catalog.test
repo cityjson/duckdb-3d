@@ -14,7 +14,7 @@ WHERE function_name LIKE 'st\_3d%' ESCAPE '\'
 query I
 SELECT count(DISTINCT function_name) FROM three_d_functions;
 ----
-51
+52
 
 # Every overload carries a description, an example, and a category.
 query I
