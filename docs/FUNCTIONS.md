@@ -656,7 +656,10 @@ every relative vertex `v` lands at `M · v + p`.
   gives `NULL`.
 - The result has the relative geometry's type. A `SOLID_3D` is re-validated: a mirroring
   matrix keeps it valid (winding stays consistent, only its handedness flips), and its volume
-  scales by `|det M|`; a matrix that collapses a dimension leaves degenerate faces.
+  scales by `|det M|`. A **singular** matrix — `|det M|` negligible against the product of its
+  row lengths, as for any projection — **raises** for a `SOLID_3D`: it would collapse the solid
+  to zero volume, and a projection can do that while every face stays non-degenerate, so the
+  result would pass validation. A `GEOM_3D` has no volume to lose and is placed regardless.
 - The result is in the reference point's coordinates — the file CRS in a CityParquet package —
   while the relative geometry, in local coordinates, is exempt from it.
 

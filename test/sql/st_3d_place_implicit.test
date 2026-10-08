@@ -93,14 +93,34 @@ FROM (SELECT ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "So
 ----
 true	448.0	2
 
-# A matrix that collapses a dimension leaves degenerate faces, which validation
-# reports and ST_3DVolume refuses.
-query I
-SELECT ST_3DValidationReport(ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube()),
-                                       ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
-                                       [1.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])).is_valid;
+# A singular matrix maps a solid to zero volume. Validation cannot be relied on to
+# notice: the oblique projection (x, y, z) -> (x - z, y - z, 0) flattens every face
+# of the hollow cube to a non-degenerate parallelogram in z = 0, so the result
+# would pass every validity check with volume 0. Placing a solid by a singular
+# matrix therefore raises.
+statement error
+SELECT ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'),
+                          ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
+                          [1.0, 0, -1, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 ----
-false
+singular
+
+statement error
+SELECT ST_3DPlaceImplicit(ST_3DFromWKB(ST_AsWKBHollowCube()),
+                          ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
+                          [1.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+----
+singular
+
+# A GEOM_3D carries no volume to lose, so a projection places it: the square
+# template flattened onto z = 0 by the oblique projection.
+query I
+SELECT ST_3DAsText(ST_3DPlaceImplicit(
+    ST_Geom3DFromWKB('POLYGON Z ((0 0 1, 1 0 1, 1 1 1, 0 1 1, 0 0 1))'::GEOMETRY),
+    ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY),
+    [1.0, 0, -1, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
+----
+POLYGON Z ((-1 -1 0, 0 -1 0, 0 0 0, -1 0 0, -1 -1 0))
 
 # ──────────────────────────────────────────────────────────────
 # Real data: lod3_railway.city.json's 15 SolitaryVegetationObjects, converted to a

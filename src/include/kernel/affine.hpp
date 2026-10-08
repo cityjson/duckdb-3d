@@ -37,4 +37,11 @@ void ApplyAffine(const AffineTransform3D &a, std::vector<Vertex3D> &vertices);
 //! collapses a dimension.
 double LinearDeterminant(const AffineTransform3D &a);
 
+//! True when the linear part is singular to working precision: |det| is a
+//! negligible fraction (kEpsRelative) of the product of its row norms, the
+//! largest |det| rows of those lengths can reach. Scale-free, so a tiny uniform
+//! scale is not singular while a projection is. Such a transform maps every
+//! solid to zero volume.
+bool IsSingularLinear(const AffineTransform3D &a);
+
 } // namespace duckdb_3d

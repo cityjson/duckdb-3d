@@ -564,11 +564,17 @@ static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vecto
 		auto &blob = geom_strings[geom_idx];
 		std::vector<uint8_t> payload;
 		if constexpr (SOLID) {
+			// A singular linear part maps every solid to zero volume, and the result
+			// can still pass every validity check (a projection flattens faces into
+			// non-degenerate ones), so it is refused rather than returned.
+			if (duckdb_3d::IsSingularLinear(placement)) {
+				throw InvalidInputException("ST_3DPlaceImplicit: transformation matrix is singular; it would "
+				                            "collapse the solid to zero volume");
+			}
 			auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 			duckdb_3d::ApplyAffine(placement, model.vertices);
-			// The triangulation's indices still tile each face under an affine map;
-			// what can change is validity — a mirroring matrix reverses handedness,
-			// a collapsing one degenerates faces — so re-validate.
+			// The triangulation's indices still tile each face under a non-singular
+			// affine map; a mirroring matrix reverses handedness, so re-validate.
 			model.ComputeBBox();
 			ValidateSolidModel(model);
 			payload = SerializePayload(model);
@@ -698,7 +704,8 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	    {{"relative_geometry", "reference_point", "transformation_matrix"},
 	     "Places an implicit geometry: maps each vertex v of the relative geometry (SOLID_3D or GEOM_3D) to M * v + p, "
 	     "with M the row-major 4x4 transformation matrix (16 values, last row 0 0 0 1; NULL means identity) and p the "
-	     "reference point (a GEOM_3D Point). The result has the input's type; solids are re-validated.",
+	     "reference point (a GEOM_3D Point). The result has the input's type; solids are re-validated, and a singular "
+	     "matrix raises for a solid.",
 	     "ST_3DPlaceImplicit(ST_Geom3DFromWKB('POINT Z (1 0 0)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (10 20 "
 	     "30)'::GEOMETRY), "
 	     "[2.0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1])",

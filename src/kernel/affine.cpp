@@ -56,4 +56,13 @@ double LinearDeterminant(const AffineTransform3D &a) {
 	       m[2] * (m[4] * m[9] - m[5] * m[8]);
 }
 
+bool IsSingularLinear(const AffineTransform3D &a) {
+	const auto &m = a.m;
+	double r0 = std::hypot(std::hypot(m[0], m[1]), m[2]);
+	double r1 = std::hypot(std::hypot(m[4], m[5]), m[6]);
+	double r2 = std::hypot(std::hypot(m[8], m[9]), m[10]);
+	double bound = r0 * r1 * r2; // Hadamard: |det| <= r0 * r1 * r2
+	return bound == 0 || std::abs(LinearDeterminant(a)) <= kEpsRelative * bound;
+}
+
 } // namespace duckdb_3d

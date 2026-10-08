@@ -62,3 +62,19 @@ TEST_CASE("Affine: a matrix that is not a 4x4 affine transform is rejected", "[a
 		                    Catch::Contains("finite"));
 	}
 }
+
+TEST_CASE("Affine: singularity is judged relative to the matrix's scale", "[affine]") {
+	// An oblique projection onto z = 0: (x, y, z) -> (x - z, y - z, 0). Every
+	// solid it maps collapses to zero volume.
+	REQUIRE(IsSingularLinear(AffineFromMatrix4x4({1, 0, -1, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1})));
+	// Dropping Z outright.
+	REQUIRE(IsSingularLinear(AffineFromMatrix4x4({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})));
+	// Rows (1, 0, 0), (0, 1, 0), (1, 1, 1e-15): det 1e-15 against row norms of
+	// order 1 — numerically a projection.
+	REQUIRE(IsSingularLinear(AffineFromMatrix4x4({1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1e-15, 0, 0, 0, 0, 1})));
+	// A tiny uniform scale is well-conditioned: det 1e-18, but so is the product
+	// of the row norms, so it is not singular. Nor is a mirror.
+	REQUIRE_FALSE(IsSingularLinear(AffineFromMatrix4x4({1e-6, 0, 0, 0, 0, 1e-6, 0, 0, 0, 0, 1e-6, 0, 0, 0, 0, 1})));
+	REQUIRE_FALSE(IsSingularLinear(AffineFromMatrix4x4({-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1})));
+	REQUIRE_FALSE(IsSingularLinear(AffineIdentity()));
+}
