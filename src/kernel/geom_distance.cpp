@@ -249,11 +249,27 @@ double DistTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex
 
 namespace {
 
-//! A geometric element: a point (n=1), segment (n=2) or triangle (n=3).
+//! A geometric element: a point (n=1), segment (n=2) or triangle (n=3), with
+//! its bounding box.
 struct Element {
 	int n;
 	Vertex3D v[3];
+	BBox3D box;
 };
+
+Element MakeElement(int n, const Vertex3D &a, const Vertex3D &b = {}, const Vertex3D &c = {}) {
+	Element e {n, {a, b, c}, {a.x, a.y, a.z, a.x, a.y, a.z}};
+	for (int i = 1; i < n; i++) {
+		const auto &v = e.v[i];
+		e.box.min_x = std::min(e.box.min_x, v.x);
+		e.box.min_y = std::min(e.box.min_y, v.y);
+		e.box.min_z = std::min(e.box.min_z, v.z);
+		e.box.max_x = std::max(e.box.max_x, v.x);
+		e.box.max_y = std::max(e.box.max_y, v.y);
+		e.box.max_z = std::max(e.box.max_z, v.z);
+	}
+	return e;
+}
 
 //! Fan-triangulate the ring spanning vertex indices [begin,end) into triangles.
 void FanTriangulate(const GeomModel &m, uint32_t begin, uint32_t end, std::vector<Element> &out) {
@@ -262,7 +278,7 @@ void FanTriangulate(const GeomModel &m, uint32_t begin, uint32_t end, std::vecto
 	}
 	const Vertex3D &v0 = m.vertices[begin];
 	for (uint32_t i = begin + 1; i + 1 < end; i++) {
-		out.push_back({3, {v0, m.vertices[i], m.vertices[i + 1]}});
+		out.push_back(MakeElement(3, v0, m.vertices[i], m.vertices[i + 1]));
 	}
 }
 
@@ -275,18 +291,18 @@ std::vector<Element> Decompose(const GeomModel &m) {
 	case GeomType::Point:
 	case GeomType::MultiPoint:
 		for (const auto &v : m.vertices) {
-			out.push_back({1, {v}});
+			out.push_back(MakeElement(1, v));
 		}
 		break;
 	case GeomType::LineString:
 		for (size_t i = 1; i < m.vertices.size(); i++) {
-			out.push_back({2, {m.vertices[i - 1], m.vertices[i]}});
+			out.push_back(MakeElement(2, m.vertices[i - 1], m.vertices[i]));
 		}
 		break;
 	case GeomType::MultiLineString:
 		for (size_t k = 0; k + 1 < m.part_offsets.size(); k++) {
 			for (uint32_t i = m.part_offsets[k] + 1; i < m.part_offsets[k + 1]; i++) {
-				out.push_back({2, {m.vertices[i - 1], m.vertices[i]}});
+				out.push_back(MakeElement(2, m.vertices[i - 1], m.vertices[i]));
 			}
 		}
 		break;
@@ -307,7 +323,7 @@ std::vector<Element> Decompose(const GeomModel &m) {
 	default:
 		// Fall back to treating raw vertices as points.
 		for (const auto &v : m.vertices) {
-			out.push_back({1, {v}});
+			out.push_back(MakeElement(1, v));
 		}
 		break;
 	}
@@ -365,6 +381,64 @@ ClosestPointPair ElementClosestPair(const Element &e1, const Element &e2) {
 	}
 }
 
+//! Squared gap between two boxes: a lower bound on the squared distance between
+//! anything inside them (0 when they overlap).
+double BoxGap2(const BBox3D &a, const BBox3D &b) {
+	auto axis_gap = [](double min1, double max1, double min2, double max2) {
+		return std::max(0.0, std::max(min1 - max2, min2 - max1));
+	};
+	double dx = axis_gap(a.min_x, a.max_x, b.min_x, b.max_x);
+	double dy = axis_gap(a.min_y, a.max_y, b.min_y, b.max_y);
+	double dz = axis_gap(a.min_z, a.max_z, b.min_z, b.max_z);
+	return dx * dx + dy * dy + dz * dz;
+}
+
+//! Element pairs are skipped when their boxes are farther apart than the bound
+//! that matters (the best distance so far, or a threshold). The box gap is a
+//! lower bound on the exact distance, but the element distance is computed in
+//! doubles; the slack keeps a pair whose rounded distance could still land on or
+//! below the bound in the sweep. It scales with the coordinates' magnitude,
+//! because that is what the rounding error scales with, and at 1e-9 of it sits
+//! far above that error and far below any gap worth pruning.
+double PruneSlack(const GeomModel &g1, const GeomModel &g2) {
+	double m = 1.0;
+	for (const auto *b : {&g1.bbox, &g2.bbox}) {
+		for (double v : {b->min_x, b->min_y, b->min_z, b->max_x, b->max_y, b->max_z}) {
+			m = std::max(m, std::abs(v));
+		}
+	}
+	return kEpsRelative * m;
+}
+
+//! True when the boxes are too far apart for any pair inside them to come
+//! within `bound` (plus slack) of each other.
+bool BeyondBound(const BBox3D &a, const BBox3D &b, double bound, double slack) {
+	double limit = bound + slack;
+	return BoxGap2(a, b) > limit * limit;
+}
+
+//! An upper bound on the minimum element distance: the exact distance of the
+//! element pair whose boxes are closest. It is a real element distance, so the
+//! true minimum is at most this, and every pair that could attain the minimum
+//! has a box gap no larger than it.
+double SeedUpperBound(const std::vector<Element> &e1, const std::vector<Element> &e2) {
+	size_t bi = 0, bj = 0;
+	double best_gap2 = std::numeric_limits<double>::infinity();
+	for (size_t i = 0; i < e1.size(); i++) {
+		for (size_t j = 0; j < e2.size(); j++) {
+			double g = BoxGap2(e1[i].box, e2[j].box);
+			if (g < best_gap2) {
+				best_gap2 = g;
+				bi = i;
+				bj = j;
+			}
+		}
+	}
+	// A non-finite coordinate gives a NaN distance, which bounds nothing; the
+	// sweep then prunes nothing and treats that pair as the unpruned loop does.
+	double d = ElementDistance(e1[bi], e2[bj]);
+	return std::isnan(d) ? std::numeric_limits<double>::infinity() : d;
+}
 } // namespace
 
 double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2) {
@@ -382,9 +456,25 @@ double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2) {
 double Geom3DDistance(const GeomModel &g1, const GeomModel &g2) {
 	auto e1 = Decompose(g1);
 	auto e2 = Decompose(g2);
-	double best = std::numeric_limits<double>::infinity();
+	if (e1.empty() || e2.empty()) {
+		return std::numeric_limits<double>::infinity();
+	}
+	// The minimum over every element pair, skipping the pairs whose boxes are
+	// already farther apart than the best distance found: they cannot lower it.
+	// Seeding with the closest-box pair makes the bound tight from the start.
+	double slack = PruneSlack(g1, g2);
+	double best = SeedUpperBound(e1, e2);
+	if (best == 0.0) {
+		return 0.0;
+	}
 	for (const auto &a : e1) {
+		if (BeyondBound(a.box, g2.bbox, best, slack)) {
+			continue;
+		}
 		for (const auto &b : e2) {
+			if (BeyondBound(a.box, b.box, best, slack)) {
+				continue;
+			}
 			best = std::min(best, ElementDistance(a, b));
 			if (best == 0.0) {
 				return 0.0;
@@ -423,8 +513,16 @@ bool Geom3DWithin(const GeomModel &g1, const GeomModel &g2, double threshold) {
 	}
 	auto e1 = Decompose(g1);
 	auto e2 = Decompose(g2);
+	double slack = PruneSlack(g1, g2);
 	for (const auto &a : e1) {
+		if (BeyondBound(a.box, g2.bbox, threshold, slack)) {
+			continue;
+		}
 		for (const auto &b : e2) {
+			// A pair whose boxes are beyond the threshold cannot be within it.
+			if (BeyondBound(a.box, b.box, threshold, slack)) {
+				continue;
+			}
 			// Stop at the first pair within the threshold — no need to find the
 			// exact minimum distance.
 			if (ElementDistance(a, b) <= threshold) {
@@ -441,10 +539,21 @@ ClosestPointPair Geom3DClosestPoints(const GeomModel &g1, const GeomModel &g2) {
 	if (e1.empty() || e2.empty()) {
 		return {{0, 0, 0}, {0, 0, 0}};
 	}
+	// The result is the first pair, in sweep order, that attains the minimum.
+	// A pair whose boxes are farther apart than an upper bound on the minimum
+	// cannot be that pair, so it is skipped without changing which one wins.
+	double slack = PruneSlack(g1, g2);
+	double upper = SeedUpperBound(e1, e2);
 	ClosestPointPair best = ElementClosestPair(e1[0], e2[0]);
 	double best_dist = DistPointPoint(best.p, best.q);
 	for (const auto &a : e1) {
+		if (BeyondBound(a.box, g2.bbox, std::min(upper, best_dist), slack)) {
+			continue;
+		}
 		for (const auto &b : e2) {
+			if (BeyondBound(a.box, b.box, std::min(upper, best_dist), slack)) {
+				continue;
+			}
 			auto candidate = ElementClosestPair(a, b);
 			double d = DistPointPoint(candidate.p, candidate.q);
 			if (d < best_dist) {

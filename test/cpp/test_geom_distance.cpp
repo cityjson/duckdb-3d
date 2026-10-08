@@ -1,6 +1,10 @@
 #include "catch.hpp"
 #include "kernel/geom_distance.hpp"
+#include <array>
 #include <cmath>
+#include <limits>
+#include <random>
+#include <vector>
 
 using namespace duckdb_3d;
 
@@ -216,4 +220,100 @@ TEST_CASE("BBoxDistance computes the gap between boxes", "[geom_distance]") {
 
 	BBox3D d {0.5, 0.5, 0.5, 2, 2, 2}; // overlapping
 	REQUIRE(BBoxDistance(a, d) == 0.0);
+}
+
+namespace {
+
+//! A PolyhedralSurface of `faces` random triangles and quads inside a `size`-wide
+//! cube at `origin`, at projected-CRS magnitudes. Seeded, so every run sees the
+//! same surface.
+GeomModel RandomSurface(uint32_t seed, Vertex3D origin, double size, int faces) {
+	std::mt19937 rng(seed);
+	std::uniform_real_distribution<double> unit(0.0, 1.0);
+	GeomModel m;
+	m.type = GeomType::PolyhedralSurface;
+	m.part_offsets.push_back(0);
+	m.ring_offsets.push_back(0);
+	for (int f = 0; f < faces; f++) {
+		int n = (f % 3 == 0) ? 4 : 3;
+		for (int k = 0; k < n; k++) {
+			m.vertices.push_back(
+			    V(origin.x + size * unit(rng), origin.y + size * unit(rng), origin.z + size * unit(rng)));
+		}
+		m.ring_offsets.push_back(static_cast<uint32_t>(m.vertices.size()));
+		m.part_offsets.push_back(static_cast<uint32_t>(m.ring_offsets.size() - 1));
+	}
+	m.ComputeBBox();
+	return m;
+}
+
+//! The surface's elements as distance sees them: each face's exterior ring,
+//! fan-triangulated from its first vertex.
+std::vector<std::array<Vertex3D, 3>> FanTriangles(const GeomModel &m) {
+	std::vector<std::array<Vertex3D, 3>> out;
+	for (size_t k = 0; k + 1 < m.part_offsets.size(); k++) {
+		uint32_t begin = m.ring_offsets[m.part_offsets[k]];
+		uint32_t end = m.ring_offsets[m.part_offsets[k] + 1];
+		for (uint32_t i = begin + 1; i + 1 < end; i++) {
+			out.push_back({m.vertices[begin], m.vertices[i], m.vertices[i + 1]});
+		}
+	}
+	return out;
+}
+
+//! Every element pair, in order: the minimum distance, and the first pair that
+//! attains it.
+struct BruteForce {
+	double distance;
+	ClosestPointPair pair;
+};
+
+BruteForce BruteForceDistance(const GeomModel &g1, const GeomModel &g2) {
+	auto t1 = FanTriangles(g1);
+	auto t2 = FanTriangles(g2);
+	BruteForce best {std::numeric_limits<double>::infinity(), {}};
+	for (const auto &a : t1) {
+		for (const auto &b : t2) {
+			auto pair = ClosestPointPairTriangleTriangle(a[0], a[1], a[2], b[0], b[1], b[2]);
+			double d = DistPointPoint(pair.p, pair.q);
+			if (d < best.distance) {
+				best = {d, pair};
+			}
+		}
+	}
+	return best;
+}
+
+} // namespace
+
+TEST_CASE("Geom3DDistance and friends match the brute-force sweep over every element pair", "[geom_distance]") {
+	// Separated, nearly touching, and interpenetrating surface pairs, each with
+	// enough faces that most element pairs are far apart.
+	const Vertex3D base {84000.0, 446000.0, 0.0};
+	struct Case {
+		Vertex3D offset;
+		double size;
+	};
+	const Case cases[] = {
+	    {{30.0, 0.0, 0.0}, 10.0}, {{10.5, 3.0, 1.0}, 10.0}, {{4.0, 4.0, 0.0}, 10.0}, {{0.0, 25.0, 8.0}, 6.0}};
+	uint32_t seed = 1;
+	for (const auto &c : cases) {
+		auto g1 = RandomSurface(seed++, base, 10.0, 60);
+		auto g2 = RandomSurface(seed++, {base.x + c.offset.x, base.y + c.offset.y, base.z + c.offset.z}, c.size, 60);
+		auto brute = BruteForceDistance(g1, g2);
+
+		REQUIRE(Geom3DDistance(g1, g2) == brute.distance);
+
+		auto pair = Geom3DClosestPoints(g1, g2);
+		REQUIRE(pair.p.x == brute.pair.p.x);
+		REQUIRE(pair.p.y == brute.pair.p.y);
+		REQUIRE(pair.p.z == brute.pair.p.z);
+		REQUIRE(pair.q.x == brute.pair.q.x);
+		REQUIRE(pair.q.y == brute.pair.q.y);
+		REQUIRE(pair.q.z == brute.pair.q.z);
+
+		for (double t : {0.0, 0.5 * brute.distance, brute.distance, 1.5 * brute.distance + 0.1, 5.0}) {
+			REQUIRE(Geom3DWithin(g1, g2, t) == (brute.distance <= t));
+		}
+	}
 }

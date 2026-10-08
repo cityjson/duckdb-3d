@@ -413,6 +413,25 @@ dependency:
   published per-building figures. Current agreement is a median volume error of **0.017 %**
   across ~1100 Delft buildings.
 
+### 8.5 Distance is an exact minimum over element pairs
+
+The distance family decomposes each geometry into points, segments and triangles (a surface
+contributes its faces' exterior rings, fan-triangulated) and answers from the element pairs:
+`ST_3DDistance` is their minimum, `ST_3DClosestPoint` / `ST_3DShortestLine` report the first
+pair in sweep order that attains it, and `ST_3DDWithin` / `ST_3DIntersects` stop at the first
+pair within the threshold.
+
+Element pairs whose bounding boxes are farther apart than the bound that matters — the best
+distance so far, or the threshold — are skipped. The box gap is a lower bound on the pair's
+distance, so a skipped pair could never lower the minimum, win the closest-pair sweep, or fall
+within the threshold: the answer is the one the full sweep gives. Two details keep
+it so. The bound carries a slack of `kEpsRelative` times the coordinates' magnitude, because
+an element distance is computed in doubles and could round onto the bound while its box gap
+sits just above it. And the sweep is seeded with the exact distance of the closest-box pair,
+which is only ever used as a bound: the result is still taken from the sweep, so its value
+and its tie-breaking do not depend on the seed. Pinned against an unpruned sweep by
+`test/cpp/test_geom_distance.cpp`.
+
 ---
 
 ## 9. Development workflow
@@ -465,7 +484,6 @@ surface; PROJ-backed `ST_3DTransform`. See the
 
 **Near-term.**
 
-- Performance tuning — bounding-box pre-filters for the distance family.
 - Stored SRID in the payload header, enabling a one-argument `ST_3DTransform` and cross-CRS
   mismatch detection ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
 - Bundling PROJ's `proj.db` into the distributable extension.
