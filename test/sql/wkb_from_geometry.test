@@ -84,3 +84,47 @@ SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube())),
        ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 56.0	ST_Polygon
+
+# The geometry_properties overloads take GEOMETRY too, with the sidecar as a
+# CityParquet STRUCT or as JSON text, so a GEOMETRY-annotated column pairs with its
+# geometry_properties_lod* column without an ST_AsWKB bridge. As above, no solid
+# can be a GEOMETRY in DuckDB v1.5.4, so the reachable cases are the error and
+# null contracts; the bytes reach the same kernel as the BLOB path.
+statement error
+SELECT ST_3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), {'type': 'Solid', 'shells': [[1]]});
+----
+Unsupported WKB geometry type for SOLID_3D import: type code 1003
+
+statement error
+SELECT ST_3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), '{"type": "Solid", "shells": [[1]]}');
+----
+Unsupported WKB geometry type for SOLID_3D import: type code 1003
+
+query II
+SELECT ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), {'type': 'Solid', 'shells': [[1]]}) IS NULL,
+       ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), '{"type": "Solid", "shells": [[1]]}') IS NULL;
+----
+true	true
+
+# A NULL GEOMETRY gives NULL whatever the sidecar; a NULL sidecar is "no metadata".
+query III
+SELECT ST_3DFromWKB(NULL::GEOMETRY, {'type': 'Solid', 'shells': [[6, 6]]}) IS NULL,
+       ST_3DFromWKB(NULL::GEOMETRY, '{}') IS NULL,
+       ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), NULL) IS NULL;
+----
+true	true	true
+
+# The STRUCT bind runs for GEOMETRY as for BLOB: a struct without `shells` is
+# not a geometry_properties struct.
+statement error
+SELECT ST_3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), {'type': 'Solid'});
+----
+shells
+
+# An untyped NULL geometry with a sidecar still binds (BLOB and GEOMETRY are
+# equally good casts for it).
+query II
+SELECT ST_3DFromWKB(NULL, '{}') IS NULL,
+       ST_3DTryFromWKB(NULL, {'type': 'Solid', 'shells': [[6, 6]]}) IS NULL;
+----
+true	true

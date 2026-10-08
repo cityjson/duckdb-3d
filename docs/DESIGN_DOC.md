@@ -245,8 +245,9 @@ CityJSON ──cityjson──▶ (geometry BLOB, geometry_properties) ──thre
 
 The contract is exactly two things:
 
-1. The producer supplies **WKB** as a `BLOB` — `PolyhedralSurface Z`, or `GeometryCollection Z`
-   of those.
+1. The producer supplies **WKB** — `PolyhedralSurface Z`, or `GeometryCollection Z` of those —
+   as a `BLOB`, or as DuckDB's `GEOMETRY` when a Parquet-annotated column arrives that way
+   (converted back to WKB at the boundary).
 2. The producer *may* supply a **`geometry_properties` sidecar**, as JSON text or as a
    CityParquet `geometry_properties_lod*` `STRUCT`. Both forms are accepted directly.
 

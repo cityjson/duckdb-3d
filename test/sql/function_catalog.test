@@ -36,7 +36,6 @@ WHERE function_name = 'st_3dfromwkb' ORDER BY len(parameters), parameter_types::
 ----
 [wkb]
 [wkb, geometry_properties]
-[wkb, geometry_properties]
 
 query T
 SELECT DISTINCT parameters FROM three_d_functions WHERE function_name = 'st_3dtransform';
