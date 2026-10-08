@@ -115,14 +115,15 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata) {
 	// No `shells` metadata: one solid / one shell per WKB member (a plain Solid,
 	// or a MultiSolid/CompositeSolid whose solids have no inner shells).
-	if (metadata.shells.empty()) {
+	if (!metadata.shells.has_value()) {
 		return BuildSolidModel(surfaces);
 	}
 
 	// With `shells`, one per-shell-count array must map to one WKB member (solid).
 	// A Solid gives a single member; a MultiSolid/CompositeSolid one per solid.
-	if (metadata.shells.size() != surfaces.size()) {
-		throw std::runtime_error("geometry_properties: shells solid count (" + std::to_string(metadata.shells.size()) +
+	const auto &all_shells = *metadata.shells;
+	if (all_shells.size() != surfaces.size()) {
+		throw std::runtime_error("geometry_properties: shells solid count (" + std::to_string(all_shells.size()) +
 		                         ") does not match WKB member count (" + std::to_string(surfaces.size()) + ")");
 	}
 
@@ -150,7 +151,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	// matching per-shell face-count array (spec §8 `shells`).
 	for (size_t solid_idx = 0; solid_idx < surfaces.size(); solid_idx++) {
 		const auto &surface = surfaces[solid_idx];
-		const auto &shell_counts = metadata.shells[solid_idx];
+		const auto &shell_counts = all_shells[solid_idx];
 
 		// Accumulate in 64-bit so a crafted count near UINT32_MAX cannot wrap the
 		// sum back to a value that spuriously matches the WKB face count.

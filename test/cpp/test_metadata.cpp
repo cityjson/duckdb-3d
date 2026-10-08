@@ -95,16 +95,16 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 TEST_CASE("ParseGeometryProperties: Solid with one shell", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[12]]})");
 	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1);    // one solid
-	REQUIRE(meta.shells[0].size() == 1); // one shell
-	REQUIRE(meta.shells[0][0] == 12);
+	REQUIRE(meta.shells->size() == 1);      // one solid
+	REQUIRE((*meta.shells)[0].size() == 1); // one shell
+	REQUIRE((*meta.shells)[0][0] == 12);
 }
 
 TEST_CASE("ParseGeometryProperties: Solid with an interior shell", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[4, 4]]})");
 	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1); // one solid
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
+	REQUIRE(meta.shells->size() == 1); // one solid
+	REQUIRE((*meta.shells)[0] == std::vector<uint32_t>({4, 4}));
 }
 
 TEST_CASE("ParseGeometryProperties: flat shells are not the spec shape and raise", "[metadata]") {
@@ -117,21 +117,45 @@ TEST_CASE("ParseGeometryProperties: flat shells are not the spec shape and raise
 TEST_CASE("ParseGeometryProperties: CompositeSolid with nested shells", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "CompositeSolid", "shells": [[12], [8, 4]]})");
 	REQUIRE(meta.type == "CompositeSolid");
-	REQUIRE(meta.shells.size() == 2); // two solids
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({12}));
-	REQUIRE(meta.shells[1] == std::vector<uint32_t>({8, 4}));
+	REQUIRE(meta.shells->size() == 2); // two solids
+	REQUIRE((*meta.shells)[0] == std::vector<uint32_t>({12}));
+	REQUIRE((*meta.shells)[1] == std::vector<uint32_t>({8, 4}));
 }
 
 TEST_CASE("ParseGeometryProperties: string type without shells (non-solid)", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "MultiSurface", "surfaces": [], "face_semantics": []})");
 	REQUIRE(meta.type == "MultiSurface");
-	REQUIRE(meta.shells.empty());
+	REQUIRE_FALSE(meta.shells.has_value());
+}
+
+TEST_CASE("ParseGeometryProperties: a null shells value is absent", "[metadata]") {
+	// The spec's `shells` is null for the non-solid types.
+	auto meta = ParseGeometryProperties(R"({"type": "MultiSurface", "shells": null})");
+	REQUIRE_FALSE(meta.shells.has_value());
+}
+
+TEST_CASE("ParseGeometryProperties: an empty shells array is present, not absent", "[metadata]") {
+	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": []})");
+	REQUIRE(meta.shells.has_value());
+	REQUIRE(meta.shells->empty());
+}
+
+TEST_CASE("BuildSolidModel with metadata: present but empty shells do not mean no metadata", "[metadata]") {
+	// A non-null `shells` must have one inner list per solid. [] for a
+	// one-member PolyhedralSurface is malformed, not "no shells": building one
+	// default shell from it would invent structure the sidecar contradicts.
+	auto wkb = MakeTwoShellWKB();
+	auto surfaces = ParseWKB(wkb.data(), wkb.size());
+	GeometryMetadata meta;
+	meta.type = "Solid";
+	meta.shells = ShellCounts {};
+	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("solid count (0)"));
 }
 
 TEST_CASE("ParseGeometryProperties: empty JSON", "[metadata]") {
 	auto meta = ParseGeometryProperties("");
 	REQUIRE(meta.type.empty());
-	REQUIRE(meta.shells.empty());
+	REQUIRE_FALSE(meta.shells.has_value());
 }
 
 TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
@@ -151,7 +175,7 @@ TEST_CASE("BuildSolidModel with metadata: a zero shell count is a dropped shell"
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{0, 8}};
+	meta.shells = ShellCounts {{0, 8}};
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 1);
 	REQUIRE(model.ShellCount() == 1);
@@ -166,7 +190,7 @@ TEST_CASE("BuildSolidModel with metadata: split into 2 shells", "[metadata]") {
 
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{4, 4}};
+	meta.shells = ShellCounts {{4, 4}};
 
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 1);
@@ -191,7 +215,7 @@ TEST_CASE("BuildSolidModel with metadata: conflict raises", "[metadata]") {
 
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{3, 3}}; // sum=6 but WKB has 8 faces → conflict
+	meta.shells = ShellCounts {{3, 3}}; // sum=6 but WKB has 8 faces → conflict
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("face count mismatch"));
 }
@@ -213,7 +237,7 @@ TEST_CASE("BuildSolidModel with metadata: multi-solid with nested shells (G2)", 
 
 	GeometryMetadata meta;
 	meta.type = "MultiSolid";
-	meta.shells = {{4, 4}, {4, 4}};
+	meta.shells = ShellCounts {{4, 4}, {4, 4}};
 
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 2);
@@ -235,7 +259,7 @@ TEST_CASE("BuildSolidModel with metadata: shells member count mismatch raises", 
 
 	GeometryMetadata meta;
 	meta.type = "MultiSolid";
-	meta.shells = {{4, 4}}; // only one solid's shells for two WKB members
+	meta.shells = ShellCounts {{4, 4}}; // only one solid's shells for two WKB members
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("solid count"));
 }

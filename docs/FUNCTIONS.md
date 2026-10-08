@@ -238,7 +238,8 @@ read with the `json` extension loaded) or `VARCHAR`, and `face_semantics` and an
 fields are ignored. `shells` is read as the CityParquet `LIST<LIST<INT>>`: one inner list per solid, each the
 per-shell face counts with the exterior shell first — `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`.
 A flat `[12]` is not that shape and raises (`NULL` under `TRY`), as does a face-count total
-that disagrees with the WKB.
+that disagrees with the WKB, or a present but empty `[]`, which describes none of the WKB's
+members. Only a `NULL` or missing `shells` means "no shell metadata".
 
 Without the sidecar a `PolyhedralSurface Z` imports as one solid with **one** shell.
 

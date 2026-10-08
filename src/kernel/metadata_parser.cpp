@@ -311,7 +311,11 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 					parser.SkipValue();
 				}
 			} else if (key == "shells") {
-				meta.shells = parser.ParseShells();
+				if (parser.PeekChar() == 'n') {
+					parser.SkipValue(); // null: the non-solid types carry no shells
+				} else {
+					meta.shells = parser.ParseShells();
+				}
 			} else {
 				// surfaces, face_semantics and any producer extras are irrelevant
 				// to shell grouping.

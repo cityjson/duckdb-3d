@@ -142,3 +142,17 @@ query I
 SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') IS NULL;
 ----
 true
+
+# A present but empty `shells` is not "no shells": a non-null value must have one
+# inner list per solid, and [] describes none of the WKB's one member. Only a null
+# or missing `shells` falls back to one shell per member.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": []}');
+----
+shells solid count (0)
+
+query II
+SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": []}') IS NULL,
+       ST_3DNumShells(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": null}'));
+----
+true	1

@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.15)
 # Standalone C++ unit test executable for the three_d kernel
 project(three_d_unit_tests)
 
+# Same language level as the extension build (CMakeLists.txt).
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # Root of the repository
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
