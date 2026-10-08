@@ -224,13 +224,18 @@ CityParquet `geometry_properties_lod*` `STRUCT` read straight from Parquet, with
 `to_json(...)` round-trip:
 
 ```sql
--- JSON text sidecar (cityjson extension)
+-- JSON text sidecar
 SELECT ST_3DVolume(ST_3DFromWKB(geometry, geometry_properties)) FROM feats WHERE geometry IS NOT NULL;
 
 -- native STRUCT (CityParquet file)
 SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
 FROM read_parquet('building.parquet') WHERE geometry_lod2_2 IS NOT NULL;
 ```
+
+`shells` is read as the CityParquet `LIST<LIST<INT>>`: one inner list per solid, each the
+per-shell face counts with the exterior shell first — `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`.
+A flat `[12]` is not that shape and raises (`NULL` under `TRY`), as does a face-count total
+that disagrees with the WKB.
 
 Without the sidecar a `PolyhedralSurface Z` imports as one solid with **one** shell.
 

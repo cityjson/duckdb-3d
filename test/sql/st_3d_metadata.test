@@ -26,7 +26,7 @@ true
 
 # Test: 2-arg ST_3DTryFromWKB with conflicting metadata returns NULL
 query I
-SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [3, 3]}') IS NULL;
+SELECT ST_3DTryFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [[3, 3]]}') IS NULL;
 ----
 true
 
@@ -38,7 +38,7 @@ true
 
 # Test: 2-arg ST_3DFromWKB with conflicting metadata raises
 statement error
-SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [3, 3]}');
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(), '{"type": "Solid", "shells": [[3, 3]]}');
 ----
 face count mismatch
 
@@ -79,7 +79,7 @@ SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(),
 query I
 SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(),
     {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]}))
-    = ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}'));
+    = ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'));
 ----
 true
 
@@ -130,3 +130,15 @@ SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra(),
     {'type': 'Solid', 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[3, NULL]]});
 ----
 null
+
+# `shells` is LIST<LIST<INT>>, one inner list per solid. A flat array is not the
+# format's shape: the strict constructor raises, the TRY variant returns NULL.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}');
+----
+shells must be an array of per-solid arrays
+
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [6, 6]}') IS NULL;
+----
+true

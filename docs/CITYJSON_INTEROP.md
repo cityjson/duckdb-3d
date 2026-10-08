@@ -153,12 +153,12 @@ Expected — the cavity is recovered from `shells` and subtracted (64 − 8 = 56
 └────────┴────────┴────────┘
 ```
 
-Note the nesting: the STRUCT sidecar types `shells` as `List<List<Int32>>`
-unconditionally, so a plain `Solid` arrives as `[[6, 6]]` rather than the flat
-`[6, 6]` a JSON sidecar would carry. `ST_3DFromWKB` accepts both — pinned by
-`test/sql/st_3d_hollow_solid.test` and `test/cpp/test_metadata.cpp` — so reading
-a CityParquet `geometry_properties_lod*` STRUCT, or the same STRUCT rendered to
-text with `to_json(...)`, needs no translation.
+Note the nesting: `shells` is `LIST<LIST<INT>>`, one inner list per solid, so a
+plain `Solid` is `[[6, 6]]` in the STRUCT and in JSON text alike. A flat `[6, 6]`
+is not the CityParquet shape and is rejected — pinned by
+`test/sql/st_3d_metadata.test` and `test/cpp/test_metadata.cpp`. Reading a
+CityParquet `geometry_properties_lod*` STRUCT, or the same STRUCT rendered to text
+with `to_json(...)`, needs no translation.
 
 The winding matters: `duckdb-3d` enforces that an interior shell is wound
 opposite the exterior (CityGML §9.3). A cavity wound the *same* way as the
@@ -271,10 +271,10 @@ once.
   `container-overflow` check while opening remote files. If the stack trace
   points at DuckDB settings during `read_cityjsonseq('https://...')`, rerun the
   debug shell with `ASAN_OPTIONS=detect_container_overflow=0`.
-- `duckdb-3d` reads the CityParquet **spec §8** `geometry_properties` form: a
-  string `"type"` and a `"shells"` key giving per-shell face counts. Both the
-  flat (`[12]`, `[6,6]`) and nested (`[[12]]`, `[[6],[4]]`) shapes are accepted,
-  so a JSON sidecar and a CityParquet STRUCT sidecar both work. `"type"` is
+- `duckdb-3d` reads the CityParquet `geometry_properties` form: a string
+  `"type"` and a `"shells"` key giving per-solid, per-shell face counts
+  (`[[12]]`, `[[6, 6]]`, `[[6], [4]]`). The flat `[12]` is not that shape and
+  raises. A JSON sidecar and a CityParquet STRUCT sidecar both work. `"type"` is
   informational and a non-string value is tolerated.
 - Filter `WHERE geometry_lod<X> IS NOT NULL` upstream — objects without the
   requested LoD have a NULL geometry and would propagate NULL through the

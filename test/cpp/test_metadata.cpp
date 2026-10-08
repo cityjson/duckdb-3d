@@ -87,34 +87,31 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 
 } // anonymous namespace
 
-// Spec §8 geometry_properties: `type` is a CityJSON string and `shells` carries
-// per-shell emitted-face counts — a flat array for a Solid, one array per solid
-// (nested) for MultiSolid/CompositeSolid.
+// CityParquet geometry_properties: `type` is the geometry type string and
+// `shells` is LIST<LIST<INT>> — one inner list per solid, each the per-shell face
+// counts, exterior first. A Solid has exactly one inner list ([[12]], [[12, 4]]);
+// the spec defines no flat form.
 
-TEST_CASE("ParseGeometryProperties: Solid with flat shells", "[metadata]") {
-	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [12]})");
+TEST_CASE("ParseGeometryProperties: Solid with one shell", "[metadata]") {
+	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[12]]})");
 	REQUIRE(meta.type == "Solid");
 	REQUIRE(meta.shells.size() == 1);    // one solid
 	REQUIRE(meta.shells[0].size() == 1); // one shell
 	REQUIRE(meta.shells[0][0] == 12);
 }
 
-TEST_CASE("ParseGeometryProperties: Solid with two shells (flat)", "[metadata]") {
-	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [4, 4]})");
-	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1);
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
-}
-
-TEST_CASE("ParseGeometryProperties: Solid with singly-nested shells (cityparquet-rs STRUCT shape)", "[metadata]") {
-	// cityparquet-rs's geometry_properties_lod* STRUCT always nests `shells` as
-	// List<List<Int32>> — even a single Solid serializes (e.g. via to_json() on
-	// the Arrow STRUCT) as [[4, 4]], not the flat [4, 4] duckdb-cityjson emits.
-	// Both forms must parse to the identical GeometryMetadata.
+TEST_CASE("ParseGeometryProperties: Solid with an interior shell", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[4, 4]]})");
 	REQUIRE(meta.type == "Solid");
 	REQUIRE(meta.shells.size() == 1); // one solid
 	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
+}
+
+TEST_CASE("ParseGeometryProperties: flat shells are not the spec shape and raise", "[metadata]") {
+	// [4, 4] is not LIST<LIST<INT>>. Reading it as one solid's shells would guess
+	// at a shape the format does not define, so it is rejected.
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [4, 4]})"), Catch::Contains("shells"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [12]})"), Catch::Contains("shells"));
 }
 
 TEST_CASE("ParseGeometryProperties: CompositeSolid with nested shells", "[metadata]") {
@@ -143,12 +140,12 @@ TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
 
 TEST_CASE("ParseGeometryProperties: a shell count above uint32 range raises", "[metadata]") {
 	// 2^32 exceeds a uint32 face count; reject rather than truncate-and-wrap.
-	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [4294967296]})"),
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [[4294967296]]})"),
 	                    Catch::Contains("out of range"));
 }
 
 TEST_CASE("BuildSolidModel with metadata: a zero shell count is a dropped shell", "[metadata]") {
-	// A `0` in `shells` (spec §8: a fully-dropped shell) creates no shell. Here
+	// A `0` in `shells` (a fully-dropped shell) creates no shell. Here
 	// [0, 8] on an 8-face surface yields a single 8-face shell.
 	auto wkb = MakeTwoShellWKB();
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());

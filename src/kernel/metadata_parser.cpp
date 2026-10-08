@@ -155,43 +155,26 @@ public:
 		}
 	}
 
-	//! Parse a spec §8 `shells` value: a flat array of per-shell face counts for a
-	//! Solid (wrapped as a single solid), or a nested array-of-arrays with one
-	//! per-shell array per solid for MultiSolid/CompositeSolid.
+	//! Parse a `shells` value: LIST<LIST<INT>>, one per-shell face-count array
+	//! per solid ([[12]], [[12, 4]], [[12], [8, 4]]). A flat array is not the
+	//! format's shape and is rejected rather than guessed at.
 	std::vector<std::vector<uint32_t>> ParseShells() {
 		Expect('[', "'['");
 		std::vector<std::vector<uint32_t>> result;
 		if (Consume(']')) {
 			return result; // empty
 		}
-		if (PeekChar() == '[') {
-			// Nested form: one per-shell array per solid.
-			while (true) {
-				result.push_back(ParseUIntArray());
-				if (Consume(']')) {
-					return result;
-				}
-				Expect(',', "','");
-			}
-		}
-		// Flat form: a single solid's per-shell counts (outer '[' already consumed).
-		std::vector<uint32_t> flat;
 		while (true) {
-			int64_t value = ParseInteger();
-			if (value < 0) {
-				throw std::runtime_error("geometry_properties JSON: expected non-negative integer");
+			if (PeekChar() != '[') {
+				throw std::runtime_error("geometry_properties JSON: shells must be an array of per-solid arrays "
+				                         "of shell face counts, e.g. [[12]]");
 			}
-			if (value > std::numeric_limits<uint32_t>::max()) {
-				throw std::runtime_error("geometry_properties JSON: shell face count out of range");
-			}
-			flat.push_back(static_cast<uint32_t>(value));
+			result.push_back(ParseUIntArray());
 			if (Consume(']')) {
-				break;
+				return result;
 			}
 			Expect(',', "','");
 		}
-		result.push_back(std::move(flat));
-		return result;
 	}
 
 	void SkipValue() {
@@ -319,10 +302,9 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 			parser.Expect(':', "':'");
 
 			if (key == "type") {
-				// Spec §8: `type` is the CityJSON geometry type string. It is now
-				// purely informational (shell grouping is driven entirely by
-				// `shells`), so a non-string `type` from a pre-spec producer is
-				// tolerated by skipping it rather than failing the whole import.
+				// `type` is the geometry type string. It is informational (shell
+				// grouping is driven entirely by `shells`), so a non-string `type`
+				// is skipped rather than failing the whole import.
 				if (parser.PeekChar() == '"') {
 					meta.type = parser.ParseString();
 				} else {
@@ -331,8 +313,8 @@ GeometryMetadata ParseGeometryProperties(const std::string &json_text) {
 			} else if (key == "shells") {
 				meta.shells = parser.ParseShells();
 			} else {
-				// surfaces, face_semantics, lod, and any producer extras (spec §8
-				// permits additional keys) are irrelevant to shell grouping.
+				// surfaces, face_semantics and any producer extras are irrelevant
+				// to shell grouping.
 				parser.SkipValue();
 			}
 
