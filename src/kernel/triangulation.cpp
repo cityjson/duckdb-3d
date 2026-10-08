@@ -20,6 +20,20 @@ namespace {
 
 using Point2D = std::array<double, 2>;
 
+//! Buffers TriangulateFace needs for every face, kept across the faces of one
+//! model so a solid's triangulation allocates per solid rather than per face.
+//! Nothing in here carries meaning from one face to the next.
+struct TriangulationScratch {
+	std::vector<std::vector<Point2D>> polygon; //!< the face's rings, in its plane
+	std::vector<uint32_t> flat_to_vertex;      //!< earcut's flattened index -> model vertex
+	std::vector<uint32_t> ring_offsets;        //!< each ring's start in the flattened index space
+	std::vector<Point2D> flat;                 //!< the rings' points, flattened
+	std::vector<bool> used;                    //!< RestoreDroppedVertices: vertex kept by earcut
+	std::vector<uint32_t> run;                 //!< RestoreDroppedVertices: a run of dropped vertices
+	std::vector<uint32_t> chain;               //!< RestoreDroppedVertices: the fan replacing a triangle
+	mapbox::detail::Earcut<uint32_t> earcut;
+};
+
 //! Unnormalised face area vector: the sum of the face's ring Newell vectors.
 Vertex3D FaceAreaVector(const SolidModel &model, uint32_t face_idx) {
 	Vertex3D n = {0, 0, 0};
@@ -105,9 +119,11 @@ double SignedArea2(const Point2D &a, const Point2D &b, const Point2D &c) {
 //! rings' start positions in earcut's flattened index space, plus the end.
 //! Returns false when a run's boundary edge is not in the triangulation, which
 //! means the triangles do not follow the ring and cannot be repaired here.
-bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<uint32_t> &ring_offsets) {
+bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<uint32_t> &ring_offsets,
+                            TriangulationScratch &scratch) {
 	uint32_t total = ring_offsets.back();
-	std::vector<bool> used(total, false);
+	auto &used = scratch.used;
+	used.assign(total, false);
 	for (auto i : indices) {
 		used[i] = true;
 	}
@@ -127,7 +143,8 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 		// Walk the ring once from a kept vertex, collecting each run of dropped
 		// vertices between two kept ones.
 		uint32_t p = start + first_kept;
-		std::vector<uint32_t> run;
+		auto &run = scratch.run;
+		run.clear();
 		for (uint32_t step = 1; step <= n; step++) {
 			uint32_t cur = start + (first_kept + step) % n;
 			if (!used[cur]) {
@@ -162,7 +179,8 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 				uint32_t b = indices[base + (tri - base + 1) % 3];
 				// Triangle (a, b, c) keeps its winding: replace it by the fan
 				// a -> run... -> b, each closed by c.
-				std::vector<uint32_t> chain;
+				auto &chain = scratch.chain;
+				chain.clear();
 				chain.push_back(a);
 				if (forward) {
 					chain.insert(chain.end(), run.begin(), run.end());
@@ -195,7 +213,8 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 //! tile the face: a ring that self-intersects or a hole that leaves the exterior
 //! has no triangulation whose area matches the polygon's, and handing back a
 //! partial one would silently corrupt every measurement that sums triangles.
-bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uint32_t> &out) {
+bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uint32_t> &out,
+                     TriangulationScratch &scratch) {
 	uint32_t ring_start = model.face_ring_offsets[face_idx];
 	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
 	if (ring_start == ring_end) {
@@ -234,10 +253,12 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	// one power higher). Shifting is exact for areas, which are
 	// translation-invariant, and keeps the products at face scale.
 	const auto &origin = model.vertices[model.ring_vertex_indices[model.ring_vertex_offsets[ring_start]]];
-	std::vector<std::vector<Point2D>> polygon;
-	std::vector<uint32_t> flat_to_vertex; // earcut's flattened index -> model vertex index
-	std::vector<uint32_t> ring_offsets;   // each ring's start in the flattened index space
-	polygon.reserve(ring_end - ring_start);
+	auto &polygon = scratch.polygon;
+	auto &flat_to_vertex = scratch.flat_to_vertex;
+	auto &ring_offsets = scratch.ring_offsets;
+	polygon.resize(ring_end - ring_start);
+	flat_to_vertex.clear();
+	ring_offsets.clear();
 	double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
 	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
 		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
@@ -246,8 +267,8 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 			return false;
 		}
 		ring_offsets.push_back(static_cast<uint32_t>(flat_to_vertex.size()));
-		std::vector<Point2D> ring;
-		ring.reserve(vi_end - vi_start);
+		auto &ring = polygon[ring_idx - ring_start];
+		ring.clear();
 		for (uint32_t vi = vi_start; vi < vi_end; vi++) {
 			uint32_t vertex = model.ring_vertex_indices[vi];
 			auto p = ToPlane(model.vertices[vertex], origin, frame);
@@ -261,7 +282,6 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 			ring.push_back(p);
 			flat_to_vertex.push_back(vertex);
 		}
-		polygon.push_back(std::move(ring));
 	}
 	ring_offsets.push_back(static_cast<uint32_t>(flat_to_vertex.size()));
 
@@ -282,18 +302,18 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	// earcut's fallback splits nest, and the vendored copy caps the nesting so a
 	// self-overlapping ring cannot exhaust the stack (third_party/README.md).
 	// Hitting the cap leaves the indices unusable: reject the face.
-	mapbox::detail::Earcut<uint32_t> earcut;
+	auto &earcut = scratch.earcut;
 	earcut(polygon);
 	if (earcut.splitDepthExceeded) {
 		return false;
 	}
-	auto indices = std::move(earcut.indices);
+	auto &indices = earcut.indices;
 
 	// Accept the result only if it tiles the face: every triangle faces one way,
 	// and together they cover exactly the expected area. Rounding is relative to
 	// the face's 2D extent, the scale of the products the areas are built from.
-	std::vector<Point2D> flat;
-	flat.reserve(flat_to_vertex.size());
+	auto &flat = scratch.flat;
+	flat.clear();
 	for (const auto &ring : polygon) {
 		flat.insert(flat.end(), ring.begin(), ring.end());
 	}
@@ -308,7 +328,7 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	    std::abs(abs2 - std::abs(signed2)) > tolerance2) {
 		return false;
 	}
-	if (!RestoreDroppedVertices(indices, ring_offsets)) {
+	if (!RestoreDroppedVertices(indices, ring_offsets, scratch)) {
 		return false;
 	}
 
@@ -330,11 +350,12 @@ void TriangulateSolidModel(SolidModel &model) {
 	model.face_triangle_offsets.resize(face_count + 1);
 	model.triangle_vertex_indices.clear();
 
+	TriangulationScratch scratch;
 	for (uint32_t f = 0; f < face_count; f++) {
 		model.face_triangle_offsets[f] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
 		// A face that cannot be tiled keeps an empty triangle range; validation
 		// counts it degenerate (DESIGN_DOC §8.1), which gates volume and area.
-		TriangulateFace(model, f, model.triangle_vertex_indices);
+		TriangulateFace(model, f, model.triangle_vertex_indices, scratch);
 	}
 	model.face_triangle_offsets[face_count] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
 }
