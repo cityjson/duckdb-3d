@@ -1,0 +1,113 @@
+# name: test/sql/cityparquet_round_trip.test
+# description: CityParquet packages from both writers feed back into SOLID_3D byte for byte
+# group: [sql]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The stored CityParquet encoding — per-LoD WKB columns plus the
+# geometry_properties STRUCT sidecar — must reproduce exactly the solids the
+# streamed CityJSONSeq yields. Two writers are checked against that baseline,
+# over the frozen nine-building 3DBAG slice (test/data/3dbag.city.jsonl):
+#
+#   * the cityjson extension: the package is written here, into __TEST_DIR__;
+#   * cityparquet-rs: test/data/3dbag_rs is the package
+#     `cityparquet convert -o <dir> test/data/3dbag.city.jsonl` writes.
+#
+# For every BuildingPart and every solid LoD (1.2, 1.3, 2.2) the imported
+# SOLID_3D must export the same WKB and carry the same validation report as the
+# streamed one, and the LoD0 footprint (a GeoParquet GEOMETRY column) must keep
+# its area. Rows are Hilbert-ordered by both writers, so everything joins on id.
+#
+# Requires the `cityjson` extension (a local duckdb-cityjson build); see
+# docs/CITYJSON_INTEROP.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+require cityjson
+
+require three_d
+
+require parquet
+
+statement ok
+CREATE TABLE streamed AS
+SELECT id,
+       ST_3DFromWKB(geometry_lod1_2, geometry_properties_lod1_2) AS s12,
+       ST_3DFromWKB(geometry_lod1_3, geometry_properties_lod1_3) AS s13,
+       ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s22,
+       geometry_lod0_0 AS lod0
+FROM read_cityjsonseq('test/data/3dbag.city.jsonl');
+
+# Write the package with the cityjson extension. Each pragma is its own
+# statement: DuckDB expands every pragma of a submitted script before running any.
+statement ok
+CREATE SCHEMA pkg;
+
+statement ok
+PRAGMA cityparquet_init('pkg');
+
+statement ok
+PRAGMA insert_cityjsonseq('pkg', 'test/data/3dbag.city.jsonl');
+
+query II
+SELECT file, rows FROM cityparquet_write('pkg', '__TEST_DIR__/cityparquet_round_trip') ORDER BY file;
+----
+building.parquet	18
+metadata.json	0
+
+statement ok
+CREATE TABLE stored AS
+SELECT writer, id,
+       ST_3DFromWKB(geometry_lod1_2, geometry_properties_lod1_2) AS s12,
+       ST_3DFromWKB(geometry_lod1_3, geometry_properties_lod1_3) AS s13,
+       ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s22,
+       geometry_lod0_0 AS lod0
+FROM (SELECT 'cityjson' AS writer, * FROM read_parquet('__TEST_DIR__/cityparquet_round_trip/building.parquet')
+      UNION ALL BY NAME
+      SELECT 'cityparquet-rs' AS writer, * FROM read_parquet('test/data/3dbag_rs/building.parquet'));
+
+# Every feature arrives, from both writers.
+query II
+SELECT writer, count(*) FROM stored GROUP BY writer ORDER BY writer;
+----
+cityjson	18
+cityparquet-rs	18
+
+# Every solid of every LoD exports the same WKB as the streamed one, and carries
+# the same validation report. Counts per LoD: nine BuildingParts carry each.
+query IIIIIII
+SELECT t.writer,
+       count(t.s12) FILTER (WHERE ST_3DAsWKB(t.s12) = ST_3DAsWKB(s.s12)
+                             AND ST_3DValidationReport(t.s12) = ST_3DValidationReport(s.s12)),
+       count(t.s13) FILTER (WHERE ST_3DAsWKB(t.s13) = ST_3DAsWKB(s.s13)
+                             AND ST_3DValidationReport(t.s13) = ST_3DValidationReport(s.s13)),
+       count(t.s22) FILTER (WHERE ST_3DAsWKB(t.s22) = ST_3DAsWKB(s.s22)
+                             AND ST_3DValidationReport(t.s22) = ST_3DValidationReport(s.s22)),
+       count(s.s22),
+       count(*) FILTER (WHERE (t.s22 IS NULL) <> (s.s22 IS NULL)),
+       count(*)
+FROM stored t JOIN streamed s USING (id)
+GROUP BY t.writer ORDER BY t.writer;
+----
+cityjson	9	9	9	9	0	18
+cityparquet-rs	9	9	9	9	0	18
+
+# The stored sidecar is what keeps the shell partition: the STRUCT and its JSON
+# rendering import identically.
+query II
+SELECT count(*),
+       count(*) FILTER (WHERE ST_3DAsWKB(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
+                            = ST_3DAsWKB(ST_3DFromWKB(geometry_lod2_2, to_json(geometry_properties_lod2_2)::VARCHAR)))
+FROM read_parquet('test/data/3dbag_rs/building.parquet') WHERE geometry_lod2_2 IS NOT NULL;
+----
+9	9
+
+# LoD0 is the GeoParquet footprint: a GEOMETRY column, taken as it comes, with
+# the same footprint area as the streamed WKB.
+query II
+SELECT t.writer,
+       max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(t.lod0)) - ST_3DFootprintArea(ST_Geom3DFromWKB(s.lod0)))) < 1e-9
+FROM stored t JOIN streamed s USING (id)
+WHERE s.lod0 IS NOT NULL
+GROUP BY t.writer ORDER BY t.writer;
+----
+cityjson	true
+cityparquet-rs	true
