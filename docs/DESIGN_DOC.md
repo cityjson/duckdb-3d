@@ -424,12 +424,12 @@ pair within the threshold.
 Element pairs whose bounding boxes are farther apart than the bound that matters — the best
 distance so far, or the threshold — are skipped. The box gap is a lower bound on the pair's
 distance, so a skipped pair could never lower the minimum, win the closest-pair sweep, or fall
-within the threshold: the answer is the one the full sweep gives. Two details keep
-it so. The bound carries a slack of `kEpsRelative` times the coordinates' magnitude, because
-an element distance is computed in doubles and could round onto the bound while its box gap
-sits just above it. And the sweep is seeded with the exact distance of the closest-box pair,
-which is only ever used as a bound: the result is still taken from the sweep, so its value
-and its tie-breaking do not depend on the seed. Pinned against an unpruned sweep by
+within the threshold: the answer is the one the full sweep gives. Two details keep it so. The
+bound carries a slack of `kEpsRelative` times the coordinates' magnitude, because an element
+distance is computed in doubles and could round onto the bound while its box gap sits just
+above it. And the sweep is seeded with the exact distance of one nearby pair, found in linear
+time, which is only ever used as a bound: the result is still taken from the sweep, so its
+value and its tie-breaking do not depend on the seed. Pinned against an unpruned sweep by
 `test/cpp/test_geom_distance.cpp`.
 
 ---

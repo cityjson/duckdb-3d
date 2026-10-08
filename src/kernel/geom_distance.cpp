@@ -417,28 +417,49 @@ bool BeyondBound(const BBox3D &a, const BBox3D &b, double bound, double slack) {
 	return BoxGap2(a, b) > limit * limit;
 }
 
-//! An upper bound on the minimum element distance: the exact distance of the
-//! element pair whose boxes are closest. It is a real element distance, so the
-//! true minimum is at most this, and every pair that could attain the minimum
-//! has a box gap no larger than it.
-double SeedUpperBound(const std::vector<Element> &e1, const std::vector<Element> &e2) {
-	size_t bi = 0, bj = 0;
-	double best_gap2 = std::numeric_limits<double>::infinity();
-	for (size_t i = 0; i < e1.size(); i++) {
-		for (size_t j = 0; j < e2.size(); j++) {
-			double g = BoxGap2(e1[i].box, e2[j].box);
-			if (g < best_gap2) {
-				best_gap2 = g;
-				bi = i;
-				bj = j;
-			}
+//! The elements of `elements` whose boxes come within `bound` (plus slack) of
+//! `box`, in their original order: the only ones a pair under that bound can
+//! use, filtered once rather than re-tested for every element on the other side.
+std::vector<const Element *> WithinBound(const std::vector<Element> &elements, const BBox3D &box, double bound,
+                                         double slack) {
+	std::vector<const Element *> out;
+	for (const auto &e : elements) {
+		if (!BeyondBound(e.box, box, bound, slack)) {
+			out.push_back(&e);
 		}
 	}
+	return out;
+}
+
+//! An upper bound on the minimum element distance: the exact distance of one
+//! element pair, picked to be close. It is a real element distance, so the true
+//! minimum is at most this, and every pair that could attain the minimum has a
+//! box gap no larger than it. The pair is found in linear time by alternating:
+//! the element of `e1` whose box is closest to `g2`'s, then the element of `e2`
+//! closest to that one, then back once more.
+double SeedUpperBound(const std::vector<Element> &e1, const std::vector<Element> &e2, const BBox3D &g2_box) {
+	auto closest_to = [](const std::vector<Element> &elements, const BBox3D &box) {
+		size_t best = 0;
+		double best_gap2 = std::numeric_limits<double>::infinity();
+		for (size_t i = 0; i < elements.size(); i++) {
+			double g = BoxGap2(elements[i].box, box);
+			if (g < best_gap2) {
+				best_gap2 = g;
+				best = i;
+			}
+		}
+		return best;
+	};
+	size_t bi = closest_to(e1, g2_box);
+	size_t bj = closest_to(e2, e1[bi].box);
+	bi = closest_to(e1, e2[bj].box);
+	bj = closest_to(e2, e1[bi].box);
 	// A non-finite coordinate gives a NaN distance, which bounds nothing; the
 	// sweep then prunes nothing and treats that pair as the unpruned loop does.
 	double d = ElementDistance(e1[bi], e2[bj]);
 	return std::isnan(d) ? std::numeric_limits<double>::infinity() : d;
 }
+
 } // namespace
 
 double Geom3DMaxDistance(const GeomModel &g1, const GeomModel &g2) {
@@ -461,21 +482,22 @@ double Geom3DDistance(const GeomModel &g1, const GeomModel &g2) {
 	}
 	// The minimum over every element pair, skipping the pairs whose boxes are
 	// already farther apart than the best distance found: they cannot lower it.
-	// Seeding with the closest-box pair makes the bound tight from the start.
+	// Seeding with a close pair makes the bound tight from the start.
 	double slack = PruneSlack(g1, g2);
-	double best = SeedUpperBound(e1, e2);
+	double best = SeedUpperBound(e1, e2, g2.bbox);
 	if (best == 0.0) {
 		return 0.0;
 	}
+	auto candidates = WithinBound(e2, g1.bbox, best, slack);
 	for (const auto &a : e1) {
 		if (BeyondBound(a.box, g2.bbox, best, slack)) {
 			continue;
 		}
-		for (const auto &b : e2) {
-			if (BeyondBound(a.box, b.box, best, slack)) {
+		for (const auto *b : candidates) {
+			if (BeyondBound(a.box, b->box, best, slack)) {
 				continue;
 			}
-			best = std::min(best, ElementDistance(a, b));
+			best = std::min(best, ElementDistance(a, *b));
 			if (best == 0.0) {
 				return 0.0;
 			}
@@ -514,18 +536,19 @@ bool Geom3DWithin(const GeomModel &g1, const GeomModel &g2, double threshold) {
 	auto e1 = Decompose(g1);
 	auto e2 = Decompose(g2);
 	double slack = PruneSlack(g1, g2);
+	auto candidates = WithinBound(e2, g1.bbox, threshold, slack);
 	for (const auto &a : e1) {
 		if (BeyondBound(a.box, g2.bbox, threshold, slack)) {
 			continue;
 		}
-		for (const auto &b : e2) {
+		for (const auto *b : candidates) {
 			// A pair whose boxes are beyond the threshold cannot be within it.
-			if (BeyondBound(a.box, b.box, threshold, slack)) {
+			if (BeyondBound(a.box, b->box, threshold, slack)) {
 				continue;
 			}
 			// Stop at the first pair within the threshold — no need to find the
 			// exact minimum distance.
-			if (ElementDistance(a, b) <= threshold) {
+			if (ElementDistance(a, *b) <= threshold) {
 				return true;
 			}
 		}
@@ -543,18 +566,19 @@ ClosestPointPair Geom3DClosestPoints(const GeomModel &g1, const GeomModel &g2) {
 	// A pair whose boxes are farther apart than an upper bound on the minimum
 	// cannot be that pair, so it is skipped without changing which one wins.
 	double slack = PruneSlack(g1, g2);
-	double upper = SeedUpperBound(e1, e2);
+	double upper = SeedUpperBound(e1, e2, g2.bbox);
 	ClosestPointPair best = ElementClosestPair(e1[0], e2[0]);
 	double best_dist = DistPointPoint(best.p, best.q);
+	auto candidates = WithinBound(e2, g1.bbox, std::min(upper, best_dist), slack);
 	for (const auto &a : e1) {
 		if (BeyondBound(a.box, g2.bbox, std::min(upper, best_dist), slack)) {
 			continue;
 		}
-		for (const auto &b : e2) {
-			if (BeyondBound(a.box, b.box, std::min(upper, best_dist), slack)) {
+		for (const auto *b : candidates) {
+			if (BeyondBound(a.box, b->box, std::min(upper, best_dist), slack)) {
 				continue;
 			}
-			auto candidate = ElementClosestPair(a, b);
+			auto candidate = ElementClosestPair(a, *b);
 			double d = DistPointPoint(candidate.p, candidate.q);
 			if (d < best_dist) {
 				best = candidate;
