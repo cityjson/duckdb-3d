@@ -1,3 +1,10 @@
+// Modified for duckdb-3d (see third_party/README.md): splitEarcut's recursion is
+// bounded. Each split recurses into earcutLinked on both halves, and on a
+// self-overlapping ring the splits can nest once per vertex, so ring input that
+// arrives from SQL could otherwise exhaust the thread's stack and take the process
+// down. Past maxSplitDepth nested splits the triangulation stops and sets
+// splitDepthExceeded; the caller must treat the indices as unusable. Changes are
+// marked "duckdb-3d".
 #pragma once
 
 #include <algorithm>
@@ -27,6 +34,9 @@ class Earcut {
 public:
     std::vector<N> indices;
     std::size_t vertices = 0;
+    // duckdb-3d: bound on nested splitEarcut calls, and whether it was hit.
+    std::size_t maxSplitDepth = 32;
+    bool splitDepthExceeded = false;
 
     template <typename Polygon>
     void operator()(const Polygon& points);
@@ -88,6 +98,7 @@ private:
     void removeNode(Node* p);
 
     bool hashing;
+    std::size_t splitDepth = 0; // duckdb-3d
     double minX, maxX;
     double minY, maxY;
     double inv_size = 0;
@@ -139,6 +150,8 @@ void Earcut<N>::operator()(const Polygon& points) {
     // reset
     indices.clear();
     vertices = 0;
+    splitDepth = 0;             // duckdb-3d
+    splitDepthExceeded = false; // duckdb-3d
 
     if (points.empty()) return;
 
@@ -411,9 +424,17 @@ void Earcut<N>::splitEarcut(Node* start) {
                 a = filterPoints(a, a->next);
                 c = filterPoints(c, c->next);
 
+                // duckdb-3d: refuse to nest deeper than maxSplitDepth
+                if (splitDepth >= maxSplitDepth) {
+                    splitDepthExceeded = true;
+                    return;
+                }
+                ++splitDepth;
+
                 // run earcut on each half
                 earcutLinked(a);
                 earcutLinked(c);
+                --splitDepth; // duckdb-3d
                 return;
             }
             b = b->next;

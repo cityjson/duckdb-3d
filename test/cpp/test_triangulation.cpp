@@ -4,6 +4,9 @@
 #include "kernel/solid_model.hpp"
 #include "kernel/validation.hpp"
 #include "real_rings.hpp"
+#include <array>
+#include <cstdint>
+#include "mapbox/earcut.hpp"
 #include <cmath>
 #include <map>
 #include <tuple>
@@ -233,4 +236,58 @@ TEST_CASE("Triangulation: a face it cannot tile gets no triangles and is degener
 	ValidateSolidModel(m);
 	REQUIRE(m.validation.degenerate_face_count == 1);
 	REQUIRE_FALSE(m.validation.is_valid);
+}
+
+namespace {
+
+//! A self-overlapping ring: an 8000-step lattice random walk from a fixed-seed
+//! linear congruential generator, consecutive repeats dropped. Earcut finds no
+//! ear on such a ring and falls back to splitting it, and the splits nest:
+//! unbounded, this ring nests 51 deep (measured on earcut 2.2.4), past the
+//! 32-level bound, while a fixture face nests at most once. The ring is the size
+//! it is because the nesting grows with it — about 15 at 1000 steps, 35 at 4000
+//! — and 8000 steps clear the bound with margin while triangulating in well
+//! under a second.
+std::vector<Vertex3D> SelfOverlappingWalk() {
+	std::vector<Vertex3D> ring;
+	uint32_t state = 12345;
+	double x = 0, y = 0;
+	for (int i = 0; i < 8000; i++) {
+		state = state * 1664525u + 1013904223u;
+		x += static_cast<double>((state >> 16) % 3) - 1;
+		state = state * 1664525u + 1013904223u;
+		y += static_cast<double>((state >> 16) % 3) - 1;
+		if (!ring.empty() && ring.back().x == x && ring.back().y == y) {
+			continue;
+		}
+		ring.push_back({x, y, 0});
+	}
+	while (ring.size() > 1 && ring.front().x == ring.back().x && ring.front().y == ring.back().y) {
+		ring.pop_back();
+	}
+	return ring;
+}
+
+} // namespace
+
+TEST_CASE("Triangulation: earcut's split recursion is bounded", "[triangulation]") {
+	// Each split recurses on both halves, so on a self-overlapping ring the nesting
+	// tracks the ring's size; ring input arrives from SQL, so unbounded nesting
+	// could exhaust a worker thread's stack. The vendored earcut caps it.
+	auto ring = SelfOverlappingWalk();
+	std::vector<std::vector<std::array<double, 2>>> polygon(1);
+	for (const auto &v : ring) {
+		polygon[0].push_back({v.x, v.y});
+	}
+	mapbox::detail::Earcut<uint32_t> earcut;
+	earcut(polygon);
+	REQUIRE(earcut.splitDepthExceeded);
+}
+
+TEST_CASE("Triangulation: a face that hits earcut's split bound gets no triangles and is degenerate",
+          "[triangulation]") {
+	auto m = FaceWithRings({SelfOverlappingWalk()});
+	REQUIRE(m.TriangleCount() == 0);
+	ValidateSolidModel(m);
+	REQUIRE(m.validation.degenerate_face_count == 1);
 }

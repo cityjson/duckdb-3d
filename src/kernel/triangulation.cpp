@@ -244,7 +244,15 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 		expected2 -= std::abs(SignedArea2(polygon[h]));
 	}
 
-	auto indices = mapbox::earcut<uint32_t>(polygon);
+	// earcut's fallback splits nest, and the vendored copy caps the nesting so a
+	// self-overlapping ring cannot exhaust the stack (third_party/README.md).
+	// Hitting the cap leaves the indices unusable: reject the face.
+	mapbox::detail::Earcut<uint32_t> earcut;
+	earcut(polygon);
+	if (earcut.splitDepthExceeded) {
+		return false;
+	}
+	auto indices = std::move(earcut.indices);
 
 	// Accept the result only if it tiles the face: every triangle faces one way,
 	// and together they cover exactly the expected area. Rounding is relative to

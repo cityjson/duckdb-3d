@@ -95,7 +95,10 @@ so the triangles use every ring vertex.
 all wound one way, their areas summing to the exterior's area less the holes'. A ring that
 crosses itself, or a hole that leaves its exterior, has no such tiling; the face then keeps
 **no** triangles rather than a partial set, and validation counts it degenerate (§8.1), which
-`ST_3DVolume` and `ST_3DSurfaceArea` refuse. A partial triangulation would be worse than
+`ST_3DVolume` and `ST_3DSurfaceArea` refuse. The same holds when earcut's fallback — splitting
+a polygon it finds no ear on and recursing into both halves — would nest more than 32 deep:
+the vendored copy bounds that recursion, because a self-overlapping ring from SQL could
+otherwise nest once per vertex and exhaust a worker thread's stack. A partial triangulation would be worse than
 none: volume sums triangles while validation reads rings, so a silently incomplete face would
 give a wrong `ST_3DVolume` with every validity flag still green. Pinned by
 `test/cpp/test_triangulation.cpp`, on real 3DBAG and railway faces.
@@ -112,7 +115,8 @@ dependency. This keeps the extension small, portable, and cheap to build. Everyt
 would genuinely require a robust exact-arithmetic backend — 3D booleans, true 3D convex
 hulls, skeletons, medial axes — is deliberately **out of scope** rather than approximated.
 PROJ is the one external library, confined to CRS reprojection; face triangulation uses the
-header-only `mapbox/earcut.hpp`, vendored under `third_party/`.
+header-only `mapbox/earcut.hpp`, vendored under `third_party/` with its split recursion
+bounded.
 
 ### 2.5 Coexist with `spatial`, don't compete
 
