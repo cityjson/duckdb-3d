@@ -124,6 +124,11 @@ TEST_CASE("Payload round-trip for tetrahedron", "[payload]") {
 	REQUIRE(restored.validation.orientation_error_count == 0);
 }
 
+TEST_CASE("SerializedPayloadSize is the serialized size", "[payload]") {
+	auto model = MakeTetrahedron();
+	REQUIRE(SerializedPayloadSize(model) == SerializePayload(model).size());
+}
+
 TEST_CASE("Payload rejects invalid magic", "[payload]") {
 	SolidModel model = MakeTetrahedron();
 	auto bytes = SerializePayload(model);

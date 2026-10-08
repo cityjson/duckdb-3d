@@ -32,6 +32,9 @@ struct PayloadHeader {
 	double bbox_max_x, bbox_max_y, bbox_max_z;
 };
 
+//! The exact byte size SerializePayload produces for `model`.
+size_t SerializedPayloadSize(const SolidModel &model);
+
 //! Serialize a SolidModel into the SOLID_3D binary payload format.
 //! Returns the raw bytes of the payload.
 std::vector<uint8_t> SerializePayload(const SolidModel &model);

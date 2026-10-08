@@ -61,8 +61,19 @@ void ValidatePayloadModel(const SolidModel &model, uint32_t vertex_count, uint32
 
 } // anonymous namespace
 
+size_t SerializedPayloadSize(const SolidModel &model) {
+	constexpr size_t kHeader = 4 + 2 + 2 + 4 + 6 * sizeof(uint32_t) + 6 * sizeof(double);
+	constexpr size_t kTrailer = 5 * sizeof(uint32_t);
+	size_t offsets = (static_cast<size_t>(model.SolidCount()) + 1) + (static_cast<size_t>(model.ShellCount()) + 1) +
+	                 2 * (static_cast<size_t>(model.FaceCount()) + 1) + (static_cast<size_t>(model.RingCount()) + 1);
+	return kHeader + offsets * sizeof(uint32_t) + model.vertices.size() * 3 * sizeof(double) +
+	       model.ring_vertex_indices.size() * sizeof(uint32_t) +
+	       static_cast<size_t>(model.TriangleCount()) * 3 * sizeof(uint32_t) + kTrailer;
+}
+
 std::vector<uint8_t> SerializePayload(const SolidModel &model) {
 	ByteWriter writer;
+	writer.Reserve(SerializedPayloadSize(model));
 
 	// Header
 	writer.WriteBytes(PAYLOAD_MAGIC, 4);
@@ -100,11 +111,7 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model) {
 	writer.WriteU32Array(model.face_triangle_offsets.data(), face_count + 1);
 
 	// Data arrays: vertices
-	for (uint32_t i = 0; i < vertex_count; i++) {
-		writer.WriteF64(model.vertices[i].x);
-		writer.WriteF64(model.vertices[i].y);
-		writer.WriteF64(model.vertices[i].z);
-	}
+	writer.WriteVertices(model.vertices.data(), vertex_count);
 
 	// Data arrays: ring vertex indices
 	writer.WriteU32Array(model.ring_vertex_indices.data(), model.ring_vertex_indices.size());
@@ -252,11 +259,7 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 	// Data arrays: vertices (3 doubles each)
 	reader.RequireCount(vertex_count, 3 * sizeof(double), "vertex");
 	model.vertices.resize(vertex_count);
-	for (uint32_t i = 0; i < vertex_count; i++) {
-		model.vertices[i].x = reader.ReadF64();
-		model.vertices[i].y = reader.ReadF64();
-		model.vertices[i].z = reader.ReadF64();
-	}
+	reader.ReadVertices(model.vertices.data(), vertex_count);
 
 	// Ring vertex indices: compute total count from ring_vertex_offsets
 	uint32_t total_ring_indices = ring_count > 0 ? model.ring_vertex_offsets[ring_count] : 0;

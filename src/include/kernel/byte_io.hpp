@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kernel/core_types.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -9,43 +11,89 @@
 
 namespace duckdb_3d {
 
+//! True when the host stores multi-byte values least-significant byte first, so
+//! the little-endian wire format and host order coincide and whole arrays can be
+//! copied with one `memcpy`. Every Windows target is little-endian; elsewhere the
+//! compiler says. Any other host takes the byte-by-byte path.
+#if (defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) ||      \
+    defined(_WIN32)
+constexpr bool kLittleEndianHost = true;
+#else
+constexpr bool kLittleEndianHost = false;
+#endif
+
 //! Little-endian byte writer shared by the payload and WKB encoders.
 //!
 //! Every multi-byte value is emitted least-significant byte first, independent of
 //! the host's byte order. `WriteBytes` stays raw for opaque blobs such as magic
-//! strings; `WriteU32Array` writes each element through `WriteU32` so a host-order
-//! `memcpy` of the whole array can never leak in.
+//! strings. The array writers copy whole arrays with `memcpy` only on a
+//! little-endian host, where that is the wire format; elsewhere each element goes
+//! through the per-value writer, so host order can never leak in.
 class ByteWriter {
 public:
 	std::vector<uint8_t> buffer;
 
+	void Reserve(size_t total) {
+		buffer.reserve(total);
+	}
 	void WriteBytes(const void *src, size_t len) {
-		auto *bytes = static_cast<const uint8_t *>(src);
-		buffer.insert(buffer.end(), bytes, bytes + len);
+		if (len == 0) {
+			return;
+		}
+		size_t pos = buffer.size();
+		buffer.resize(pos + len);
+		std::memcpy(buffer.data() + pos, src, len);
 	}
 	void WriteByte(uint8_t v) {
 		buffer.push_back(v);
 	}
 	void WriteU16(uint16_t v) {
-		buffer.push_back(static_cast<uint8_t>(v & 0xFF));
-		buffer.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+		uint8_t b[2] = {static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF)};
+		WriteBytes(b, sizeof(b));
 	}
 	void WriteU32(uint32_t v) {
-		buffer.push_back(static_cast<uint8_t>(v & 0xFF));
-		buffer.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
-		buffer.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
-		buffer.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+		uint8_t b[4] = {static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF),
+		                static_cast<uint8_t>((v >> 16) & 0xFF), static_cast<uint8_t>((v >> 24) & 0xFF)};
+		WriteBytes(b, sizeof(b));
 	}
 	void WriteF64(double v) {
 		uint64_t bits;
 		std::memcpy(&bits, &v, sizeof(bits));
+		uint8_t b[8];
 		for (int i = 0; i < 8; i++) {
-			buffer.push_back(static_cast<uint8_t>((bits >> (8 * i)) & 0xFF));
+			b[i] = static_cast<uint8_t>((bits >> (8 * i)) & 0xFF);
 		}
+		WriteBytes(b, sizeof(b));
 	}
 	void WriteU32Array(const uint32_t *data, size_t count) {
+		if (kLittleEndianHost) {
+			WriteBytes(data, count * sizeof(uint32_t));
+			return;
+		}
 		for (size_t i = 0; i < count; i++) {
 			WriteU32(data[i]);
+		}
+	}
+	void WriteF64Array(const double *data, size_t count) {
+		if (kLittleEndianHost) {
+			WriteBytes(data, count * sizeof(double));
+			return;
+		}
+		for (size_t i = 0; i < count; i++) {
+			WriteF64(data[i]);
+		}
+	}
+	//! XYZ triples, x then y then z per vertex.
+	void WriteVertices(const Vertex3D *data, size_t count) {
+		static_assert(sizeof(Vertex3D) == 3 * sizeof(double), "Vertex3D must be three packed doubles");
+		if (kLittleEndianHost) {
+			WriteBytes(data, count * sizeof(Vertex3D));
+			return;
+		}
+		for (size_t i = 0; i < count; i++) {
+			WriteF64(data[i].x);
+			WriteF64(data[i].y);
+			WriteF64(data[i].z);
 		}
 	}
 	void WriteByteOrder() {
@@ -59,21 +107,23 @@ public:
 //! verbatim, and `RequireCount` appends the declared-count detail to it.
 class ByteReader {
 public:
-	ByteReader(const uint8_t *data, size_t size, std::string truncation_message)
-	    : data(data), size(size), truncation_message(std::move(truncation_message)) {
+	ByteReader(const uint8_t *data, size_t size, const char *truncation_message)
+	    : data(data), size(size), truncation_message(truncation_message) {
 	}
 
 	const uint8_t *data;
 	size_t size;
 	size_t pos = 0;
-	std::string truncation_message;
+	//! A string literal: readers are built per row, and owning a copy would
+	//! allocate on every one.
+	const char *truncation_message;
 
 	size_t Remaining() const {
 		return size - pos;
 	}
 
 	void Require(size_t n) const {
-		if (pos + n > size) {
+		if (n > size - pos) {
 			throw std::runtime_error(truncation_message);
 		}
 	}
@@ -85,7 +135,7 @@ public:
 	//! widened to 64-bit so `count * elem_size` cannot overflow.
 	void RequireCount(uint64_t count, uint64_t elem_size, const char *what) const {
 		if (count * elem_size > Remaining()) {
-			throw std::runtime_error(truncation_message + ": declared " + what +
+			throw std::runtime_error(std::string(truncation_message) + ": declared " + what +
 			                         " count exceeds remaining payload size");
 		}
 	}
@@ -107,25 +157,65 @@ public:
 	}
 	uint32_t ReadU32() {
 		Require(4);
-		uint32_t v = static_cast<uint32_t>(data[pos]) | (static_cast<uint32_t>(data[pos + 1]) << 8) |
-		             (static_cast<uint32_t>(data[pos + 2]) << 16) | (static_cast<uint32_t>(data[pos + 3]) << 24);
+		uint32_t v;
+		if (kLittleEndianHost) {
+			std::memcpy(&v, data + pos, sizeof(v));
+		} else {
+			v = static_cast<uint32_t>(data[pos]) | (static_cast<uint32_t>(data[pos + 1]) << 8) |
+			    (static_cast<uint32_t>(data[pos + 2]) << 16) | (static_cast<uint32_t>(data[pos + 3]) << 24);
+		}
 		pos += 4;
 		return v;
 	}
 	double ReadF64() {
 		Require(8);
-		uint64_t bits = 0;
-		for (int i = 0; i < 8; i++) {
-			bits |= static_cast<uint64_t>(data[pos + i]) << (8 * i);
+		double v;
+		if (kLittleEndianHost) {
+			std::memcpy(&v, data + pos, sizeof(v));
+		} else {
+			uint64_t bits = 0;
+			for (int i = 0; i < 8; i++) {
+				bits |= static_cast<uint64_t>(data[pos + i]) << (8 * i);
+			}
+			std::memcpy(&v, &bits, sizeof(v));
 		}
 		pos += 8;
-		double v;
-		std::memcpy(&v, &bits, sizeof(v));
 		return v;
 	}
+	//! Reads `count` values, or throws the truncation error before reading any
+	//! when they do not all fit.
 	void ReadU32Array(uint32_t *dst, size_t count) {
+		if (kLittleEndianHost) {
+			RequireElements(count, sizeof(uint32_t));
+			std::memcpy(dst, data + pos, count * sizeof(uint32_t));
+			pos += count * sizeof(uint32_t);
+			return;
+		}
 		for (size_t i = 0; i < count; i++) {
 			dst[i] = ReadU32();
+		}
+	}
+	//! XYZ triples, as ByteWriter::WriteVertices writes them.
+	void ReadVertices(Vertex3D *dst, size_t count) {
+		static_assert(sizeof(Vertex3D) == 3 * sizeof(double), "Vertex3D must be three packed doubles");
+		if (kLittleEndianHost) {
+			RequireElements(count, sizeof(Vertex3D));
+			std::memcpy(dst, data + pos, count * sizeof(Vertex3D));
+			pos += count * sizeof(Vertex3D);
+			return;
+		}
+		for (size_t i = 0; i < count; i++) {
+			dst[i].x = ReadF64();
+			dst[i].y = ReadF64();
+			dst[i].z = ReadF64();
+		}
+	}
+
+private:
+	//! `Require` for `count` elements of `elem_size` bytes, without overflowing.
+	void RequireElements(uint64_t count, uint64_t elem_size) const {
+		if (elem_size != 0 && count > Remaining() / elem_size) {
+			throw std::runtime_error(truncation_message);
 		}
 	}
 };
