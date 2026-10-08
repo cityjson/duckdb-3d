@@ -15,8 +15,7 @@ This complements the other docs rather than repeating them:
 | **TESTING.md** (this file) | Breadth: prove every function runs on real data, and record what surprised us |
 
 Read [Quirks and known gaps](#quirks-and-known-gaps) before trusting any cell —
-several outputs diverge from the naive expectation, and one of them was a real bug that
-this walkthrough found and fixed.
+several outputs diverge from the naive expectation.
 
 ---
 
@@ -553,10 +552,11 @@ FROM ex;
 └─────────┴─────────────┴─────────┴─────────┴─────────┴─────────────┘
 ```
 
-> **This cell used to fail.** `v_rotx` read `18.9956` — 2.7 % off — before the fix
-> described in [Quirks](#a-real-bug-this-walkthrough-found-volume-drift-under-rotation). The output above is post-fix.
+> **This cell is a conditioning test.** A volume sum taken about the absolute origin would
+> put `v_rotx` percent-level off here; see
+> [Quirks](#volume-under-rotation-is-a-conditioning-test).
 
-Across all 1098 valid parts, the relative volume drift under rotation is now zero to six
+Across all 1098 valid parts, the relative volume drift under rotation is zero to six
 decimal places — the query below rounds, so read it as "below 5e-7", not as "exactly zero":
 
 ```sql
@@ -995,7 +995,7 @@ ORDER BY b.id LIMIT 5;
 
 The **join is mandatory**: LoD0 lives on the `Building`, the solid LoDs on its
 `BuildingPart`s, so no single row carries both. Without the join this query returns zero
-rows — which is what happened on the first attempt and looked like a broken filter.
+rows, which looks like a broken filter.
 
 `lod0_area` tracks `lod22_fp` closely but not exactly (LoD0 is an independent
 generalisation), and diverges most on `…139`, a multi-part building where only one part
@@ -1003,36 +1003,27 @@ is joined. LoD1.2 volume is a prism approximation and sits either side of LoD2.2
 
 ## Quirks and known gaps
 
-### A real bug this walkthrough found: volume drift under rotation
+### Volume under rotation is a conditioning test
 
-`ST_3DRotateX` / `ST_3DRotateY` appeared to break volume invariance on real data — up to
-**12 % relative drift** across the Delft tile — while `ST_3DRotateZ` stayed clean. It was
-not the transforms. `ComputeVolume` summed signed tetrahedra `a·(b×c)` about the
-**absolute coordinate origin**, so the triple product scaled as |position|³ while the
-answer scaled as |extent|³. In EPSG:28992 (easting ~8.5e4, northing ~4.5e5) that cancelled
-roughly nine of the sixteen available digits. Only X and Y rotations mix the large
-northing into Z, which is why Z rotation looked fine and hid the problem. A tetrahedron
-translated to 1e8 reported `1.67e7` instead of `1/6`.
+The §14 RotateX/RotateY cells are the walkthrough's sharpest check. Rotating about X or Y
+mixes the large RD New northing (~4.5e5) into Z, so any volume sum taken about the
+absolute coordinate origin — where the triple product `a·(b×c)` scales as |position|³
+while the answer scales as |extent|³ — would cancel roughly nine of the sixteen available
+digits and drift by percent. `ST_3DRotateZ` would hide the same problem, because it never
+moves the northing into Z.
 
-Fixed by referencing each tetrahedron to a point on the shell it belongs to — a no-op in
-exact arithmetic. Drift across all 1098 valid Delft solids is now at most **4.4e-11**
-relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is the floor
-imposed by rotating absolute RD coordinates, not a residue of the cancellation.
-Untransformed measurements did not change: agreement with 3DBAG's `b3_volume_lod22` is
-still a 0.0167 % median error. Regression tests: `test/cpp/test_measurements.cpp`
-("far-from-origin tetrahedron keeps full precision") and the RotateX/RotateY cases in
-`test/sql/metamorphic_transforms.test`, where the translation tolerance also tightened
-from 1e-3 to 1e-5 — that looseness had been a workaround for this very cancellation.
+`ComputeVolume` references each tetrahedron to a point on the shell it belongs to, which
+is exact in exact arithmetic. Across all 1098 valid Delft solids, volume drift is at most
+**4.4e-11** relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is
+the floor imposed by rotating absolute RD coordinates. Agreement with 3DBAG's
+`b3_volume_lod22` is a 0.0167 % median error.
 
-The first attempt at this fix used **one** reference point for the whole model (its
-bounding-box midpoint). That is enough for a compact building but not in general: for a
-`MultiSolid`/`CompositeSolid` whose parts are far apart the midpoint is far from *every*
-part, and the same cancellation returns — two unit cubes separated by 1e6 reported 14.456
-instead of 16, and by 1e7, 2353. The reference point has to be hoisted **per shell**; see
-DESIGN_DOC §8.2 and `test/sql/st_3d_multisolid.test`. Two neighbouring conditioning bugs of
-the same family turned up while pinning it — ear-clipping's handedness test (DESIGN_DOC §2.2)
-and Newell's ring area, which made the degenerate-face verdict position-dependent
-(DESIGN_DOC §8.1).
+The reference point is per **shell**, not per model: a single model-wide point is far from
+every part of a `MultiSolid`/`CompositeSolid` whose parts are far apart — two unit cubes
+separated by 1e6 would report 14.456 instead of 16. See DESIGN_DOC's *Why volume works
+the way it does* and `test/sql/st_3d_multisolid.test`. Ear-clipping's handedness test
+(DESIGN_DOC, *Topology is the source of truth*) and Newell's ring area (DESIGN_DOC, *The
+three checks*) are referenced to a local origin for the same reason.
 
 ### Cells whose real output contradicts the naive expectation
 
@@ -1077,11 +1068,11 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
   [FUTURE_WORK.md §2](./FUTURE_WORK.md).
 - **`proj.db` is not bundled** into the distributable `.duckdb_extension`, so §15 depends
   on a system PROJ install. [FUTURE_WORK.md §2](./FUTURE_WORK.md).
-- **CityJSON vocabulary still leaks into the kernel** (`metadata_parser.cpp` knows
-  `cityjsonType`, `shells`, `MultiSolid`). The neutral-grouping redesign is
-  [FUTURE_WORK.md §1](./FUTURE_WORK.md).
+- **Format vocabulary still reaches the kernel** (`metadata_parser.cpp` parses the
+  `geometry_properties` JSON text and its `type` / `shells` keys). The neutral-grouping
+  redesign is [FUTURE_WORK.md §1](./FUTURE_WORK.md).
 - **`ST_3DConvexHull` is a 2D XY hull** at minimum Z, not a true 3D hull — that needs the
-  deferred CGAL/SFCGAL backend ([DESIGN_DOC.md §16](./DESIGN_DOC.md)).
+  deferred CGAL/SFCGAL backend (DESIGN_DOC.md, *Self-contained kernel* and *Roadmap*).
 
 ---
 
@@ -1100,8 +1091,8 @@ The behaviours it demonstrates are covered automatically as follows:
 | §3 | `test/sql/cityjson_multisolid.test`, `test/sql/st_3d_multisolid.test` |
 | §5, §6, §17 | `test/sql/geom_3d_accessors.test`, `geom_3d_measurements.test`, `geom_3d_serialize.test` |
 | §8–§13 | `test/sql/cityjson_delft_remote.test` and `test/sql/cityjson_3dbag_attributes.test` (the 3DBAG oracle, remote and offline), `test/sql/st_3d_validation.test`, `test/sql/geom_3d_distance.test` |
-| §14 | `test/sql/metamorphic_transforms.test` — **extended by this walkthrough** with the RotateX/RotateY cases from the quirks section |
-| §14 (kernel) | `test/cpp/test_measurements.cpp` — **added by this walkthrough**: far-from-origin precision |
+| §14 | `test/sql/metamorphic_transforms.test`, including the RotateX/RotateY cases from the quirks section |
+| §14 (kernel) | `test/cpp/test_measurements.cpp`: far-from-origin precision |
 | §15 | `test/sql/st_transform.test`, `test/cpp/test_crs_transform.cpp` |
 | §16 | `test/sql/geom_3d_construct.test`, `test/cpp/test_geom_construct.cpp` |
 | §20 | `test/sql/st_3d_from_wkb_struct.test` (the CityParquet STRUCT sidecar) |

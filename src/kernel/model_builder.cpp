@@ -102,7 +102,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 	model.face_ring_offsets.push_back(total_rings);
 	model.ring_vertex_offsets.push_back(static_cast<uint32_t>(model.ring_vertex_indices.size()));
 
-	// Triangulation cache: placeholder (empty for now, filled in Phase 3)
+	// Triangulation cache: sized here, filled by TriangulateSolidModel below.
 	model.face_triangle_offsets.resize(total_faces + 1, 0);
 
 	model.ComputeBBox();
