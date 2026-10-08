@@ -55,7 +55,8 @@ set(TEST_SOURCES
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 
 target_include_directories(three_d_unit_tests PRIVATE ${CATCH_INCLUDE_DIR}
-                                                      ${REPO_ROOT}/src/include)
+                                                      ${REPO_ROOT}/src/include
+                                                      ${REPO_ROOT}/third_party)
 
 # PROJ (crs_transform.cpp). Under the vcpkg toolchain its copy is found first;
 # on a bare macOS/Linux dev box fall back to the Homebrew/system install.

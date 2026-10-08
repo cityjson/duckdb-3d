@@ -14,6 +14,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
+# Vendored header-only dependencies (see third_party/README.md).
+include_directories(third_party)
 
 set(EXTENSION_SOURCES
     src/three_d_extension.cpp
