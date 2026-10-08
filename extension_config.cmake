@@ -6,5 +6,6 @@ duckdb_extension_load(three_d
     LOAD_TESTS
 )
 
-# Any extra extensions that should be built
-# e.g.: duckdb_extension_load(json)
+# json registers the JSON type, which CityParquet's geometry_properties_lod*.surfaces
+# carries; linking it lets the SQL tests bind that shape without staging an extension.
+duckdb_extension_load(json)

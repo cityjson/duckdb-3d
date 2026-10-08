@@ -42,7 +42,7 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/unit_cube.city.json', lod 
 WHERE column_name LIKE 'geometry%' ORDER BY column_name;
 ----
 geometry_lod2_2	BLOB
-geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])
+geometry_properties_lod2_2	STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
 
 # We get exactly one Building back, with a non-null SOLID_3D payload.
 query II

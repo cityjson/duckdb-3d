@@ -48,13 +48,18 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/unit_cube.city.json', lod 
 WHERE column_name LIKE 'geometry%';
 ```
 ```
-┌────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┐
-│        column_name         │                                      column_type                                       │
-├────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
-│ geometry_lod2_2            │ BLOB                                                                                   │
-│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][]) │
-└────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────┐
+│        column_name         │                                     column_type                                     │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+│ geometry_lod2_2            │ BLOB                                                                                │
+│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][]) │
+└────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+`surfaces` is the JSON type, CityParquet's Parquet JSON logical type. `ST_3DFromWKB`
+does not read it, and its `STRUCT` overload binds whether `surfaces` arrives as `JSON`
+or as plain `VARCHAR` (a session without the `json` extension reads the Parquet JSON
+type as `VARCHAR`) — covered by `test/sql/st_3d_from_wkb_struct_json.test`.
 
 ## Setup
 

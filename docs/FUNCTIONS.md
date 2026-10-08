@@ -232,7 +232,9 @@ SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
 FROM read_parquet('building.parquet') WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
-`shells` is read as the CityParquet `LIST<LIST<INT>>`: one inner list per solid, each the
+Only `type` and `shells` are read; `surfaces` may be `JSON` (the Parquet JSON logical type
+read with the `json` extension loaded) or `VARCHAR`, and `face_semantics` and any further
+fields are ignored. `shells` is read as the CityParquet `LIST<LIST<INT>>`: one inner list per solid, each the
 per-shell face counts with the exterior shell first — `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`.
 A flat `[12]` is not that shape and raises (`NULL` under `TRY`), as does a face-count total
 that disagrees with the WKB.
