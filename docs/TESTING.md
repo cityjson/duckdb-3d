@@ -33,7 +33,7 @@ GEN=ninja make release        # builds ./build/release/duckdb with three_d linke
 ### Which `cityjson` build this notebook uses — and why it matters
 
 This walkthrough was run against a **locally built** `cityjson`, not the community
-download. Both repos pin the same DuckDB core (`v1.5.4`), so the two locally built
+download. Both repos pin the same DuckDB core (`v1.5.5`), so the two locally built
 extensions load into one process without any ABI complaint:
 
 ```sh
@@ -991,7 +991,7 @@ WHERE name LIKE 'geometry_lod%' ORDER BY 1;
 └─────────────────┴───────────┘
 ```
 
-**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.4 raises
+**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.5 raises
 `Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting from source
 column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not help either:
 the promotion follows the logical type, not the `geo` footer, so the column is still
@@ -1228,7 +1228,7 @@ three checks*) are referenced to a local origin for the same reason.
 
 - **`FILTER` does not guard a raising function** (§18). `SUM(ST_3DVolume(s)) FILTER (WHERE
   …is_valid)` still evaluates `ST_3DVolume` on invalid rows and raises. Filter in `WHERE`.
-- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22), and
+- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.5 (§22), and
   `SET enable_geoparquet_conversion=false` is not a way out — the promotion follows the
   Parquet logical type, not the `geo` footer. Pass the `GEOMETRY` column straight to
   `ST_Geom3DFromWKB`, which takes it.
