@@ -46,4 +46,8 @@ struct GeomPayloadInfo {
 //! version. Use for bounds/ZMin/ZMax accessors on GEOM_3D values.
 GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size);
 
+//! The GEOM_3D payload with its CRS replaced by `crs` (empty clears it); the
+//! body is copied, not decoded. Throws what ReadGeomPayloadHeader throws.
+std::vector<uint8_t> WithGeomPayloadCrs(const uint8_t *data, size_t size, const std::string &crs);
+
 } // namespace duckdb_3d

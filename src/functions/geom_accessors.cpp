@@ -7,6 +7,8 @@
 
 #include "kernel/convex_hull.hpp"
 #include "kernel/geom_analysis.hpp"
+#include "kernel/triangulation.hpp"
+#include "kernel/measurements.hpp"
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_serialize.hpp"
@@ -33,9 +35,14 @@ using duckdb_3d::ReadGeomPayloadHeader;
 
 // ST_Geom3DFromWKB(wkb BLOB | GEOMETRY) → GEOM_3D
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
-static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+//! `crs` is the CRS a GEOMETRY argument's type carries; WKB from a BLOB brings
+//! its own, from an EWKB SRID.
+static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result, const std::string &crs) {
 	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, count, [&](string_t wkb) {
 		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+		if (!crs.empty()) {
+			model.crs = crs;
+		}
 		auto payload = SerializeGeomPayload(model);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -43,7 +50,7 @@ static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
 }
 
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	Geom3DFromWKBVector(args.data[0], args.size(), result);
+	Geom3DFromWKBVector(args.data[0], args.size(), result, std::string());
 }
 
 // ST_Geom3DFromWKB(geom GEOMETRY) → GEOM_3D. A CityParquet footprint column
@@ -54,7 +61,7 @@ static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector 
 static void ST_Geom3DFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	Vector wkb_vec(LogicalType::BLOB);
 	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
-	Geom3DFromWKBVector(wkb_vec, args.size(), result);
+	Geom3DFromWKBVector(wkb_vec, args.size(), result, BoundCrs(state));
 }
 
 static unique_ptr<FunctionData> BindGeom3DFromWkbArg(ClientContext &, ScalarFunction &bound_function,
@@ -198,6 +205,7 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, double height) {
 		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		    auto solid = BuildExtrudedSolid(poly, height);
+		    solid.crs = poly.crs;
 		    auto payload = SerializePayload(solid);
 		    return StringVector::AddStringOrBlob(
 		        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -209,6 +217,7 @@ static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &res
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto solid = BuildSolidFromSurface(surface);
+		solid.crs = surface.crs;
 		auto payload = SerializePayload(solid);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -259,6 +268,26 @@ static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &re
 		GeomModel point;
 		point.type = GeomType::Point;
 		point.vertices.push_back(centroid);
+		point.crs = model.crs;
+		point.ComputeBBox();
+		auto payload = SerializeGeomPayload(point);
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
+// ST_3DCentroid(solid SOLID_3D) → GEOM_3D (Point): the centroid of the volume.
+static void ST_3DCentroidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t solid) {
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+		if (model.TriangleCount() == 0) {
+			duckdb_3d::TriangulateSolidModel(model);
+		}
+		GeomModel point;
+		point.type = GeomType::Point;
+		point.vertices.push_back(duckdb_3d::ComputeVolumeCentroid(model));
+		point.crs = model.crs;
 		point.ComputeBBox();
 		auto payload = SerializeGeomPayload(point);
 		return StringVector::AddStringOrBlob(result,
@@ -278,7 +307,9 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 	});
 }
 
-static string_t WriteGeom(Vector &result, const GeomModel &model) {
+//! Serialize a geometry derived from another, in that one's CRS.
+static string_t WriteGeom(Vector &result, GeomModel model, const std::string &crs) {
+	model.crs = crs;
 	auto payload = SerializeGeomPayload(model);
 	return StringVector::AddStringOrBlob(result,
 	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -289,7 +320,7 @@ static string_t WriteGeom(Vector &result, const GeomModel &model) {
 static void ST_3DConvexHullGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices));
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices), model.crs);
 	});
 }
 
@@ -297,7 +328,7 @@ static void ST_3DConvexHullSolidFun(DataChunk &args, ExpressionState &state, Vec
 	duckdb_3d::SolidModel model;
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t solid) {
 		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
-		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices));
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices), model.crs);
 	});
 }
 
@@ -306,7 +337,7 @@ static void ST_3DConvexHullSolidFun(DataChunk &args, ExpressionState &state, Vec
 static void ST_3DFootprintHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		return WriteGeom(result, Geom3DFootprintHull(model));
+		return WriteGeom(result, Geom3DFootprintHull(model), model.crs);
 	});
 }
 
@@ -345,6 +376,7 @@ static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 	case GeomType::MultiLineString:
 	case GeomType::MultiPolygon:
 	case GeomType::GeometryCollection:
+	case GeomType::PolyhedralSurface:
 		return model.part_offsets.empty() ? 0 : static_cast<int32_t>(model.part_offsets.size() - 1);
 	default:
 		return 1;
@@ -406,8 +438,8 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	RegisterDocumented(
 	    loader, ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_3DNumGeometriesFun),
 	    {{"geom"},
-	     "Returns the number of member geometries of a GEOM_3D value: the member count of a Multi geometry, 1 "
-	     "otherwise.",
+	     "Returns the number of member geometries of a GEOM_3D value: the member count of a Multi geometry, the "
+	     "patch count of a PolyhedralSurface, 1 otherwise.",
 	     "ST_3DNumGeometries(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
 	     {"introspection"}});
 	RegisterDocumented(loader, ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun),
@@ -439,10 +471,14 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	     "vertices are coplanar.",
 	     "ST_IsPlanar(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
 	     {"introspection"}});
-	RegisterDocumented(loader, ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun),
+	ScalarFunctionSet centroid_set("st_3dcentroid");
+	centroid_set.AddFunction(ScalarFunction({geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
+	centroid_set.AddFunction(ScalarFunction({solid_3d_type}, geom_3d_type, ST_3DCentroidSolidFun));
+	RegisterDocumented(loader, std::move(centroid_set),
 	                   {{"geom"},
-	                    "Returns the centroid of a GEOM_3D value as a Point Z: area-weighted for surfaces, "
-	                    "length-weighted for lines, the vertex average for points.",
+	                    "Returns the centroid as a Point Z: of a SOLID_3D, its volume's (raises when it encloses "
+	                    "none); of a GEOM_3D, area-weighted for surfaces, length-weighted for lines, the vertex "
+	                    "average for points.",
 	                    "ST_3DCentroid(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
 	                    {"transform"}});
 	RegisterDocumented(

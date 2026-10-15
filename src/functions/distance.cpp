@@ -243,6 +243,7 @@ static void ST_3DClosestPointFun(DataChunk &args, ExpressionState &state, Vector
 		    GeomModel point;
 		    point.type = GeomType::Point;
 		    point.vertices.push_back(pair.p);
+		    point.crs = m1.crs;
 		    point.ComputeBBox();
 		    auto payload = SerializeGeomPayload(point);
 		    return StringVector::AddStringOrBlob(
@@ -261,11 +262,33 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 		    GeomModel line;
 		    line.type = GeomType::LineString;
 		    line.vertices = {pair.p, pair.q};
+		    line.crs = m1.crs;
 		    line.ComputeBBox();
 		    auto payload = SerializeGeomPayload(line);
 		    return StringVector::AddStringOrBlob(
 		        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	    });
+}
+
+//! ST_3DDisjoint: the negation of the matching ST_3DIntersects overload.
+template <void (*INTERSECTS)(DataChunk &, ExpressionState &, Vector &)>
+static void ST_3DDisjointFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	INTERSECTS(args, state, result);
+	UnaryExecutor::Execute<bool, bool>(result, result, args.size(), [](bool intersects) { return !intersects; });
+}
+
+//! Every function registered here relates two values, which must be in one CRS;
+//! `name` is how the error names the function.
+static ScalarFunctionSet InOneCrs(ScalarFunctionSet set, const char *name) {
+	for (auto &function : set.functions) {
+		function.SetFunctionCallback(WithSameCrs(function.GetFunctionCallback(), name));
+	}
+	return set;
+}
+
+static ScalarFunction InOneCrs(ScalarFunction function, const char *name) {
+	function.SetFunctionCallback(WithSameCrs(function.GetFunctionCallback(), name));
+	return function;
 }
 
 void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
@@ -279,7 +302,7 @@ void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid
 	distance_set.AddFunction(
 	    ScalarFunction({solid_3d_type, solid_3d_type}, LogicalType::DOUBLE, ST_3DDistanceSolidSolidFun));
 	RegisterDocumented(
-	    loader, std::move(distance_set),
+	    loader, InOneCrs(std::move(distance_set), "ST_3DDistance"),
 	    {{"geom1", "geom2"},
 	     "Returns the minimum 3D Euclidean distance between two values in input units. A SOLID_3D is the volume it "
 	     "bounds, so a geometry inside it is at distance 0; an invalid solid raises.",
@@ -295,7 +318,7 @@ void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid
 	dwithin_set.AddFunction(ScalarFunction({solid_3d_type, solid_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
 	                                       ST_3DDWithinSolidSolidFun));
 	RegisterDocumented(
-	    loader, std::move(dwithin_set),
+	    loader, InOneCrs(std::move(dwithin_set), "ST_3DDWithin"),
 	    {{"geom1", "geom2", "distance"},
 	     "Returns whether two values are within the given 3D distance of each other; prunes on bounding boxes, so it "
 	     "is cheaper than comparing ST_3DDistance. A SOLID_3D is the volume it bounds. A negative distance returns "
@@ -305,15 +328,18 @@ void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid
 	     {"distance"}});
 	RegisterDocumented(
 	    loader,
-	    ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DMaxDistanceFun),
+	    InOneCrs(
+	        ScalarFunction("st_3dmaxdistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DMaxDistanceFun),
+	        "ST_3DMaxDistance"),
 	    {{"geom1", "geom2"},
 	     "Returns the maximum 3D Euclidean distance between any two vertices of two GEOM_3D values, in input units.",
 	     "ST_3DMaxDistance(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 "
 	     "3)'::GEOMETRY))",
 	     {"distance"}});
 	RegisterDocumented(loader,
-	                   ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
-	                                  LogicalType::BOOLEAN, ST_3DDFullyWithinFun),
+	                   InOneCrs(ScalarFunction("st_3ddfullywithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE},
+	                                           LogicalType::BOOLEAN, ST_3DDFullyWithinFun),
+	                            "ST_3DDFullyWithin"),
 	                   {{"geom1", "geom2", "distance"},
 	                    "Returns whether the maximum 3D distance between two GEOM_3D values is within the given "
 	                    "distance. A negative distance returns false.",
@@ -329,22 +355,42 @@ void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid
 	intersects_set.AddFunction(
 	    ScalarFunction({solid_3d_type, solid_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsSolidSolidFun));
 	RegisterDocumented(
-	    loader, std::move(intersects_set),
+	    loader, InOneCrs(std::move(intersects_set), "ST_3DIntersects"),
 	    {{"geom1", "geom2"},
 	     "Returns whether two values share a point in 3D, decided exactly; touching counts. A SOLID_3D is the volume "
 	     "it bounds; an invalid solid raises.",
 	     "ST_3DIntersects(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
 	     "ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
 	     {"distance"}});
+	ScalarFunctionSet disjoint_set("st_3ddisjoint");
+	disjoint_set.AddFunction(
+	    ScalarFunction({geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DDisjointFun<ST_3DIntersectsFun>));
+	disjoint_set.AddFunction(ScalarFunction({solid_3d_type, geom_3d_type}, LogicalType::BOOLEAN,
+	                                        ST_3DDisjointFun<ST_3DIntersectsSolidGeomFun<true>>));
+	disjoint_set.AddFunction(ScalarFunction({geom_3d_type, solid_3d_type}, LogicalType::BOOLEAN,
+	                                        ST_3DDisjointFun<ST_3DIntersectsSolidGeomFun<false>>));
+	disjoint_set.AddFunction(ScalarFunction({solid_3d_type, solid_3d_type}, LogicalType::BOOLEAN,
+	                                        ST_3DDisjointFun<ST_3DIntersectsSolidSolidFun>));
 	RegisterDocumented(
-	    loader, ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun),
+	    loader, InOneCrs(std::move(disjoint_set), "ST_3DDisjoint"),
+	    {{"geom1", "geom2"},
+	     "Returns whether two values share no point in 3D: the negation of ST_3DIntersects, decided exactly. A "
+	     "SOLID_3D is the volume it bounds; an invalid solid raises.",
+	     "ST_3DDisjoint(ST_Geom3DFromWKB('POINT Z (0 0 0)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	     {"distance"}});
+	RegisterDocumented(
+	    loader,
+	    InOneCrs(ScalarFunction("st_3dclosestpoint", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DClosestPointFun),
+	             "ST_3DClosestPoint"),
 	    {{"geom1", "geom2"},
 	     "Returns the Point Z on the first GEOM_3D value nearest to the second.",
 	     "ST_3DClosestPoint(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
 	     "ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY))",
 	     {"distance"}});
 	RegisterDocumented(
-	    loader, ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun),
+	    loader,
+	    InOneCrs(ScalarFunction("st_3dshortestline", {geom_3d_type, geom_3d_type}, geom_3d_type, ST_3DShortestLineFun),
+	             "ST_3DShortestLine"),
 	    {{"geom1", "geom2"},
 	     "Returns the 2-vertex LineString Z joining the closest points of two GEOM_3D values.",
 	     "ST_3DShortestLine(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "

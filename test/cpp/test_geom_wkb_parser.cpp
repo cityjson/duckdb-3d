@@ -261,3 +261,94 @@ TEST_CASE("ParseGeomWKB: Polygon Z with interior ring", "[geom_wkb_parser]") {
 	REQUIRE(model.vertices.size() == 8);
 	REQUIRE(model.ring_offsets == std::vector<uint32_t> {0, 4, 8});
 }
+
+// EWKB (PostGIS's dialect) flags Z with 0x80000000 and an SRID with 0x20000000,
+// the SRID following the type code. The SRID becomes the model's CRS as EPSG:n.
+TEST_CASE("ParseGeomWKB: EWKB Point Z with an SRID", "[geom_wkb_parser][ewkb]") {
+	GeomWKBBuilder b;
+	b.U8(1);
+	b.U32(0xA0000001); // Point | Z | SRID
+	b.U32(28992);
+	b.Point(1.0, 2.0, 3.0);
+
+	auto model = ParseGeomWKB(b.buffer.data(), b.buffer.size());
+
+	REQUIRE(model.type == GeomType::Point);
+	REQUIRE(model.vertices[0].z == 3.0);
+	REQUIRE(model.crs == "EPSG:28992");
+}
+
+TEST_CASE("ParseGeomWKB: EWKB MultiPolygon Z, children flagged Z only", "[geom_wkb_parser][ewkb]") {
+	GeomWKBBuilder b;
+	b.U8(1);
+	b.U32(0xA0000006); // MultiPolygon | Z | SRID
+	b.U32(7415);
+	b.U32(2);
+	for (double z : {0.0, 5.0}) {
+		b.U8(1);
+		b.U32(0x80000003); // Polygon | Z
+		b.U32(1);
+		b.Ring({{0, 0, z}, {1, 0, z}, {1, 1, z}});
+	}
+
+	auto model = ParseGeomWKB(b.buffer.data(), b.buffer.size());
+
+	REQUIRE(model.type == GeomType::MultiPolygon);
+	REQUIRE(model.part_offsets == std::vector<uint32_t> {0, 1, 2});
+	REQUIRE(model.crs == "EPSG:7415");
+}
+
+TEST_CASE("ParseGeomWKB: EWKB without an SRID, or SRID 0, has no CRS", "[geom_wkb_parser][ewkb]") {
+	GeomWKBBuilder plain;
+	plain.U8(1);
+	plain.U32(0x80000002); // LineString | Z
+	plain.U32(2);
+	plain.Point(0, 0, 0);
+	plain.Point(1, 1, 1);
+	auto model = ParseGeomWKB(plain.buffer.data(), plain.buffer.size());
+	REQUIRE(model.type == GeomType::LineString);
+	REQUIRE(model.crs.empty());
+
+	GeomWKBBuilder zero;
+	zero.U8(1);
+	zero.U32(0xA0000001);
+	zero.U32(0);
+	zero.Point(0, 0, 0);
+	REQUIRE(ParseGeomWKB(zero.buffer.data(), zero.buffer.size()).crs.empty());
+}
+
+TEST_CASE("ParseGeomWKB: EWKB refuses M, 2D, and a child SRID that differs", "[geom_wkb_parser][ewkb]") {
+	GeomWKBBuilder m;
+	m.U8(1);
+	m.U32(0xC0000001); // Point | Z | M
+	m.Point(0, 0, 0);
+	m.F64(0);
+	REQUIRE_THROWS_WITH(ParseGeomWKB(m.buffer.data(), m.buffer.size()), Catch::Contains("unsupported"));
+
+	GeomWKBBuilder flat;
+	flat.U8(1);
+	flat.U32(0x20000001); // Point | SRID, no Z
+	flat.U32(28992);
+	flat.F64(0);
+	flat.F64(0);
+	REQUIRE_THROWS_WITH(ParseGeomWKB(flat.buffer.data(), flat.buffer.size()), Catch::Contains("unsupported"));
+
+	GeomWKBBuilder child;
+	child.U8(1);
+	child.U32(0xA0000004); // MultiPoint | Z | SRID
+	child.U32(28992);
+	child.U32(1);
+	child.U8(1);
+	child.U32(0xA0000001);
+	child.U32(4326);
+	child.Point(0, 0, 0);
+	REQUIRE_THROWS_WITH(ParseGeomWKB(child.buffer.data(), child.buffer.size()), Catch::Contains("SRID"));
+}
+
+TEST_CASE("ParseGeomWKB: ISO WKB has no CRS", "[geom_wkb_parser][ewkb]") {
+	GeomWKBBuilder b;
+	b.U8(1);
+	b.U32(1001);
+	b.Point(1, 2, 3);
+	REQUIRE(ParseGeomWKB(b.buffer.data(), b.buffer.size()).crs.empty());
+}

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <map>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace duckdb_3d {
@@ -71,25 +72,35 @@ double ComputeSurfaceArea(const SolidModel &model) {
 	return total_area;
 }
 
-double ComputeVolume(const SolidModel &model) {
+namespace {
+
+//! The checks that make the signed tetrahedra sum to a volume; `function` names
+//! the caller in the error.
+void RequireEnclosedVolume(const SolidModel &model, const std::string &function) {
 	if (!model.validation.is_closed) {
-		throw std::runtime_error("ST_3DVolume: solid is not closed");
+		throw std::runtime_error(function + ": solid is not closed");
 	}
 	if (!model.validation.is_manifold) {
-		throw std::runtime_error("ST_3DVolume: solid is not manifold");
+		throw std::runtime_error(function + ": solid is not manifold");
 	}
 	if (!model.validation.is_oriented) {
-		throw std::runtime_error("ST_3DVolume: solid has inconsistent orientation");
+		throw std::runtime_error(function + ": solid has inconsistent orientation");
 	}
 	if (model.validation.degenerate_face_count > 0) {
-		throw std::runtime_error("ST_3DVolume: solid contains degenerate faces");
+		throw std::runtime_error(function + ": solid contains degenerate faces");
 	}
 	if (model.validation.self_intersection_count > 0) {
-		throw std::runtime_error("ST_3DVolume: solid has self-intersecting faces");
+		throw std::runtime_error(function + ": solid has self-intersecting faces");
 	}
 	if (model.TriangleCount() == 0) {
-		throw std::runtime_error("ST_3DVolume: solid has no triangulation cache");
+		throw std::runtime_error(function + ": solid has no triangulation cache");
 	}
+}
+
+} // namespace
+
+double ComputeVolume(const SolidModel &model) {
+	RequireEnclosedVolume(model, "ST_3DVolume");
 
 	double total_volume = 0.0;
 	uint32_t solid_count = model.SolidCount();
@@ -128,6 +139,65 @@ double ComputeVolume(const SolidModel &model) {
 	}
 
 	return total_volume / 6.0;
+}
+
+Vertex3D ComputeVolumeCentroid(const SolidModel &model) {
+	RequireEnclosedVolume(model, "ST_3DCentroid");
+	// The centroid of a tetrahedron (o, a, b, c) is o + (a' + b' + c') / 4 with
+	// a' = a - o, so a solid's first moment is the sum of each signed tetrahedron
+	// volume times that point. As for the volume, every shell is integrated about
+	// a point on itself; the moments are then taken about one reference point per
+	// solid and one for the model, so no term carries the coordinates' magnitude.
+	bool have_reference = false;
+	Vertex3D reference = {0, 0, 0};
+	double total_weight = 0.0;
+	double mx = 0.0, my = 0.0, mz = 0.0;
+	for (uint32_t solid_idx = 0; solid_idx < model.SolidCount(); solid_idx++) {
+		double volume = 0.0;
+		double sx = 0.0, sy = 0.0, sz = 0.0;
+		for (uint32_t shell_idx = model.solid_shell_offsets[solid_idx];
+		     shell_idx < model.solid_shell_offsets[solid_idx + 1]; shell_idx++) {
+			Vertex3D origin;
+			if (!ShellLocalOrigin(model, shell_idx, origin)) {
+				continue;
+			}
+			if (!have_reference) {
+				reference = origin;
+				have_reference = true;
+			}
+			double ox = origin.x - reference.x, oy = origin.y - reference.y, oz = origin.z - reference.z;
+			uint32_t tri_start = model.face_triangle_offsets[model.shell_face_offsets[shell_idx]];
+			uint32_t tri_end = model.face_triangle_offsets[model.shell_face_offsets[shell_idx + 1]];
+			for (uint32_t tri_idx = tri_start; tri_idx < tri_end; tri_idx++) {
+				double v = SignedTriangleVolume(model, tri_idx, origin);
+				double cx = 0.0, cy = 0.0, cz = 0.0;
+				for (int k = 0; k < 3; k++) {
+					const auto &p = model.vertices[model.triangle_vertex_indices[tri_idx * 3 + k]];
+					cx += p.x - origin.x;
+					cy += p.y - origin.y;
+					cz += p.z - origin.z;
+				}
+				volume += v;
+				sx += v * (ox + cx / 4.0);
+				sy += v * (oy + cy / 4.0);
+				sz += v * (oz + cz / 4.0);
+			}
+		}
+		if (volume == 0.0) {
+			continue;
+		}
+		// The solid's centroid relative to the reference is (sx, sy, sz) / volume;
+		// solids weigh by their unsigned volume.
+		double weight = std::abs(volume);
+		mx += weight * sx / volume;
+		my += weight * sy / volume;
+		mz += weight * sz / volume;
+		total_weight += weight;
+	}
+	if (total_weight == 0.0) {
+		throw std::runtime_error("ST_3DCentroid: solid encloses no volume");
+	}
+	return {reference.x + mx / total_weight, reference.y + my / total_weight, reference.z + mz / total_weight};
 }
 
 double ComputeFootprintArea(const SolidModel &model) {

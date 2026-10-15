@@ -15,6 +15,10 @@ double ComputeSurfaceArea(const SolidModel &model);
 //! Throws if preconditions are not met.
 double ComputeVolume(const SolidModel &model);
 
+//! The centroid of the enclosed volume (cavities excluded, multi-solids weighed
+//! by volume). Same preconditions as ComputeVolume; throws if they are not met.
+Vertex3D ComputeVolumeCentroid(const SolidModel &model);
+
 //! Compute the 2D footprint area: the area of the geometry's projection onto
 //! the XY plane. Computed as half the total absolute XY-projected face area,
 //! which is exact for vertically-simple solids (every vertical line meets the

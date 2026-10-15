@@ -14,7 +14,7 @@ WHERE function_name LIKE 'st\_3d%' ESCAPE '\'
 query I
 SELECT count(DISTINCT function_name) FROM three_d_functions;
 ----
-53
+58
 
 # Every overload carries a description, an example, and a category.
 query I
@@ -38,6 +38,7 @@ WHERE function_name = 'st_3dfromwkb' ORDER BY len(parameters), parameter_types::
 [wkb, geometry_properties]
 
 query T
-SELECT DISTINCT parameters FROM three_d_functions WHERE function_name = 'st_3dtransform';
+SELECT DISTINCT parameters FROM three_d_functions WHERE function_name = 'st_3dtransform' ORDER BY len(parameters);
 ----
+[geom, target_crs]
 [geom, source_crs, target_crs]

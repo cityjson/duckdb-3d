@@ -152,6 +152,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 	TriangulateSolidModel(model);
 	ValidateSolidModel(model);
 
+	model.crs = surfaces.empty() ? std::string() : surfaces.front().crs;
 	return model;
 }
 
@@ -275,6 +276,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	TriangulateSolidModel(model);
 	ValidateSolidModel(model);
 
+	model.crs = surfaces.empty() ? std::string() : surfaces.front().crs;
 	return model;
 }
 

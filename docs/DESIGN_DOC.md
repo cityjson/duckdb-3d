@@ -213,10 +213,27 @@ polygonal faces intact rather than flattening to triangles (§2.2).
 box, and the topology validity flags. All are recomputable from the core topology, and the
 `BLOB` casts recompute them (§4).
 
-**Coordinates** are raw `DOUBLE` XYZ. The payload has a slot for a CRS string, which every
-constructor leaves empty; upstream producers apply any source transform before or during
-WKB construction, and `ST_3DTransform` reprojects explicitly, with both CRSs given per
-call. All measurement math is Cartesian in the input units.
+**Coordinates** are raw `DOUBLE` XYZ, and all measurement math is Cartesian in the input
+units.
+
+**CRS.** The payload carries a CRS string, empty for none. It is a label on the value, not a
+parameter of any computation but `ST_3DTransform`:
+
+- It enters only at construction: an EWKB SRID becomes `EPSG:<srid>`, and a `GEOMETRY`
+  argument contributes its type's CRS through the bind data. ISO WKB carries none. An EWKB
+  child whose SRID differs from its parent's is refused, since one value has one CRS.
+- Every function that returns a geometry keeps its input's CRS. `ST_3DTransform` labels its
+  result with the target, and `ST_3DPlaceImplicit` gives its result the reference point's,
+  because the relative geometry is in local coordinates (FUNCTIONS.md, `ST_3DPlaceImplicit`).
+- A function of two geometries refuses two different CRSs, and an empty CRS differs from any
+  other, as PostGIS refuses mixed SRIDs. Equality is DuckDB's `CoordinateReferenceSystem`
+  comparison, so two spellings of one CRS agree.
+- `ST_3DTransform` reads its source from the value when given only a target, and refuses a
+  given source that contradicts the stored one. Silently reprojecting from a CRS the value
+  says it is not in would be a repair (§2.1).
+
+`ST_3DSetCRS` rewrites only the length-prefixed CRS slot; the bytes on either side are copied,
+so caches and the validation trailer are untouched.
 
 ### 5.1 Binary payload format
 
@@ -517,15 +534,22 @@ dependency:
   triangle folded back onto its 1.5 mm-warped wall, overlapping it over a strip 2.1 cm wide.
   The solids val3dity calls non-manifold (303) only because a face folds back onto a
   neighbour are self-intersections here, and all are caught.
-- **Live comparison on real data.** `scripts/oracle/live_diff.py` runs the distance family on
-  five published datasets (3DBAG Delft, the TU Delft railway LoD3 model, Rotterdam
+- **Live comparison on real data.** `scripts/oracle/live_diff.py` runs the distance family,
+  the solid-volume overloads and the measures on five published datasets (3DBAG Delft, the TU Delft railway LoD3 model, Rotterdam
   Delfshaven, Den Haag, Vienna) in duckdb-3d and PostGIS and reports every disagreement. It
   is a development tool, not a CI step. Each row is compared against the reference that is
   right for it: PostGIS for planar faces without holes; an independent computation in the
   script for faces with holes, where PostGIS's 3D point-in-polygon test ignores interior
   rings; and the same computation, within twice the faces' deviation from planar, for
   non-planar faces, which PostGIS measures against a plane of its own fitting that can lie
-  further from the vertices than the deviation.
+  further from the vertices than the deviation. Measures have their own references.
+  `ST_3DArea` is checked against SFCGAL per face (SFCGAL takes a polygon's plane from its
+  first three vertices, so each face is handed to it starting at a vertex whose successors
+  are not collinear) and against each ring's Newell vector area. `ST_3DPerimeter` is checked
+  against PostGIS on polygons and against the edges used by one face on surfaces (§8.7).
+  `ST_3DCentroid` of a solid, which PostGIS lacks, is checked against signed tetrahedra over
+  ear-clipped faces; on a non-planar face the two triangulations may pick different
+  diagonals, and the tolerance is how far that can move the centroid.
 
 ### 8.5 Distance is an exact minimum over element pairs
 
@@ -603,6 +627,15 @@ leaves the winding number without meaning. The overloads therefore raise for an 
 reading the cached verdict from the header, so the error does not depend on whether the pair
 is near enough to need the body.
 
+### 8.7 Perimeter is the boundary
+
+`ST_3DPerimeter` follows SQL/MM: the length of the boundary. A polygon's boundary is all of
+its rings. A `PolyhedralSurface`'s is the edges exactly one patch uses, so a closed surface
+has perimeter 0 and an open box has the rim of its opening. Edges are matched by their
+coordinates, as the surface stores no shared topology. PostGIS instead sums every ring of
+every patch, which counts each interior edge twice and says nothing about the surface's
+shape; that sum is `ST_3DPerimeter` over the patches, should anyone want it.
+
 ---
 
 ## 9. Development workflow
@@ -655,8 +688,6 @@ surface; PROJ-backed `ST_3DTransform`. See the
 
 **Near-term.**
 
-- Stored SRID in the payload header, enabling a one-argument `ST_3DTransform` and cross-CRS
-  mismatch detection ([FUTURE_WORK.md §2](./FUTURE_WORK.md)).
 - Bundling PROJ's `proj.db` into the distributable extension.
 - Moving CityJSON-aware interpretation upstream ([FUTURE_WORK.md §1](./FUTURE_WORK.md)).
 

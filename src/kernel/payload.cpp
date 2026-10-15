@@ -297,4 +297,11 @@ void DeserializePayloadInto(const uint8_t *data, size_t size, SolidModel &model)
 	ValidatePayloadModel(model, vertex_count, solid_count, shell_count, face_count, ring_count, triangle_count);
 }
 
+std::vector<uint8_t> WithSolidPayloadCrs(const uint8_t *data, size_t size, const std::string &crs) {
+	// Magic, version, flags, six counts and the bounding box come first.
+	constexpr size_t kCrsOffset = 4 + 2 + 2 + 4 + 6 * sizeof(uint32_t) + 6 * sizeof(double);
+	auto info = ReadSolidPayloadHeader(data, size);
+	return ReplaceCrsSlot(data, size, kCrsOffset, info.crs.size(), crs);
+}
+
 } // namespace duckdb_3d

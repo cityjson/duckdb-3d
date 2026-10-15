@@ -99,6 +99,26 @@ static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &re
 	});
 }
 
+static void ST_3DIsValidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		return info.validation.is_valid;
+	});
+}
+
+static void ST_3DAreaGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t geom) {
+		return Geom3DArea(DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize()));
+	});
+}
+
+static void ST_3DPerimeterGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t geom) {
+		return Geom3DPerimeter(
+		    DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize()));
+	});
+}
+
 static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
@@ -378,6 +398,15 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	                    {"introspection"}});
 
 	// Validation functions
+	ScalarFunctionSet is_valid_set("st_3disvalid");
+	is_valid_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsValidFun));
+	RegisterDocumented(loader, std::move(is_valid_set),
+	                   {{"solid"},
+	                    "Returns whether a SOLID_3D value is valid: ST_3DValidationReport's is_valid, read from the "
+	                    "cached verdict.",
+	                    "ST_3DIsValid(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"validation"}});
 	ScalarFunctionSet is_closed_set("st_3disclosed");
 	is_closed_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DIsClosedFun));
 	RegisterDocumented(loader, std::move(is_closed_set),
@@ -450,11 +479,12 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	// ST_3DArea is the surface-area measurement under a PostGIS-aligned name.
 	ScalarFunctionSet area3d_set("st_3darea");
 	area3d_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DSurfaceAreaFun));
+	area3d_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DAreaGeomFun));
 	RegisterDocumented(
 	    loader, std::move(area3d_set),
-	    {{"solid"},
-	     "Alias of ST_3DSurfaceArea: the total area of all faces of a SOLID_3D value in input units. Raises on "
-	     "degenerate faces.",
+	    {{"geom"},
+	     "Returns the 3D area in input units: for a SOLID_3D, ST_3DSurfaceArea (raises on degenerate faces); for a "
+	     "GEOM_3D, the total area of its polygons, holes excluded, and 0 for points and lines.",
 	     "ST_3DArea(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
 	     {"measurement"}});
 	ScalarFunctionSet volume_set("st_3dvolume");
@@ -481,10 +511,12 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	                    {"measurement"}});
 	ScalarFunctionSet perimeter_set("st_3dperimeter");
 	perimeter_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DPerimeterFun));
+	perimeter_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DPerimeterGeomFun));
 	RegisterDocumented(loader, std::move(perimeter_set),
-	                   {{"solid"},
-	                    "Returns the total length of a SOLID_3D value's boundary edges, those used by exactly one "
-	                    "face; a closed solid returns 0.",
+	                   {{"geom"},
+	                    "Returns a 3D perimeter in input units: for a SOLID_3D, the total length of its boundary "
+	                    "edges, those used by exactly one face (0 when closed); for a GEOM_3D, as PostGIS, the length "
+	                    "of every ring of its polygons, and 0 for points and lines.",
 	                    "ST_3DPerimeter(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
 	                    "0))'::GEOMETRY), 3.0))",
 	                    {"measurement"}});

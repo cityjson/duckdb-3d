@@ -24,6 +24,7 @@ please open an issue.
 - [Validation](#validation)
 - [Measurement](#measurement)
 - [Distance / relationships](#distance--relationships)
+- [CRS](#crs)
 - [Transform / construct](#transform--construct)
 - [Function index](#function-index)
 - [Appendix: test fixtures](#appendix-test-fixtures)
@@ -235,7 +236,8 @@ Two consequences worth knowing:
 ### `ST_3DFromWKB` / `ST_3DTryFromWKB`
 
 Builds a `SOLID_3D` from WKB. Accepts `PolyhedralSurface Z`, and `GeometryCollection Z` whose
-children are all `PolyhedralSurface Z`.
+children are all `PolyhedralSurface Z`, as ISO WKB or PostGIS EWKB. An EWKB SRID becomes the
+solid's [CRS](#crs).
 
 The optional second argument recovers structure that WKB alone cannot carry — chiefly **shell
 grouping**, which is what makes interior shells (cavities) subtract from volume and
@@ -267,8 +269,9 @@ Without the sidecar a `PolyhedralSurface Z` imports as one solid with **one** sh
 
 ### `ST_Geom3DFromWKB`
 
-Builds a `GEOM_3D` from WKB — the entry point for the distance, serialization, and
-general-accessor families. It is named `ST_Geom3DFromWKB` rather than `ST_GeomFromWKB` to
+Builds a `GEOM_3D` from ISO WKB, PostGIS EWKB or `GEOMETRY` — the entry point for the
+distance, serialization, and general-accessor families. An EWKB SRID, or the CRS of a
+`GEOMETRY` argument's type, becomes the value's [CRS](#crs). It is named `ST_Geom3DFromWKB` rather than `ST_GeomFromWKB` to
 avoid clashing with DuckDB's built-in. **There is no `TRY` variant**; wrap it in `TRY(...)`.
 
 Polygons are triangulated here, holes included, and the triangles are kept with the value
@@ -361,13 +364,15 @@ FROM ex;
 ┌──────────────────────┬─────┬───────┬──────┐
 │        gtype         │ dim │ ngeom │ cdim │
 ├──────────────────────┼─────┼───────┼──────┤
-│ ST_PolyhedralSurface │ 2   │ 1     │ 3    │
+│ ST_PolyhedralSurface │ 2   │ 10    │ 3    │
 └──────────────────────┴─────┴───────┴──────┘
 ```
 
 `ST_3DGeometryType` returns one of `ST_Point`, `ST_LineString`, `ST_Polygon`, `ST_MultiPoint`,
 `ST_MultiLineString`, `ST_MultiPolygon`, `ST_PolyhedralSurface`. `ST_3DDimension` is the
 *topological* dimension: `0` for points, `1` for lines, `2` for surfaces and solids.
+`ST_3DNumGeometries` counts a Multi geometry's members and a PolyhedralSurface's patches, as
+PostGIS's `ST_NumGeometries` does.
 
 > `ST_Geom3DFromWKB` does **not** accept `GeometryCollection Z` — it raises
 > `ParseGeomWKB: unsupported geometry class`. Collections of polyhedral surfaces are a
@@ -403,6 +408,7 @@ SELECT ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m FROM ex;   -- 1
 | `ST_3DIsClosed` | `(SOLID_3D)` | `BOOLEAN` |
 | `ST_3DIsManifold` | `(SOLID_3D)` | `BOOLEAN` |
 | `ST_3DIsOriented` | `(SOLID_3D)` | `BOOLEAN` |
+| `ST_3DIsValid` | `(SOLID_3D)` | `BOOLEAN` |
 | `ST_3DValidationReport` | `(SOLID_3D)` | `STRUCT` (16 fields) |
 
 Validation runs **at import** and is cached in the payload, so these are cheap reads rather
@@ -414,7 +420,8 @@ than recomputation.
 - **Oriented** — face winding is consistent within each shell, and every interior shell is a
   cavity: wound opposite the exterior, inside it, and not inside another interior shell.
 
-`ST_3DValidationReport` adds the two checks that have no predicate of their own:
+`ST_3DIsValid` is the report's `is_valid`: every check below passes. `ST_3DValidationReport`
+adds the two checks that have no predicate of their own:
 connectivity (a shell's faces all connected through shared edges) and self-intersection (no
 two faces crossing). The definitions and tolerances are in
 [DESIGN_DOC.md §8.1](./DESIGN_DOC.md#81-the-checks); val3dity agrees with `is_valid` on
@@ -493,13 +500,13 @@ fails several at once. That is why the report carries per-check counters rather 
 | --- | --- | --- | --- |
 | `ST_3DVolume` | `(SOLID_3D)` | `DOUBLE` | closed + manifold + oriented, no degenerate faces, no self-intersections — **else raises** |
 | `ST_3DSurfaceArea` | `(SOLID_3D)` | `DOUBLE` | no degenerate faces — **else raises** |
-| `ST_3DArea` | `(SOLID_3D)` | `DOUBLE` | alias of `ST_3DSurfaceArea` |
+| `ST_3DArea` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | on a solid, alias of `ST_3DSurfaceArea` |
 | `ST_3DFootprintArea` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | none |
-| `ST_3DPerimeter` | `(SOLID_3D)` | `DOUBLE` | none |
+| `ST_3DPerimeter` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | none |
 | `ST_3DLength` | `(GEOM_3D)` | `DOUBLE` | none |
 
-All measurements are **Cartesian in the input units** — no function reads a CRS. Reproject with
-`ST_3DTransform` first if the source units are not metric.
+All measurements are **Cartesian in the input units** — none reads the value's [CRS](#crs).
+Reproject with `ST_3DTransform` first if the source units are not metric.
 
 ```sql
 SELECT ROUND(ST_3DVolume(solid), 2)        AS volume_m3,
@@ -553,8 +560,14 @@ WHERE n_parts = 1 AND ST_3DValidationReport(solid).is_valid AND b3_volume_lod22 
   walls count toward surface area. Only volume distinguishes shell roles.
 - **`ST_3DFootprintArea`** is the 2D XY-projected ground area. It has no validity
   precondition, so it still works on solids that fail validation.
-- **`ST_3DPerimeter`** measures *boundary* edges — those used by exactly one face. A **closed
-  solid therefore returns `0`**; the function is meaningful for open shells.
+- **`ST_3DArea(GEOM_3D)`** sums the polygons of a `Polygon`, `MultiPolygon` or
+  `PolyhedralSurface`, holes excluded, from the triangles cached at import; `0` for points and
+  lines. On the building above it equals the solid's surface area.
+- **`ST_3DPerimeter`** measures the *boundary*, as SQL/MM defines a perimeter: on a solid and
+  on a `PolyhedralSurface`, the edges used by exactly one face, so a **closed solid or surface
+  returns `0`** and the function is meaningful for open shells; on a `Polygon` or
+  `MultiPolygon`, every ring, holes included. PostGIS's `ST_3DPerimeter` sums every ring of a
+  `PolyhedralSurface` instead, closed or not; on polygons the two agree.
 - **`ST_3DLength`** is `GEOM_3D`-only and applies to `LineString`/`MultiLineString`. It
   returns `0.0` (not an error) for any other geometry class.
 
@@ -571,13 +584,27 @@ FROM ex;
 └───────────┴────────┘
 ```
 
+```sql
+SELECT ROUND(ST_3DArea(g), 2) AS area_geom, ROUND(ST_3DArea(solid), 2) AS area_solid,
+       ROUND(ST_3DPerimeter(g), 4) AS perimeter_geom
+FROM ex;
+```
+```
+┌───────────┬────────────┬────────────────┐
+│ area_geom │ area_solid │ perimeter_geom │
+├───────────┼────────────┼────────────────┤
+│    567.55 │     567.55 │            0.0 │
+└───────────┴────────────┴────────────────┘
+```
+
 ---
 
 ## Distance / relationships
 
-All take **`GEOM_3D`** — build it with `ST_Geom3DFromWKB`. `ST_3DDistance`, `ST_3DDWithin` and
-`ST_3DIntersects` also take a **`SOLID_3D`** on either side, as the volume it bounds (see
-[Solids are volumes](#solids-are-volumes)).
+All take **`GEOM_3D`** — build it with `ST_Geom3DFromWKB`. `ST_3DDistance`, `ST_3DDWithin`,
+`ST_3DIntersects` and `ST_3DDisjoint` also take a **`SOLID_3D`** on either side, as the volume
+it bounds (see [Solids are volumes](#solids-are-volumes)). The two values must be in one
+[CRS](#crs).
 
 | Function | Signature | Returns |
 | --- | --- | --- |
@@ -586,6 +613,7 @@ All take **`GEOM_3D`** — build it with `ST_Geom3DFromWKB`. `ST_3DDistance`, `S
 | `ST_3DDWithin` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D, dist DOUBLE)` | `BOOLEAN` |
 | `ST_3DDFullyWithin` | `(GEOM_3D, GEOM_3D, dist DOUBLE)` | `BOOLEAN` |
 | `ST_3DIntersects` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D)` | `BOOLEAN` |
+| `ST_3DDisjoint` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D)` | `BOOLEAN` |
 | `ST_3DClosestPoint` | `(GEOM_3D, GEOM_3D)` | `GEOM_3D` (Point) |
 | `ST_3DShortestLine` | `(GEOM_3D, GEOM_3D)` | `GEOM_3D` (LineString) |
 
@@ -694,6 +722,54 @@ A volume is defined only for a valid solid, so an invalid one **raises** (`TRY` 
 
 ---
 
+## CRS
+
+| Function | Signature | Returns |
+| --- | --- | --- |
+| `ST_3DCRS` | `(SOLID_3D \| GEOM_3D)` | `VARCHAR` |
+| `ST_3DSRID` | `(SOLID_3D \| GEOM_3D)` | `INTEGER` |
+| `ST_3DSetCRS` | `(SOLID_3D \| GEOM_3D, crs VARCHAR)` | same type as input |
+
+Every value carries a CRS, or none. It comes in with the input: an EWKB SRID becomes
+`'EPSG:<srid>'`, and a `GEOMETRY('…')` argument brings its type's CRS. ISO WKB and a plain
+`GEOMETRY` bring none. `ST_3DSetCRS` labels a value without moving its coordinates, and an
+empty string removes the label.
+
+- **`ST_3DCRS`** returns the CRS string, `NULL` when there is none.
+- **`ST_3DSRID`** returns `n` for a CRS `'EPSG:n'` and `0` otherwise, PostGIS's unknown SRID.
+- Every function that returns a geometry keeps its input's CRS. `ST_3DTransform` labels its
+  result with the target CRS, and `ST_3DPlaceImplicit` gives its result the reference point's.
+- Functions of two values (`ST_3DDistance`, `ST_3DIntersects`, `ST_3DDisjoint`, `ST_3DDWithin`,
+  `ST_3DMaxDistance`, `ST_3DDFullyWithin`, `ST_3DClosestPoint`, `ST_3DShortestLine`) **raise**
+  when the two CRSs differ. A value without a CRS differs from one with, as in PostGIS. Two
+  spellings of one CRS, such as an authority code and a PROJJSON carrying that id, are equal.
+
+The 3DBAG tile is in `EPSG:7415` (RD New + NAP height), which its WKB does not carry:
+
+```sql
+SELECT ST_3DCRS(s) AS crs, ST_3DSRID(s) AS srid,
+       ST_3DAsText(ST_3DCentroid(ST_3DTransform(s, 4326))) AS wgs84_centroid,
+       ST_3DCRS(ST_3DTransform(s, 4326)) AS crs_after
+FROM (SELECT ST_3DSetCRS(solid, 'EPSG:7415') AS s FROM ex);
+```
+```
+┌───────────┬───────┬───────────────────────────────────────────┬───────────┐
+│    crs    │ srid  │              wgs84_centroid               │ crs_after │
+├───────────┼───────┼───────────────────────────────────────────┼───────────┤
+│ EPSG:7415 │  7415 │ POINT Z (4.3676484 52.0054997 4.73119833) │ EPSG:4326 │
+└───────────┴───────┴───────────────────────────────────────────┴───────────┘
+```
+
+```sql
+SELECT ST_3DDistance(ST_3DSetCRS(a.g, 'EPSG:7415'), b.g) FROM ex a, ex b;
+```
+```
+Invalid Input Error: ST_3DDistance: the inputs have different CRSs (EPSG:7415 and none);
+bring them to one with ST_3DTransform, or set one with ST_3DSetCRS
+```
+
+---
+
 ## Transform / construct
 
 | Function | Signature | Returns |
@@ -701,11 +777,11 @@ A volume is defined only for a valid solid, so an invalid one **raises** (`TRY` 
 | `ST_3DTranslate` | `(SOLID_3D \| GEOM_3D, dx, dy, dz DOUBLE)` | same type as input |
 | `ST_3DScale` | `(SOLID_3D \| GEOM_3D, sx, sy, sz DOUBLE)` | same type as input |
 | `ST_3DRotateX/Y/Z` | `(SOLID_3D \| GEOM_3D, radians DOUBLE)` | same type as input |
-| `ST_3DTransform` | `(SOLID_3D \| GEOM_3D, src, tgt)` | same type as input |
+| `ST_3DTransform` | `(SOLID_3D \| GEOM_3D, [src,] tgt)` | same type as input |
 | `ST_3DPlaceImplicit` | `(relative_geometry SOLID_3D \| GEOM_3D, reference_point GEOM_3D, transformation_matrix DOUBLE[])` | same type as `relative_geometry` |
 | `ST_3DExtrude` | `(GEOM_3D polygon, height DOUBLE)` | `SOLID_3D` |
 | `ST_MakeSolid` | `(GEOM_3D)` | `SOLID_3D` |
-| `ST_3DCentroid` | `(GEOM_3D)` | `GEOM_3D` (Point) |
+| `ST_3DCentroid` | `(SOLID_3D \| GEOM_3D)` | `GEOM_3D` (Point) |
 | `ST_3DConvexHull` | `(SOLID_3D \| GEOM_3D)` | `GEOM_3D` |
 | `ST_3DFootprintHull` | `(GEOM_3D)` | `GEOM_3D` |
 | `ST_Force3D` | `(GEOM_3D)` | `GEOM_3D` |
@@ -793,6 +869,8 @@ SELECT ST_3DAsText(ST_3DPlaceImplicit(
 ### `ST_3DTransform` — CRS reprojection
 
 ```
+ST_3DTransform(geom, target_srid INTEGER)                      → same type
+ST_3DTransform(geom, target_crs VARCHAR)                       → same type
 ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER) → same type
 ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)   → same type
 ```
@@ -805,7 +883,9 @@ form is shorthand for `EPSG:<n>`. PROJ **pipeline** strings (`'+proj=pipeline �
 accepted. Axis order is normalised to easting/northing, so `EPSG:4326` behaves as
 **(lon, lat)** — the GIS convention, not the authority's declared order.
 
-No SRID is stored in the payload, so **both** CRSs must be given on every call.
+The two-argument forms read the source CRS from the value and raise when it has none. The
+three-argument forms take it from the call, and raise when the value carries a different one.
+The result carries the target CRS (see [CRS](#crs)).
 
 ```sql
 -- Dutch RD New (EPSG:28992) → WGS84
@@ -909,8 +989,24 @@ FROM ex;
 
 ### `ST_3DCentroid`, `ST_Force3D`
 
-- **`ST_3DCentroid`** — area-weighted for surfaces and solids, length-weighted for lines,
-  vertex average for points. Returns a `Point Z`.
+- **`ST_3DCentroid`** — for a `SOLID_3D`, the centroid of its **volume**, cavities left out;
+  an unclosed solid raises. For a `GEOM_3D`, area-weighted for surfaces, length-weighted for
+  lines, vertex average for points. Returns a `Point Z`. A solid's volume centroid and its
+  surface's area centroid differ:
+
+```sql
+SELECT ST_3DAsText(ST_3DCentroid(solid)) AS volume_centroid,
+       ST_3DAsText(ST_3DCentroid(g))     AS surface_centroid
+FROM ex;
+```
+```
+┌────────────────────────────────────────────┬────────────────────────────────────────────┐
+│              volume_centroid               │              surface_centroid              │
+├────────────────────────────────────────────┼────────────────────────────────────────────┤
+│ POINT Z (84995.3322 446838.785 4.73119834) │ POINT Z (84995.2631 446838.844 4.73083413) │
+└────────────────────────────────────────────┴────────────────────────────────────────────┘
+```
+
 - **`ST_Force3D`** — currently an identity round-trip, since `GEOM_3D` already stores XYZ.
   Reserved for future 2D inputs.
 
@@ -918,22 +1014,23 @@ FROM ex;
 
 ## Function index
 
-53 public functions.
+58 public functions.
 
 | Category | Functions |
 | --- | --- |
 | **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB` |
 | **Export** | `ST_3DAsWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
 | **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DZMin`, `ST_3DZMax`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
-| **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
+| **Validation** | `ST_3DIsValid`, `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
-| **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
+| **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DDisjoint`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
+| **CRS** | `ST_3DCRS`, `ST_3DSRID`, `ST_3DSetCRS` |
 | **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DPlaceImplicit`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_3DFootprintHull`, `ST_Force3D` |
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
-registered: `ST_3DIsValid` (validity is a field of `ST_3DValidationReport`), `ST_3DUnion` /
+registered: `ST_3DUnion` /
 `ST_3DIntersection` / `ST_3DDifference`, `ST_3DLongestLine`, `ST_3DExtent`, `ST_Affine`,
-`ST_SRID` / `ST_SetSRID`, `ST_AsGML` / `ST_AsKML` / `ST_AsX3D`, `ST_HasM` / `ST_M`,
+`ST_SRID` / `ST_SetSRID` (see `ST_3DSRID` / `ST_3DSetCRS`), `ST_AsGML` / `ST_AsKML` / `ST_AsX3D`, `ST_HasM` / `ST_M`,
 `ST_Boundary`, `ST_PointOnSurface`, `ST_Tesselate`, `ST_StraightSkeleton`,
 `ST_ApproximateMedialAxis`. The boolean operations await a decision on a
 CGAL/SFCGAL backend — see [DESIGN_DOC.md §11](./DESIGN_DOC.md#11-roadmap).

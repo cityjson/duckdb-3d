@@ -736,7 +736,8 @@ def check_solids(eng: Engines, items: list[Item], args) -> list[Outcome]:
             END $$ LANGUAGE plpgsql""")
     # One statement per row with a time limit: SFCGAL's 3D intersection of two
     # solids builds Nef polyhedra and can take minutes on a detailed pair. A row
-    # it does not finish is skipped like a refused one.
+    # it does not finish is skipped like a refused one. SFCGAL does not check for
+    # interrupts, so the limit takes effect only when its call returns.
     ours = eng.duck_rows(duck_sql)
     theirs = {}
     with eng.pg.cursor() as cur:
@@ -810,7 +811,195 @@ def check_solids(eng: Engines, items: list[Item], args) -> list[Outcome]:
     return out
 
 
-CHECKS = {"distance": check_distance, "solids": check_solids}
+def _length(v):
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def oracle_area(faces) -> float:
+    """Area of planar faces, holes subtracted: half the length of each ring's
+    Newell vector. On a non-planar face this is the projected (vector) area, which
+    differs from any triangulation's area by second order in the face's deviation."""
+    return sum(_length(_newell(face[0])) / 2 - sum(_length(_newell(h)) / 2 for h in face[1:]) for face in faces)
+
+
+def oracle_centroid(item: Item):
+    """(centroid, volume) of a solid from the ear-clipped triangles of its faces:
+    the signed tetrahedra about the box's lower corner, summed over every shell
+    (inner shells face inward, so they subtract). None when a face has a hole or
+    ear clipping cannot tile it."""
+    o = item.bbox[:3]
+    vol = mx = my = mz = 0.0
+    for face in item.faces:
+        tris = _ear_clip(face)
+        if tris is None:
+            return None
+        for a, b, c in tris:
+            a, b, c = (tuple(p[k] - o[k] for k in range(3)) for p in (a, b, c))
+            v = (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                 + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+            vol += v
+            mx += v * (a[0] + b[0] + c[0]) / 4.0
+            my += v * (a[1] + b[1] + c[1]) / 4.0
+            mz += v * (a[2] + b[2] + c[2]) / 4.0
+    if vol == 0.0:
+        return None
+    return (o[0] + mx / vol, o[1] + my / vol, o[2] + mz / vol), vol
+
+
+def centroid_slack(item: Item, volume: float) -> float:
+    """How far a solid's centroid can move between two triangulations of its
+    non-planar faces. Two triangulations of a face lie within a slab of twice its
+    deviation, so they enclose volumes differing by at most 2 * deviation * area;
+    that volume sits within the box's diagonal of the centroid."""
+    swept = sum(2 * face_deviation(f) * oracle_area([f]) for f in item.faces)
+    return swept * math.dist(item.bbox[:3], item.bbox[3:]) / abs(volume)
+
+
+def sfcgal_face(face) -> bytes:
+    """A face as Polygon Z WKB for SFCGAL, its exterior ring starting at a vertex
+    whose two successors are not collinear with it: SFCGAL takes a polygon's
+    plane from its first three vertices and gives area 0 when they are collinear."""
+    ring = face[0]
+    n = len(ring)
+    start = 0
+    for i in range(n):
+        a, b, c = ring[i], ring[(i + 1) % n], ring[(i + 2) % n]
+        if _length(_cross(_sub(b, a), _sub(c, a))) > 1e-9 * max(1.0, _length(_sub(b, a)) * _length(_sub(c, a))):
+            start = i
+            break
+    rings = [ring[start:] + ring[:start]] + face[1:]
+    out = bytearray(struct.pack("<BII", 1, 1003, len(rings)))
+    for r in rings:
+        out += struct.pack("<I", len(r) + 1)
+        for v in r + r[:1]:
+            out += struct.pack("<3d", *v)
+    return bytes(out)
+
+
+def _perimeter(faces) -> float:
+    return sum(math.dist(a, b) for face in faces for ring in face for a, b in zip(ring, ring[1:] + ring[:1]))
+
+
+def oracle_boundary(faces) -> float:
+    """Length of a surface's boundary: the edges exactly one face uses."""
+    uses = {}
+    for face in faces:
+        for ring in face:
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                if a != b:
+                    e = (min(a, b), max(a, b))
+                    uses[e] = uses.get(e, 0) + 1
+    return sum(math.dist(*e) for e, n in uses.items() if n == 1)
+
+
+def check_measures(eng: Engines, items: list[Item], args) -> list[Outcome]:
+    """ST_3DArea, ST_3DPerimeter and ST_3DNumGeometries on GEOM_3D against
+    PostGIS (SFCGAL for the area) and an independent area; ST_3DCentroid on
+    SOLID_3D against an independent centroid, since PostGIS has no 3D centroid."""
+    rows = [(it.key, it.wkb, json.dumps({"type": "Solid", "shells": [it.shells]}) if it.role == "solid" else None,
+             sfcgal_face(it.faces[0]) if it.role == "face" else None) for it in items]
+    eng.load("measure_items", [("k", "VARCHAR", "text"), ("w", "BLOB", "bytea"), ("s", "VARCHAR", "text"),
+                               ("fw", "BLOB", "bytea")], rows)
+    ours = eng.duck_rows("""
+        SELECT k, ST_3DArea(g), ST_3DPerimeter(g), ST_3DNumGeometries(g),
+               ST_3DX(c), ST_3DY(c), ST_3DZ(c)
+        FROM (SELECT k, TRY(ST_Geom3DFromWKB(w)) AS g,
+                     CASE WHEN s IS NOT NULL THEN TRY(ST_3DCentroid(ST_3DFromWKB(w, s))) END AS c
+              FROM measure_items)""")
+    with eng.pg.cursor() as cur:
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION oracle_area(g geometry) RETURNS double precision AS $$
+            BEGIN RETURN ST_3DArea(g); EXCEPTION WHEN others THEN RETURN NULL; END $$ LANGUAGE plpgsql""")
+    # SFCGAL's area only for single faces: on some whole buildings it runs for
+    # minutes and heeds no time limit. Surfaces and solids have the independent
+    # area instead.
+    theirs = eng.pg_rows("""
+        SELECT k, CASE WHEN fw IS NOT NULL THEN oracle_area(ST_GeomFromWKB(fw)) END, ST_3DPerimeter(g),
+               ST_NumGeometries(g)
+        FROM (SELECT k, fw, ST_GeomFromWKB(w) AS g FROM measure_items) t""")
+    tol = args.distance_tol
+    by_key = {it.key: it for it in items}
+    o_sfcgal = Outcome("ST_3DArea(GEOM_3D)", oracle="SFCGAL ST_3DArea")
+    o_newell = Outcome("ST_3DArea(GEOM_3D)", oracle="independent: Newell vector area per ring")
+    o_perim = Outcome("ST_3DPerimeter(GEOM_3D) [polygons]", oracle="PostGIS ST_3DPerimeter")
+    o_bound = Outcome("ST_3DPerimeter(GEOM_3D) [surfaces]", oracle="independent: edges one face uses")
+    o_ngeom = Outcome("ST_3DNumGeometries(GEOM_3D)", oracle="PostGIS ST_NumGeometries")
+    o_cent = Outcome("ST_3DCentroid(SOLID_3D)", oracle="independent: signed tetrahedra over ear-clipped faces")
+    planar_max = 0.0
+    refused = 0
+    strict = 0
+    for k, (area, perim, ngeom, cx, cy, cz) in ours.items():
+        it = by_key[k]
+        p_area, p_perim, p_ngeom = theirs[k]
+        if area is None:
+            # ST_Geom3DFromWKB refuses a polygon that admits no triangulation.
+            refused += 1
+            continue
+        # A non-planar face has no single area: triangulations differ by second
+        # order in the deviation, which perimeter * deviation bounds generously.
+        bound = tol * max(1.0, area) + _perimeter(it.faces) * it.deviation
+        for o, ref in ((o_sfcgal, p_area), (o_newell, oracle_area(it.faces))):
+            if ref is None:
+                why = "not a single face, or SFCGAL refuses it"
+                o.skipped[why] = o.skipped.get(why, 0) + 1
+                continue
+            o.compared += 1
+            o.max_abs = max(o.max_abs, abs(area - ref))
+            if it.deviation == 0.0:
+                planar_max = max(planar_max, abs(area - ref) / max(1.0, ref))
+            if abs(area - ref) <= bound:
+                o.agree += 1
+            else:
+                o.disagreements.append((k, (area,), (ref,)))
+        # PostGIS sums every ring of a PolyhedralSurface; SQL/MM, and duckdb-3d,
+        # take its boundary.
+        o, ref = (o_perim, p_perim) if it.role == "face" else (o_bound, oracle_boundary(it.faces))
+        o.compared += 1
+        o.max_abs = max(o.max_abs, abs(perim - ref))
+        if abs(perim - ref) <= 1e-9 * max(1.0, ref):
+            o.agree += 1
+        else:
+            o.disagreements.append((k, (perim,), (ref,)))
+        o_ngeom.compared += 1
+        if ngeom == p_ngeom:
+            o_ngeom.agree += 1
+        else:
+            o_ngeom.disagreements.append((k, (ngeom,), (p_ngeom,)))
+        if it.role != "solid":
+            continue
+        if cx is None:
+            o_cent.skipped["the solid is not closed (raises)"] = o_cent.skipped.get("the solid is not closed (raises)", 0) + 1
+            continue
+        got = oracle_centroid(it)
+        if got is None:
+            o_cent.skipped["a face ear clipping cannot tile"] = o_cent.skipped.get("a face ear clipping cannot tile", 0) + 1
+            continue
+        ref, volume = got
+        d = math.dist((cx, cy, cz), ref)
+        o_cent.compared += 1
+        o_cent.max_abs = max(o_cent.max_abs, d)
+        slack = centroid_slack(it, volume)
+        strict += slack <= tol
+        if d <= tol + slack:
+            o_cent.agree += 1
+        else:
+            o_cent.disagreements.append((k, (cx, cy, cz), ref))
+    kinds = {r: sum(1 for it in items if it.role == r) for r in ("solid", "surface", "face")}
+    o_sfcgal.note = (f"{kinds['solid']} solids and {kinds['surface']} surfaces as PolyhedralSurface Z, "
+                     f"{kinds['face']} single faces as Polygon Z; tolerance {tol:g} relative plus perimeter times "
+                     f"the largest face deviation; on exactly planar rows the largest relative difference over both "
+                     f"references is {planar_max:.3g}")
+    o_cent.note = ("tolerance: distance-tol plus how far the centroid can move between two triangulations of "
+                   f"the non-planar faces; for {strict} solids that slack is below distance-tol")
+    o_newell.note = f"{refused} geometries skipped: ST_Geom3DFromWKB refuses a polygon with no triangulation"
+    return [o_sfcgal, o_newell, o_perim, o_bound, o_ngeom, o_cent]
+
+
+CHECKS = {"distance": check_distance, "solids": check_solids, "measures": check_measures}
 
 
 # --------------------------------------------------------------------------

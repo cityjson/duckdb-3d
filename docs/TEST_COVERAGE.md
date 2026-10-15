@@ -137,7 +137,7 @@ outside the exterior or inside each other (403, 401) — have no disagreement. T
 tests in `test/cpp/test_validation.cpp` pin each check on constructed solids and on real
 3DBAG buildings, including that the verdict survives rotation and a change of unit.
 
-### Live comparison on real data — the distance family
+### Live comparison on real data — distance, solids and measures
 
 `scripts/oracle/live_diff.py` runs the distance family on five published datasets (3DBAG
 Delft, the TU Delft LoD3 railway model, Rotterdam Delfshaven, Den Haag, Vienna) in duckdb-3d
@@ -157,6 +157,26 @@ interior rings in the face's plane (a point at the centre of a 1 x 1 hole is 2.1
 face, not 0.5), and it measures a non-planar face against a plane of its own fitting, which
 on Delft puts some faces 0.7 mm from planar 5 mm out. `test/sql/geom_3d_distance.test` pins
 both by construction.
+
+`--checks solids` compares the `SOLID_3D` overloads, which measure the volume, against
+SFCGAL's volume predicates on points and object pairs. `--checks measures` compares:
+
+| Function | Reference |
+| --- | --- |
+| `ST_3DArea(GEOM_3D)` | SFCGAL `ST_3DArea` per face, and each ring's Newell vector area on every row |
+| `ST_3DPerimeter(GEOM_3D)` | PostGIS on polygons; on surfaces the edges one patch uses (DESIGN_DOC §8.7) |
+| `ST_3DNumGeometries(GEOM_3D)` | PostGIS `ST_NumGeometries` |
+| `ST_3DCentroid(SOLID_3D)` | Signed tetrahedra over ear-clipped faces, within how far a different diagonal on a non-planar face moves the centroid |
+
+On the five datasets (seed 20261015) every row agrees: 82 047 faces against SFCGAL and
+105 087 geometries against the Newell area, 95 477 polygon and 9 610 surface perimeters,
+105 087 part counts and 6 221 solid centroids. SFCGAL is handed each face starting at a vertex
+whose successors are not collinear: it takes the plane from the first three vertices, and on
+eight Vienna wall faces whose first three are collinear it reports area 0. Two Den Haag
+centroids differ from the oracle by up to 1.5 cm only through the diagonal of two non-planar
+quads; with the same diagonals the two agree to 1e-14. On 4 098 of the 6 221 solids the faces
+are planar enough that the centroid is held to 1e-6 m; the largest difference elsewhere is
+7.6 cm, on a Den Haag building whose faces lie up to 30 cm from planar.
 
 ### Metamorphic properties — dependency-free invariants
 

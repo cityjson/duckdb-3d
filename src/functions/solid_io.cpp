@@ -28,10 +28,15 @@ using duckdb_3d::SolidModel;
 // ──────────────────────────────────────────────────────────────
 // ST_3DFromWKB(wkb BLOB | GEOMETRY) → SOLID_3D (BLOB)
 // ──────────────────────────────────────────────────────────────
-static void FromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+//! `crs` is the CRS a GEOMETRY argument's type carries; WKB from a BLOB brings
+//! its own, from an EWKB SRID.
+static void FromWKBVector(Vector &wkb_vec, idx_t count, Vector &result, const std::string &crs) {
 	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, count, [&](string_t wkb) {
 		auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 		auto model = BuildSolidModel(surfaces);
+		if (!crs.empty()) {
+			model.crs = crs;
+		}
 		auto payload = SerializePayload(model);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -39,18 +44,21 @@ static void FromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
 }
 
 static void ST_3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	FromWKBVector(args.data[0], args.size(), result);
+	FromWKBVector(args.data[0], args.size(), result, std::string());
 }
 
 // ──────────────────────────────────────────────────────────────
 // ST_3DTryFromWKB(wkb BLOB | GEOMETRY) → SOLID_3D (BLOB) or NULL
 // ──────────────────────────────────────────────────────────────
-static void TryFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+static void TryFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result, const std::string &crs) {
 	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
 	    wkb_vec, result, count, [&](string_t wkb, ValidityMask &mask, idx_t idx) -> string_t {
 		    try {
 			    auto surfaces = ParseWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
 			    auto model = BuildSolidModel(surfaces);
+			    if (!crs.empty()) {
+				    model.crs = crs;
+			    }
 			    auto payload = SerializePayload(model);
 			    return StringVector::AddStringOrBlob(
 			        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -62,7 +70,7 @@ static void TryFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
 }
 
 static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	TryFromWKBVector(args.data[0], args.size(), result);
+	TryFromWKBVector(args.data[0], args.size(), result, std::string());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -76,13 +84,13 @@ static void ST_3DTryFromWKBFun(DataChunk &args, ExpressionState &state, Vector &
 static void ST_3DFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	Vector wkb_vec(LogicalType::BLOB);
 	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
-	FromWKBVector(wkb_vec, args.size(), result);
+	FromWKBVector(wkb_vec, args.size(), result, BoundCrs(state));
 }
 
 static void ST_3DTryFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	Vector wkb_vec(LogicalType::BLOB);
 	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
-	TryFromWKBVector(wkb_vec, args.size(), result);
+	TryFromWKBVector(wkb_vec, args.size(), result, BoundCrs(state));
 }
 
 static unique_ptr<FunctionData> BindFromWkbArg(ClientContext &, ScalarFunction &bound_function,
@@ -132,6 +140,7 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 		Geometry::ToBinary(args.data[0], converted_wkb, count);
 	}
 	auto &wkb_vec = GEOMETRY_INPUT ? converted_wkb : args.data[0];
+	const auto crs = BoundCrs(state);
 
 	UnifiedVectorFormat wkb_data;
 	wkb_vec.ToUnifiedFormat(count, wkb_data);
@@ -179,6 +188,9 @@ static void FromWKBWithMetaExecutor(DataChunk &args, ExpressionState &state, Vec
 				model = BuildSolidModel(surfaces, metadata);
 			} else {
 				model = BuildSolidModel(surfaces);
+			}
+			if (!crs.empty()) {
+				model.crs = crs;
 			}
 			auto payload = SerializePayload(model);
 			result_data[i] = StringVector::AddStringOrBlob(
@@ -228,7 +240,7 @@ static unique_ptr<FunctionData> BindWkbMeta(ClientContext &, ScalarFunction &bou
 		bound_function.function = KernelErrorsAsInvalidInput(
 		    geometry_input ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, true>
 		                   : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, false>);
-		return nullptr;
+		return GeometryArgumentCrs(wkb_type);
 	case LogicalTypeId::STRUCT: {
 		auto &child_types = StructType::GetChildTypes(meta_type);
 		bool has_shells = false;
@@ -257,9 +269,9 @@ static unique_ptr<FunctionData> BindWkbMeta(ClientContext &, ScalarFunction &bou
 		bound_function.function = KernelErrorsAsInvalidInput(
 		    geometry_input ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, true>
 		                   : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, false>);
-		// The executor resolves `type`/`shells` by name from the normalised type,
-		// so no bind data is needed.
-		return nullptr;
+		// The executor resolves `type`/`shells` by name from the normalised type;
+		// the bind data carries only a GEOMETRY argument's CRS.
+		return GeometryArgumentCrs(wkb_type);
 	}
 	default:
 		throw BinderException("ST_3DFromWKB: metadata must be a geometry_properties STRUCT or a JSON VARCHAR, got " +

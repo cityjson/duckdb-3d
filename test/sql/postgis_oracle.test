@@ -317,11 +317,11 @@ DROP TABLE golden_pairs;
 # accessors exist on only one of the two, hence the role filters below.
 #
 # Where PostGIS is deliberately NOT the reference:
-#   * ST_3DDimension / ST_3DNumGeometries on a PolyhedralSurface — PostGIS reads
-#     a closed PolyhedralSurface as a solid (ST_Dimension = 3, and 2 for the open
-#     one) and ST_NumGeometries as its patch count; three_d reports the
-#     topological dimension of the surface (2) and treats the surface as one
-#     geometry. Different questions, so those two are oracled on the 'geom' rows.
+#   * ST_3DDimension on a PolyhedralSurface — PostGIS reads a closed
+#     PolyhedralSurface as a solid (ST_Dimension = 3, and 2 for the open one);
+#     three_d reports the topological dimension of the surface (2). A different
+#     question, so it is oracled on the 'geom' rows. ST_3DNumGeometries counts
+#     a PolyhedralSurface's patches, as PostGIS does, and is oracled on both.
 #   * ST_3DPerimeter — PostGIS's is the sum of every face's ring length; three_d's
 #     is the length of the *boundary* edges only (0 for a closed solid). Not the
 #     same measurement; see docs/TEST_COVERAGE.md.
@@ -375,6 +375,13 @@ query I
 SELECT bool_and(ST_3DDimension(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_dimension)
    AND bool_and(ST_3DNumGeometries(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_numgeom)
 FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# A PolyhedralSurface has one geometry per patch.
+query I
+SELECT count(*) > 0 AND bool_and(ST_3DNumGeometries(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_numgeom)
+FROM golden WHERE pg_geomtype = 'ST_PolyhedralSurface';
 ----
 true
 

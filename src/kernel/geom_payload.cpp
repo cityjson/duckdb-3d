@@ -208,4 +208,11 @@ std::vector<uint8_t> RebuildGeomPayload(const uint8_t *data, size_t size) {
 	return SerializeGeomPayload(model);
 }
 
+std::vector<uint8_t> WithGeomPayloadCrs(const uint8_t *data, size_t size, const std::string &crs) {
+	// Magic, version, type, the bounding box and the vertex count come first.
+	constexpr size_t kCrsOffset = 4 + 2 + 2 + 4 + 6 * sizeof(double) + sizeof(uint32_t);
+	auto info = ReadGeomPayloadHeader(data, size);
+	return ReplaceCrsSlot(data, size, kCrsOffset, info.crs.size(), crs);
+}
+
 } // namespace duckdb_3d

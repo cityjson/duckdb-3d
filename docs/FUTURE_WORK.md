@@ -53,22 +53,16 @@ grouping counts, rather than a CityJSON special case inside the kernel.
 
 ### The constraint
 
-Coordinates are raw `DOUBLE` XYZ. The payload has a CRS slot that no function sets or reads
-yet, so both CRSs must be given on every `ST_3DTransform` call, and all measurement math is Cartesian in the input units. Callers
-reproject into a suitable metric CRS before measuring. See
-[FUNCTIONS.md](./FUNCTIONS.md#st_3dtransform--crs-reprojection) for the current semantics.
+Coordinates are raw `DOUBLE` XYZ, labelled with a CRS (DESIGN_DOC §5), and all measurement
+math is Cartesian in the input units. Callers reproject into a suitable metric CRS before
+measuring. See [FUNCTIONS.md](./FUNCTIONS.md#crs) for the current semantics.
 
 ### Open work
 
 1. **Vertical datum / 3D reprojection.** Currently Z is passed through untouched. Ellipsoidal↔
    orthometric height and geoid models are out of scope; genuinely hard and rarely needed for
    the city-model workflows here. Revisit only on demand.
-2. **Stored CRS + `ST_SRID` / `ST_SetSRID`.** Fill and read the payload's CRS slot (DESIGN_DOC
-   §5.1). This would enable the single-argument
-   `ST_3DTransform(geom, target_srid)` form (reading the stored source SRID, like PostGIS) and
-   cross-CRS mismatch detection (e.g. refuse `ST_3DDistance` across differing SRIDs). Lowest
-   cost, high safety value — the natural next step.
-3. **`proj.db` distribution bundling.** Reprojection depends on PROJ's datum database at
+2. **`proj.db` distribution bundling.** Reprojection depends on PROJ's datum database at
    runtime. Locally it resolves via the Homebrew/vcpkg install path; bundling it into a single
    distributable `.duckdb_extension` (as `duckdb_spatial` does, via
    `proj_context_set_search_paths`) is still outstanding and is the main gap before shipping

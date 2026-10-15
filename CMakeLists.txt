@@ -27,6 +27,7 @@ set(EXTENSION_SOURCES
     src/functions/transforms.cpp
     src/functions/struct_metadata.cpp
     src/functions/casts.cpp
+    src/functions/crs.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp

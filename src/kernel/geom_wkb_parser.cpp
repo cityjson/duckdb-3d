@@ -62,7 +62,7 @@ void ReadPolygonPartsZ(WkbCursor &cur, GeomModel &model) {
 	bool outer_swap = cur.swap_bytes;
 	for (uint32_t i = 0; i < polygon_count; i++) {
 		cur.ReadByteOrder(); // each child Polygon carries its own byte-order flag
-		uint32_t child_type = cur.ReadU32();
+		uint32_t child_type = cur.ReadTypeCode();
 		if (child_type != 1003) {
 			throw std::runtime_error("ParseGeomWKB: expected Polygon Z child");
 		}
@@ -79,7 +79,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	WkbCursor cur(data, size, "ParseGeomWKB: unexpected end of WKB");
 
 	cur.ReadByteOrder();
-	uint32_t wkb_type = cur.ReadU32();
+	uint32_t wkb_type = cur.ReadTypeCode();
 
 	GeomModel model;
 	switch (wkb_type) {
@@ -106,7 +106,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		bool outer_swap = cur.swap_bytes;
 		for (uint32_t i = 0; i < point_count; i++) {
 			cur.ReadByteOrder();
-			uint32_t child_type = cur.ReadU32();
+			uint32_t child_type = cur.ReadTypeCode();
 			if (child_type != 1001) {
 				throw std::runtime_error("ParseGeomWKB: MultiPoint Z child is not Point Z");
 			}
@@ -124,7 +124,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		bool outer_swap = cur.swap_bytes;
 		for (uint32_t i = 0; i < line_count; i++) {
 			cur.ReadByteOrder();
-			uint32_t child_type = cur.ReadU32();
+			uint32_t child_type = cur.ReadTypeCode();
 			if (child_type != 1002) {
 				throw std::runtime_error("ParseGeomWKB: MultiLineString Z child is not LineString Z");
 			}
@@ -148,6 +148,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		throw std::runtime_error("ParseGeomWKB: unsupported geometry class");
 	}
 
+	model.crs = cur.SridCrs();
 	model.ComputeBBox();
 	return model;
 }

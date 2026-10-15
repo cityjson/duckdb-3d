@@ -1,6 +1,8 @@
 #include "kernel/geom_analysis.hpp"
+#include "kernel/triangulation.hpp"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -426,6 +428,82 @@ double Geom3DFootprintArea(const GeomModel &geom) {
 		// Points and (multi)lines have no area.
 		return 0.0;
 	}
+}
+
+namespace {
+
+bool IsSurface(GeomType type) {
+	return type == GeomType::Polygon || type == GeomType::MultiPolygon || type == GeomType::PolyhedralSurface;
+}
+
+} // namespace
+
+double Geom3DArea(const GeomModel &geom) {
+	if (!IsSurface(geom.type)) {
+		return 0.0;
+	}
+	const GeomModel *m = &geom;
+	GeomModel triangulated;
+	if (geom.polygon_triangle_offsets.size() != geom.PolygonCount() + 1) {
+		triangulated = geom;
+		TriangulateGeomModel(triangulated);
+		m = &triangulated;
+	}
+	double total = 0.0;
+	for (size_t t = 0; t + 2 < m->triangle_indices.size(); t += 3) {
+		Vec3 ab = Sub(m->vertices[m->triangle_indices[t + 1]], m->vertices[m->triangle_indices[t]]);
+		Vec3 ac = Sub(m->vertices[m->triangle_indices[t + 2]], m->vertices[m->triangle_indices[t]]);
+		total += 0.5 * Length(Cross(ab, ac));
+	}
+	return total;
+}
+
+double Geom3DPerimeter(const GeomModel &geom) {
+	if (!IsSurface(geom.type)) {
+		return 0.0;
+	}
+	auto edge_at = [&](uint32_t i, uint32_t begin, uint32_t end) {
+		return std::make_pair(geom.vertices[i], geom.vertices[i + 1 < end ? i + 1 : begin]);
+	};
+	if (geom.type != GeomType::PolyhedralSurface) {
+		double total = 0.0;
+		for (size_t r = 0; r + 1 < geom.ring_offsets.size(); r++) {
+			for (uint32_t i = geom.ring_offsets[r]; i < geom.ring_offsets[r + 1]; i++) {
+				auto edge = edge_at(i, geom.ring_offsets[r], geom.ring_offsets[r + 1]);
+				total += Length(Sub(edge.second, edge.first));
+			}
+		}
+		return total;
+	}
+	// A surface's boundary: the edges exactly one patch uses, matched by their
+	// end points' coordinates.
+	auto less = [](const Vertex3D &a, const Vertex3D &b) {
+		return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z;
+	};
+	using Edge = std::pair<Vertex3D, Vertex3D>;
+	auto edge_less = [&](const Edge &a, const Edge &b) {
+		if (less(a.first, b.first) || less(b.first, a.first)) {
+			return less(a.first, b.first);
+		}
+		return less(a.second, b.second);
+	};
+	std::map<Edge, uint32_t, decltype(edge_less)> uses(edge_less);
+	for (size_t r = 0; r + 1 < geom.ring_offsets.size(); r++) {
+		for (uint32_t i = geom.ring_offsets[r]; i < geom.ring_offsets[r + 1]; i++) {
+			auto edge = edge_at(i, geom.ring_offsets[r], geom.ring_offsets[r + 1]);
+			if (less(edge.second, edge.first)) {
+				std::swap(edge.first, edge.second);
+			}
+			uses[edge]++;
+		}
+	}
+	double total = 0.0;
+	for (const auto &entry : uses) {
+		if (entry.second == 1) {
+			total += Length(Sub(entry.first.second, entry.first.first));
+		}
+	}
+	return total;
 }
 
 } // namespace duckdb_3d

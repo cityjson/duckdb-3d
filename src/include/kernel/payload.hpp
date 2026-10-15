@@ -71,4 +71,8 @@ struct SolidPayloadInfo {
 //! unsupported major version. Use for count/bounds/validation-cache accessors.
 SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size);
 
+//! The SOLID_3D payload with its CRS replaced by `crs` (empty clears it); the
+//! body is copied, not decoded. Throws what ReadSolidPayloadHeader throws.
+std::vector<uint8_t> WithSolidPayloadCrs(const uint8_t *data, size_t size, const std::string &crs);
+
 } // namespace duckdb_3d

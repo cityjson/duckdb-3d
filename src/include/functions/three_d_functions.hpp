@@ -51,6 +51,52 @@ inline PayloadKind GetPayloadKind(const uint8_t *data, size_t size) {
 	return PayloadKind::Unknown;
 }
 
+//! A value's CRS, a string in its payload that is empty when there is none.
+//! Defined in functions/crs.cpp.
+std::string PayloadCrs(string_t payload);
+//! Whether two CRS strings name one CRS: equal, or two spellings DuckDB's CRS
+//! comparison identifies. Empty matches only empty.
+bool SameCrs(const std::string &a, const std::string &b);
+//! Raise for a function of two values in different CRSs (none counts as one).
+void RequireSameCrs(const std::string &a, const std::string &b, const char *function);
+//! The source CRS ST_3DTransform uses: `source` when given, which must agree with
+//! the value's own `stored` CRS if it has one, else `stored`, which must exist.
+std::string TransformSourceCrs(const std::string &stored, const std::string &source);
+
+//! Wrap a function of two values (its first two arguments) so that a row whose
+//! values are in different CRSs raises, named as `name`, before it computes.
+inline scalar_function_t WithSameCrs(scalar_function_t function, const char *name) {
+	return [function, name](DataChunk &args, ExpressionState &state, Vector &result) {
+		UnifiedVectorFormat a, b;
+		args.data[0].ToUnifiedFormat(args.size(), a);
+		args.data[1].ToUnifiedFormat(args.size(), b);
+		auto a_values = UnifiedVectorFormat::GetData<string_t>(a);
+		auto b_values = UnifiedVectorFormat::GetData<string_t>(b);
+		for (idx_t i = 0; i < args.size(); i++) {
+			auto ai = a.sel->get_index(i);
+			auto bi = b.sel->get_index(i);
+			if (a.validity.RowIsValid(ai) && b.validity.RowIsValid(bi)) {
+				RequireSameCrs(PayloadCrs(a_values[ai]), PayloadCrs(b_values[bi]), name);
+			}
+		}
+		function(args, state, result);
+	};
+}
+
+//! The CRS a GEOMETRY argument's type carries, bound once per call site.
+struct CrsBindData : public FunctionData {
+	explicit CrsBindData(std::string crs) : crs(std::move(crs)) {
+	}
+	std::string crs;
+	unique_ptr<FunctionData> Copy() const override;
+	bool Equals(const FunctionData &other) const override;
+};
+//! Bind data for a WKB argument of `type`: its CRS for a GEOMETRY with one, else
+//! nullptr.
+unique_ptr<FunctionData> GeometryArgumentCrs(const LogicalType &type);
+//! The CRS the call bound (see GeometryArgumentCrs), or empty.
+std::string BoundCrs(ExpressionState &state);
+
 //! Bind for the single-argument WKB constructors. The argument is declared ANY
 //! so that ONE candidate covers both the BLOB a plain column carries and the
 //! GEOMETRY a Parquet-annotated column carries. Two separate overloads would
@@ -68,7 +114,7 @@ inline unique_ptr<FunctionData> BindWkbArgument(ScalarFunction &bound_function,
 		// Keep the argument's own type, CRS parameter and all, so no cast is added.
 		bound_function.arguments[0] = arg_type;
 		bound_function.function = KernelErrorsAsInvalidInput(std::move(geometry_fn));
-		return nullptr;
+		return GeometryArgumentCrs(arg_type);
 	}
 	bound_function.arguments[0] = LogicalType::BLOB;
 	bound_function.function = KernelErrorsAsInvalidInput(std::move(blob_fn));
@@ -128,6 +174,27 @@ inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunctionSet set, F
 	loader.RegisterFunction(std::move(info));
 }
 
+//! RegisterDocumented for a set whose overloads differ in what an argument
+//! position means: one entry per arity, matched to the overloads with that many
+//! arguments.
+inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunctionSet set, vector<FunctionDocs> docs_by_arity) {
+	for (auto &function : set.functions) {
+		function.SetFunctionCallback(KernelErrorsAsInvalidInput(function.GetFunctionCallback()));
+	}
+	CreateScalarFunctionInfo info(std::move(set));
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+	for (auto &docs : docs_by_arity) {
+		FunctionDescription description;
+		description.parameter_types = vector<LogicalType>(docs.parameter_names.size(), LogicalType::ANY);
+		description.parameter_names = std::move(docs.parameter_names);
+		description.description = std::move(docs.description);
+		description.examples = {std::move(docs.example)};
+		description.categories = std::move(docs.categories);
+		info.descriptions.push_back(std::move(description));
+	}
+	loader.RegisterFunction(std::move(info));
+}
+
 //! Single-overload form of RegisterDocumented.
 inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunction function, FunctionDocs docs) {
 	ScalarFunctionSet set(function.name);
@@ -145,6 +212,7 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                const LogicalType &geom_3d_type);
 void RegisterPayloadCasts(ExtensionLoader &loader, const LogicalType &solid_3d_type, const LogicalType &geom_3d_type);
+void RegisterCrsFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type, const LogicalType &geom_3d_type);
 void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                 const LogicalType &geom_3d_type);
 
