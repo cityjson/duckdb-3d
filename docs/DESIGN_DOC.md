@@ -173,12 +173,17 @@ registration is well-supported and needs no new physical type; a versioned opaqu
 gives full control over topology preservation and forward compatibility; and the value stays
 efficient for vectorized execution and cached materialization.
 
-**Consequences of the typed return.** Constructors return the alias, not plain `BLOB`. So
-generic `BLOB` consumers (`octet_length`, …) do not bind against constructor output, and
-no `SOLID_3D` → `BLOB` cast is registered — `…::BLOB` raises rather than reinterpreting the
-payload. Use `ST_3DAsWKB` when a real `BLOB` is wanted. For the same reason, a bare `NULL`
-is ambiguous for any function carrying both a typed and a `BLOB` overload and must be
-written `NULL::SOLID_3D`.
+**Consequences of the typed return.** Constructors return the alias, not plain `BLOB`, and
+functions take only the alias: none has a `BLOB` overload. A payload carries caches —
+the triangulation, the bounding box, the validation verdict — that decide what functions
+return, so a function that accepted any `BLOB` would trust caches nothing has checked. A
+payload read back from Parquet, or written by another tool, arrives as `BLOB` and becomes a
+`SOLID_3D` or `GEOM_3D` only through an explicit cast (`::SOLID_3D`, `::GEOM_3D`), which
+re-derives every cache from the topology and vertices and refuses bytes that are not a
+payload of that type. The rebuild costs a triangulation and, for a solid, a validation, so
+the casts are explicit: a query pays for it once when it materialises the cast. The reverse
+casts (`…::BLOB`) reinterpret the payload bytes; use `ST_3DAsWKB` / `ST_3DAsBinary` for
+interchange.
 
 **Why two types.** Solid-only operations (volume, closedness, shell counts) require topology
 that a point or a linestring simply does not have. Rather than making every such function
@@ -202,19 +207,32 @@ solid → shell, shell → face, face → ring, ring → vertex indices. This ke
 polygonal faces intact rather than flattening to triangles (§2.2).
 
 **Derived caches** — per-face triangulation ranges and triangle indices, the 3D bounding
-box, and the topology validity flags. All are recomputable from the core topology.
+box, and the topology validity flags. All are recomputable from the core topology, and the
+`BLOB` casts recompute them (§4).
 
-**Coordinates** are raw `DOUBLE` XYZ with **no stored CRS or SRID**. Upstream producers must
-apply any source transform before or during WKB construction; `ST_3DTransform` reprojects
-explicitly, with both CRSs given per call. All measurement math is Cartesian in the input
-units.
+**Coordinates** are raw `DOUBLE` XYZ. The payload has a slot for a CRS string, which every
+constructor leaves empty; upstream producers apply any source transform before or during
+WKB construction, and `ST_3DTransform` reprojects explicitly, with both CRSs given per
+call. All measurement math is Cartesian in the input units.
 
 ### 5.1 Binary payload format
 
-`SOLID_3D` uses a versioned binary layout: a header (magic `D3DS`, `u16` major / `u16` minor
-version, flags, and counts), the offset arrays, the data arrays (vertices, ring indices,
-triangles), and a validation-cache trailer. `GEOM_3D` uses the parallel `D3DG` layout with a
-geometry type code in place of the solid validation trailer.
+`SOLID_3D` uses a versioned binary layout (version 2): a header (magic `D3DS`, `u16`
+major / `u16` minor version, flags, counts and the bounding box), the CRS as a `u32` byte
+length and its bytes, the offset arrays, the data arrays (vertices, ring indices,
+triangles), and a validation-cache trailer — seven `u32` counters (open edges,
+non-manifold edges, degenerate faces, orientation errors, non-manifold vertices,
+disconnected shells, self-intersections) and a flags word (closed, manifold, oriented,
+valid). `GEOM_3D` uses the parallel `D3DG` layout (version 2): magic, version, geometry
+type code, bounding box and vertex count, the CRS, the vertices, the ring and part
+offsets, and the triangulation cache of its polygons (per-polygon triangle offsets and the
+triangle indices).
+
+A `GEOM_3D` polygon is triangulated once, when the value is built, by the same face
+triangulator as a solid's faces (§2.2), so distance never re-triangulates per pair. A
+polygon that admits no tiling — a ring that crosses itself, a hole outside its exterior —
+is refused there, at the constructor (`TRY` gives `NULL`), rather than inside a join. A
+polygon with no area keeps no triangles; its boundary is all there is of it.
 
 Both keep the bounding box and counts in the **front header**, so introspection functions
 (`ST_3DBounds`, `ST_3DNumFaces`, `ST_3DValidationReport`, …) are O(1) reads that never
@@ -225,8 +243,17 @@ tables and Parquet files, so it is versioned:
 
 - A **minor** bump may only add trailing, optional data that older readers can ignore.
 - Any change to existing field meaning or layout requires a **major** bump.
-- A reader must reject a payload whose major version it does not know.
+- A reader must reject a payload whose major version it does not know. Version 1 payloads
+  are refused with a message to rebuild the value from its WKB.
 - Changing the format requires updating this section in the same change.
+
+**Stored payloads are untrusted.** Every read checks magic, version and that every offset
+and index stays in range, so malformed bytes raise rather than read out of bounds. What a
+read cannot check is that the caches agree with the geometry; that is why a `BLOB` reaches
+the functions only through the rebuilding casts (§4). The trust boundary is DuckDB's own
+storage: a `SOLID_3D` or `GEOM_3D` column in a `.duckdb` database keeps its type when the
+file is reopened, and its caches are trusted as they were written, as any column's values
+are. Anything that arrives as a `BLOB` — Parquet, CSV, another tool's table — is rebuilt.
 
 ---
 
@@ -293,38 +320,84 @@ all of which stay upstream.
 The definitions below are contract, not implementation notes — they are what the numbers
 *mean*.
 
-### 8.1 The three checks
+### 8.1 The checks
 
 - **Closed** — every undirected edge is referenced exactly twice, with opposing local
   orientation.
-- **Manifold** — no undirected edge belongs to more than two incident faces, and local
-  connectivity does not branch.
-- **Oriented** — face winding is consistent within each shell, *and* interior shells are
-  wound opposite the exterior shell.
+- **Manifold** — no undirected edge belongs to more than two incident faces, and no vertex
+  is pinched: within one edge-connected part of a shell, the faces around a vertex form a
+  single fan (val3dity 303).
+- **Oriented** — face winding is consistent within each shell, *and* every interior shell
+  is a cavity: wound opposite the exterior shell, smaller than it, inside it, and not inside
+  another interior shell (val3dity 403 and 401). Containment is the winding number of one
+  shell's cached triangles about the other's vertices.
+- **Connected** — every shell's faces are connected through shared edges. Two boxes that
+  touch at a vertex or not at all are two parts, not one shell (val3dity 305).
+- **Free of self-intersection** — no two faces of a solid cross each other, within a shell or
+  across its shells (val3dity 306, and 401 for shells that cross).
 
 A face is **degenerate** if fewer than 3 distinct vertices survive normalization,
 triangulation fails (the face cannot be tiled, §2.2), or its area is zero within tolerance.
 
 Validation runs at import and its result is cached in the payload, so the predicates are
-reads rather than recomputation.
+reads rather than recomputation. `is_valid` requires every check and zero degenerate faces.
 
-`ST_3DVolume` requires all three checks plus zero degenerate faces; `ST_3DSurfaceArea`
-requires only the absence of degenerate faces. Both **raise** when unmet (§2.1).
+`ST_3DVolume` requires all of them except connectivity — a solid whose shell falls apart
+into closed parts still has a well-defined volume, their sum; `ST_3DSurfaceArea` requires
+only the absence of degenerate faces. Both **raise** when unmet (§2.1).
 
-**Tolerance** is a small floating-point epsilon for repeated-point and near-zero-area tests,
-defined as named constants in `src/kernel/core_types.hpp`.
+**Self-intersection is decided on the triangulation.** Each face is represented by its
+cached triangles, and a pair of triangles from different faces counts when:
 
-The near-zero-area test is **absolute** (`kEpsAbsolute`, 1e-12), which is only defensible
-because the quantity it measures is computed about a local reference point. Newell's area
-vector pairs a coordinate difference with a coordinate sum, so on absolute projected
-coordinates a face of exactly zero area returns not 0 but noise of order
-`n·eps·|position|·|extent|` — 1e-11 to 1e-10 at RD New easting/northing, i.e. one to two
-orders *above* the threshold. The verdict would then depend on where the building sits, and
-because `degenerate_face_count` gates `ST_3DVolume` and `ST_3DSurfaceArea`, so would a hard
-error. `NewellRingAreaVector` therefore references the ring's own first vertex, which is
-exact (the area vector is translation-invariant) and returns 0 for a flat face at any
-magnitude. Do not restore the absolute form, and do not "fix" the resulting sensitivity by
-loosening the epsilon — that would change which real buildings are accepted.
+- each reaches further than the tolerance to *both* sides of the other's **face** plane,
+- the segments where each meets the other's **triangle** plane overlap by more than the
+  tolerance, and
+- that overlap lies further than the tolerance from the boundary of at least one of the
+  two faces.
+
+Three decisions, three numbers. Depth is measured against the face's Newell plane, not the
+triangle's, because earcut tiles faces into slivers whose own planes are ill-defined: a
+sliver's plane can be tilted far enough that a neighbour seems to pierce it by metres. Where
+the triangles cross is measured on the triangles themselves, whose shared vertices lie
+exactly on both planes. The boundary condition removes folds of a junction: two roof faces
+whose ridges cross each other by a centimetre, along slivers at the ridge, cross only
+within the tolerance of both faces' edges, and a different tiling of the same rings need
+not cross at all. A thin face piercing a wall far from the wall's edges still counts,
+however thin it is. Triangles within the rounding term of each other's face planes are
+coplanar, and count when their overlap in that plane is wider (twice the area over the
+perimeter) than the tolerance. Faces closer than the tolerance that do not cross are not
+counted. Candidate pairs come from a sweep over triangle bounding boxes along the solid's
+longest axis, and a pair of faces is counted once however many of their triangles cross.
+
+The tolerance is `2·(dev_a + dev_b)` plus `1e-5` times the solid's bounding-box diagonal,
+where `dev` is a face's largest distance from its Newell plane through its centroid. The
+second term is the scale of coordinate rounding: city models publish millimetre
+coordinates for objects tens of metres across, and two nearly planar faces meeting at a
+vertex can cross by half a millimetre for no other reason (a 3DBAG building in the frozen
+golden set does). A non-planar face has no single surface: every triangulation of it lies within
+`dev` of that plane, so two triangulations of it can disagree by `2·dev`, and an apparent
+crossing smaller than that says more about which triangulation was chosen than about the
+solid. It follows that the triangulation cache is part of a validity verdict, which is one
+more reason the `BLOB` casts rebuild it (§4) rather than trust it. val3dity is exact on its
+own triangulation after snapping vertices to 1 mm; it and this rule agree on every 3DBAG
+Delft solid apart from planarity and snapping differences (§8.4).
+
+**Tolerances** are named constants in `src/kernel/core_types.hpp`, and every one that
+decides validity is relative, so a verdict survives rigid motions and uniform scaling:
+measured on the 1116 Delft LoD2.2 solids, rotating, translating, or scaling them by 1000 or
+by 0.001 changes no verdict. Scaling the axes unequally changes angles and planarity, so it
+may change a verdict on a face whose features are already at tolerance scale (9 of the
+1116 under a tenfold vertical stretch, each a fold or crossing at tolerance scale before the
+stretch).
+
+A face's area counts as zero when its Newell area vector is smaller than `kEpsRelative`
+times the square of the ring's extent. The vector is computed about the ring's own first
+vertex (`NewellRingAreaVector`): it is translation-invariant, and on absolute projected
+coordinates a face of exactly zero area would otherwise return noise of order
+`n·eps·|position|·|extent|` — 1e-11 to 1e-10 at RD New easting/northing — and the verdict
+would depend on where the building sits. Because `degenerate_face_count` gates `ST_3DVolume`
+and `ST_3DSurfaceArea`, so would a hard error. The face triangulator applies the same
+relative test before tiling.
 
 ### 8.2 Why volume works the way it does
 
@@ -371,7 +444,8 @@ returned 16.0027 at a separation of 10⁵, 14.456 at 10⁶ and 2353.1 at 10⁷, 
 `is_valid` still `true` throughout. Per shell, the same cases land within 5e-11, 5e-10 and
 7e-9 respectively.
 
-Because each shell is separately closed (`ComputeVolume` refuses otherwise), giving each its
+Because each shell is separately closed (`ComputeVolume` refuses otherwise, and refuses a
+self-intersecting solid, whose signed sum counts the overlap twice or not at all), giving each its
 own reference point is exact and does not disturb the cavity subtraction above: shells still
 accumulate **signed** into the per-solid total before `abs` is applied. `validation.cpp`'s
 interior-shell winding check uses the same helper (`ShellLocalOrigin`, `geometry_math.hpp`),
@@ -385,13 +459,16 @@ Both are pinned by `test/cpp/test_measurements.cpp` and `test/sql/st_3d_multisol
 A correctly-wound cavity yields the correct volume **even without** shell metadata, because
 the signed sum is driven by winding, not by grouping. What the `shells` sidecar adds is:
 
-- truthful introspection — `ST_3DNumShells` reports 2 rather than 1; and
+- truthful introspection — `ST_3DNumShells` reports 2 rather than 1, and the one shell is
+  not reported as disconnected, which without the sidecar it is (its exterior and cavity
+  faces share no edge), so `is_valid` is false; and
 - the shell partition needed to *enforce* the interior-opposite-exterior invariant. A
   same-wound cavity would otherwise silently **add** its volume; with the partition available
   the check clears `is_oriented` / `is_valid`, and `ST_3DVolume` refuses.
 
-The check is relative-only: absolute outward orientation of the exterior shell, and true
-point-in-polyhedron containment, are out of scope.
+The check is relative: the absolute outward orientation of the exterior shell is out of
+scope. Containment is not — an interior shell outside the exterior, or inside another
+cavity, would subtract volume that is not there, so it counts as an orientation error.
 
 **Surface area and footprint are not shell-aware.** They sum over all faces, so cavity walls
 contribute to reported surface area. Only volume distinguishes shell roles.
@@ -412,14 +489,39 @@ dependency:
 - **Ground truth from 3DBAG.** Volumes and footprint areas are compared against 3DBAG's own
   published per-building figures. Current agreement is a median volume error of **0.017 %**
   across ~1100 Delft buildings.
+- **val3dity for validity.** val3dity, built from source and run on the 3DBAG Delft tile with
+  its defaults (1 mm snapping, 1 cm planarity), agrees with `is_valid` on 1109 of 1116 LoD2.2
+  solids and all 1116 LoD1.2 solids. The seven LoD2.2 differences are tolerances, not checks:
+  one roof val3dity finds non-planar (duckdb-3d does not test planarity), five solids whose
+  faces collapse to two vertices under 1 mm snapping (duckdb-3d does not snap), and one with
+  a repeated consecutive vertex, which import drops as lossless bookkeeping (§2.1). None
+  comes from connectivity, non-manifold vertices or self-intersection. That agreement covers
+  the negative side only: val3dity reports no self-intersection on the tile, so the
+  detector's positives are pinned by constructed solids in `test/cpp/test_validation.cpp`
+  (overlapping boxes, crossing cavities, a thin face through warped walls), not by real data.
+- **Live comparison on real data.** `scripts/oracle/live_diff.py` runs the distance family on
+  five published datasets (3DBAG Delft, the TU Delft railway LoD3 model, Rotterdam
+  Delfshaven, Den Haag, Vienna) in duckdb-3d and PostGIS and reports every disagreement. It
+  is a development tool, not a CI step. Each row is compared against the reference that is
+  right for it: PostGIS for planar faces without holes; an independent computation in the
+  script for faces with holes, where PostGIS's 3D point-in-polygon test ignores interior
+  rings; and the same computation, within twice the faces' deviation from planar, for
+  non-planar faces, which PostGIS measures against a plane of its own fitting that can lie
+  further from the vertices than the deviation.
 
 ### 8.5 Distance is an exact minimum over element pairs
 
-The distance family decomposes each geometry into points, segments and triangles (a surface
-contributes its faces' exterior rings, fan-triangulated) and answers from the element pairs:
-`ST_3DDistance` is their minimum, `ST_3DClosestPoint` / `ST_3DShortestLine` report the first
-pair in sweep order that attains it, and `ST_3DDWithin` / `ST_3DIntersects` stop at the first
-pair within the threshold.
+The distance family decomposes each geometry into points, segments and triangles — a
+polygon contributes its cached triangles, holes excluded (§5.1), and a polygon with no
+area its boundary edges — and answers from the element pairs: `ST_3DDistance` is their
+minimum, `ST_3DClosestPoint` / `ST_3DShortestLine` report the first pair in sweep order
+that attains it (the point on the first geometry, then the point on the second), and
+`ST_3DDWithin` / `ST_3DIntersects` stop at the first pair within the threshold.
+
+A point's nearest point on a triangle comes from Ericson's region tests, except in the
+interior, where it is the projection onto the triangle's plane: Ericson's barycentric
+weights divide by a sliver's tiny squared area, and a face triangulation has slivers
+wherever a ring has near-collinear vertices.
 
 Element pairs whose bounding boxes are farther apart than the bound that matters — the best
 distance so far, or the threshold — are skipped. The box gap is a lower bound on the pair's
@@ -431,6 +533,10 @@ above it. And the sweep is seeded with the exact distance of one nearby pair, fo
 time, which is only ever used as a bound: the result is still taken from the sweep, so its
 value and its tie-breaking do not depend on the seed. Pinned against an unpruned sweep by
 `test/cpp/test_geom_distance.cpp`.
+
+On planar faces without holes the result is PostGIS's: on 3DBAG Delft object pairs, face
+pairs and points around faces, `ST_3DDistance` agrees with PostGIS's to 1.3e-10 m and the
+predicates agree on every row (§8.4).
 
 ---
 

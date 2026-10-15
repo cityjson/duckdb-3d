@@ -11,8 +11,9 @@ namespace duckdb_3d {
 //! Magic bytes for SOLID_3D binary format: "D3DS"
 constexpr uint8_t PAYLOAD_MAGIC[4] = {'D', '3', 'D', 'S'};
 
-//! v1 format version
-constexpr uint16_t PAYLOAD_VERSION_MAJOR = 1;
+//! Format version. Version 2 added the CRS and the vertex-manifold,
+//! connectivity and self-intersection counters; version 1 payloads are refused.
+constexpr uint16_t PAYLOAD_VERSION_MAJOR = 2;
 constexpr uint16_t PAYLOAD_VERSION_MINOR = 0;
 
 //! Binary payload header (fixed size)
@@ -30,6 +31,7 @@ struct PayloadHeader {
 	// bbox: 6 x f64
 	double bbox_min_x, bbox_min_y, bbox_min_z;
 	double bbox_max_x, bbox_max_y, bbox_max_z;
+	// then: u32 CRS byte length and the CRS string (empty when unknown)
 };
 
 //! The exact byte size SerializePayload produces for `model`.
@@ -60,6 +62,7 @@ struct SolidPayloadInfo {
 	uint32_t ring_count;
 	uint32_t triangle_count;
 	BBox3D bbox;
+	std::string crs;
 	ValidationCache validation;
 };
 

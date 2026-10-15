@@ -225,8 +225,9 @@ static unique_ptr<FunctionData> BindWkbMeta(ClientContext &, ScalarFunction &bou
 	case LogicalTypeId::VARCHAR:
 		// Plain / JSON-alias / NULL metadata: JSON-text executor.
 		bound_function.arguments[1] = LogicalType::VARCHAR;
-		bound_function.function = geometry_input ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, true>
-		                                         : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, false>;
+		bound_function.function = KernelErrorsAsInvalidInput(
+		    geometry_input ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, true>
+		                   : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::JSON_TEXT, false>);
 		return nullptr;
 	case LogicalTypeId::STRUCT: {
 		auto &child_types = StructType::GetChildTypes(meta_type);
@@ -253,9 +254,9 @@ static unique_ptr<FunctionData> BindWkbMeta(ClientContext &, ScalarFunction &bou
 			                      "field; pass the metadata as a JSON VARCHAR otherwise");
 		}
 		bound_function.arguments[1] = LogicalType::STRUCT(std::move(normalized));
-		bound_function.function = geometry_input
-		                              ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, true>
-		                              : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, false>;
+		bound_function.function = KernelErrorsAsInvalidInput(
+		    geometry_input ? FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, true>
+		                   : FromWKBWithMetaExecutor<TRY_VARIANT, MetaSource::STRUCT_FIELDS, false>);
 		// The executor resolves `type`/`shells` by name from the normalised type,
 		// so no bind data is needed.
 		return nullptr;
@@ -317,10 +318,8 @@ void RegisterSolidIOFunctions(ExtensionLoader &loader, const LogicalType &solid_
 	                    "ST_3DTryFromWKB('POINT Z (1 2 3)'::GEOMETRY)",
 	                    {"import"}});
 
-	// ST_3DAsWKB(solid SOLID_3D) -> BLOB. The BLOB overload keeps stored/legacy
-	// payloads working; DuckDB resolves the alias exactly, so both are needed.
+	// ST_3DAsWKB(solid SOLID_3D) -> BLOB.
 	ScalarFunctionSet as_wkb_set("st_3daswkb");
-	as_wkb_set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::BLOB, ST_3DAsWKBFun));
 	as_wkb_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BLOB, ST_3DAsWKBFun));
 	RegisterDocumented(
 	    loader, std::move(as_wkb_set),

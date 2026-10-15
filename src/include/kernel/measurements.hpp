@@ -10,7 +10,8 @@ namespace duckdb_3d {
 double ComputeSurfaceArea(const SolidModel &model);
 
 //! Compute total enclosed volume using signed tetrahedral contributions.
-//! Requires is_closed, is_manifold, is_oriented, and no degenerate faces.
+//! Requires is_closed, is_manifold, is_oriented, no degenerate faces and no
+//! self-intersecting faces (a disconnected shell still encloses its volume).
 //! Throws if preconditions are not met.
 double ComputeVolume(const SolidModel &model);
 

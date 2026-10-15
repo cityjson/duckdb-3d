@@ -84,6 +84,9 @@ double ComputeVolume(const SolidModel &model) {
 	if (model.validation.degenerate_face_count > 0) {
 		throw std::runtime_error("ST_3DVolume: solid contains degenerate faces");
 	}
+	if (model.validation.self_intersection_count > 0) {
+		throw std::runtime_error("ST_3DVolume: solid has self-intersecting faces");
+	}
 	if (model.TriangleCount() == 0) {
 		throw std::runtime_error("ST_3DVolume: solid has no triangulation cache");
 	}

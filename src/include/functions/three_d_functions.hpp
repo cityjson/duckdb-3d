@@ -8,8 +8,30 @@
 #include "kernel/payload.hpp"
 
 #include <cstring>
+#include <new>
 
 namespace duckdb {
+
+//! The kernel reports a geometry it cannot handle (a polygon with no tiling, a
+//! solid volume refuses) with standard exceptions, which DuckDB treats as
+//! internal and TRY() rethrows. Every registered function reports them as
+//! InvalidInputException instead, a row-level error TRY() turns into NULL;
+//! a bind that picks the callback itself wraps what it picks. Out of memory
+//! passes through untouched, so DuckDB reports it as such and TRY() does not
+//! hide it as NULL.
+inline scalar_function_t KernelErrorsAsInvalidInput(scalar_function_t function) {
+	return [function](DataChunk &args, ExpressionState &state, Vector &result) {
+		try {
+			function(args, state, result);
+		} catch (Exception &) {
+			throw;
+		} catch (std::bad_alloc &) {
+			throw;
+		} catch (std::exception &e) {
+			throw InvalidInputException(e.what());
+		}
+	};
+}
 
 //! Where a geometry_properties argument comes from (JSON VARCHAR vs STRUCT).
 enum class MetaSource { JSON_TEXT, STRUCT_FIELDS };
@@ -45,11 +67,11 @@ inline unique_ptr<FunctionData> BindWkbArgument(ScalarFunction &bound_function,
 	if (arg_type.id() == LogicalTypeId::GEOMETRY) {
 		// Keep the argument's own type, CRS parameter and all, so no cast is added.
 		bound_function.arguments[0] = arg_type;
-		bound_function.function = std::move(geometry_fn);
+		bound_function.function = KernelErrorsAsInvalidInput(std::move(geometry_fn));
 		return nullptr;
 	}
 	bound_function.arguments[0] = LogicalType::BLOB;
-	bound_function.function = std::move(blob_fn);
+	bound_function.function = KernelErrorsAsInvalidInput(std::move(blob_fn));
 	return nullptr;
 }
 
@@ -92,6 +114,9 @@ struct FunctionDocs {
 //! Register a function set with its documentation attached. Conflicts resolve
 //! as the bare RegisterFunction(ScalarFunctionSet) overload resolves them.
 inline void RegisterDocumented(ExtensionLoader &loader, ScalarFunctionSet set, FunctionDocs docs) {
+	for (auto &function : set.functions) {
+		function.SetFunctionCallback(KernelErrorsAsInvalidInput(function.GetFunctionCallback()));
+	}
 	CreateScalarFunctionInfo info(std::move(set));
 	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	FunctionDescription description;
@@ -118,6 +143,7 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                    const LogicalType &geom_3d_type);
 void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_3d_type);
+void RegisterPayloadCasts(ExtensionLoader &loader, const LogicalType &solid_3d_type, const LogicalType &geom_3d_type);
 void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                 const LogicalType &geom_3d_type);
 

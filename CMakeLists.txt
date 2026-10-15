@@ -26,6 +26,7 @@ set(EXTENSION_SOURCES
     src/functions/distance.cpp
     src/functions/transforms.cpp
     src/functions/struct_metadata.cpp
+    src/functions/casts.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
@@ -33,6 +34,7 @@ set(EXTENSION_SOURCES
     src/kernel/wkb_export.cpp
     src/kernel/geometry_math.cpp
     src/kernel/validation.cpp
+    src/kernel/self_intersection.cpp
     src/kernel/triangulation.cpp
     src/kernel/measurements.cpp
     src/kernel/metadata_parser.cpp

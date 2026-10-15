@@ -127,7 +127,9 @@ non-`NULL` result — a missing sidecar is not an error — and
 `ST_3DPlaceImplicit(geom, point, NULL)` places with the identity matrix.
 
 **`TRY` variants** (`ST_3DTryFromWKB`) catch **row-level** errors and return `NULL` instead. Bind-time errors — a malformed metadata
-STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFromWKB`.
+STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFromWKB`; every
+row-level error any function raises is an `Invalid Input Error`, so DuckDB's `TRY(...)` turns
+it into `NULL` — `TRY(ST_Geom3DFromWKB(wkb))`, `TRY(ST_3DVolume(solid))`.
 
 **Errors, not repair.** The extension never silently fixes geometry. `ST_3DVolume` on a
 non-manifold solid raises rather than returning a plausible-looking wrong number:
@@ -143,10 +145,27 @@ Invalid Error: ST_3DVolume: solid is not manifold
 Use `ST_3DTryFromWKB` and guard on `ST_3DValidationReport(...).is_valid` when exploring real
 data — every real reconstruction contains some broken solids.
 
-**`BLOB` overloads.** Most `SOLID_3D` consumers also accept raw `BLOB`, so stored payloads
-keep working. Note that for `ST_3DTranslate` / `ST_3DScale` / `ST_3DRotate*` the `BLOB`
-overload is bound to the **solid** executor — pass `GEOM_3D` values as their own type, not as
-`BLOB`.
+**Stored values come back as `BLOB`.** A `SOLID_3D` or `GEOM_3D` column written to Parquet
+reads back as a plain `BLOB`, and no function accepts a `BLOB`: its cached triangulation,
+bounds and validation verdict are not trusted until rebuilt. Cast it back explicitly —
+`blob::SOLID_3D`, `blob::GEOM_3D` — and the cast re-derives every cache from the geometry,
+raising on bytes that are not a payload of that type (`TRY_CAST` gives `NULL`). The rebuild
+costs a triangulation and, for a solid, a validation, so materialise the cast once
+(`CREATE TABLE … AS SELECT b::SOLID_3D AS solid …`) rather than casting in every query.
+`::BLOB` on a `SOLID_3D` or `GEOM_3D` returns the payload bytes; for interchange use
+`ST_3DAsWKB` / `ST_3DAsBinary`.
+
+```sql
+COPY (SELECT id, solid FROM ex) TO 'ex.parquet';
+SELECT ST_3DValidationReport(solid::SOLID_3D).is_valid AS valid FROM 'ex.parquet';
+```
+```
+┌───────┐
+│ valid │
+├───────┤
+│ true  │
+└───────┘
+```
 
 **Coexistence with `spatial`.** 3D operations use `ST_3D*` names, so `three_d` and DuckDB's
 `spatial` extension load together in any order. A handful of names `spatial` does not define
@@ -250,7 +269,12 @@ Without the sidecar a `PolyhedralSurface Z` imports as one solid with **one** sh
 
 Builds a `GEOM_3D` from WKB — the entry point for the distance, serialization, and
 general-accessor families. It is named `ST_Geom3DFromWKB` rather than `ST_GeomFromWKB` to
-avoid clashing with DuckDB's built-in. **There is no `TRY` variant.**
+avoid clashing with DuckDB's built-in. **There is no `TRY` variant**; wrap it in `TRY(...)`.
+
+Polygons are triangulated here, holes included, and the triangles are kept with the value
+for the distance family. A polygon that admits no triangulation — a ring that crosses
+itself, a hole outside its exterior — is refused with `polygon N cannot be triangulated`,
+rather than measured wrongly later.
 
 ```sql
 SELECT ST_3DGeometryType(ST_Geom3DFromWKB(geometry)) AS gtype FROM ex;
@@ -379,15 +403,22 @@ SELECT ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m FROM ex;   -- 1
 | `ST_3DIsClosed` | `(SOLID_3D)` | `BOOLEAN` |
 | `ST_3DIsManifold` | `(SOLID_3D)` | `BOOLEAN` |
 | `ST_3DIsOriented` | `(SOLID_3D)` | `BOOLEAN` |
-| `ST_3DValidationReport` | `(SOLID_3D)` | `STRUCT` (13 fields) |
+| `ST_3DValidationReport` | `(SOLID_3D)` | `STRUCT` (16 fields) |
 
 Validation runs **at import** and is cached in the payload, so these are cheap reads rather
 than recomputation.
 
 - **Closed** — every undirected edge is used exactly twice, in opposing directions.
-- **Manifold** — no edge belongs to more than two faces.
-- **Oriented** — face winding is consistent within each shell, and interior shells are wound
-  opposite the exterior.
+- **Manifold** — no edge belongs to more than two faces, and no vertex is pinched (the faces
+  around it form one fan).
+- **Oriented** — face winding is consistent within each shell, and every interior shell is a
+  cavity: wound opposite the exterior, inside it, and not inside another interior shell.
+
+`ST_3DValidationReport` adds the two checks that have no predicate of their own:
+connectivity (a shell's faces all connected through shared edges) and self-intersection (no
+two faces crossing). The definitions and tolerances are in
+[DESIGN_DOC.md §8.1](./DESIGN_DOC.md#81-the-checks); val3dity agrees with `is_valid` on
+3DBAG Delft apart from planarity and its 1 mm snapping.
 
 ```sql
 SELECT ST_3DIsClosed(solid) AS closed, ST_3DIsManifold(solid) AS manifold,
@@ -408,13 +439,16 @@ The one function to reach for when something fails. Returns:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `is_valid` | `BOOLEAN` | closed **and** manifold **and** oriented **and** no degenerate faces |
+| `is_valid` | `BOOLEAN` | closed **and** manifold **and** oriented **and** connected, with no degenerate faces and no self-intersections |
 | `is_closed`, `is_manifold`, `is_oriented` | `BOOLEAN` | the individual checks |
 | `solid_count`, `shell_count`, `face_count` | `BIGINT` | structure counts |
 | `open_edge_count` | `BIGINT` | edges used by only one face |
 | `non_manifold_edge_count` | `BIGINT` | edges used by more than two faces |
 | `degenerate_face_count` | `BIGINT` | faces that are zero-area or collapsed, or that cannot be triangulated (a ring that crosses itself, a hole outside its face) |
-| `orientation_error_count` | `BIGINT` | inconsistently wound face pairs |
+| `orientation_error_count` | `BIGINT` | inconsistently wound face pairs, and interior shells that are not cavities |
+| `non_manifold_vertex_count` | `BIGINT` | vertices where a shell's faces meet in more than one fan |
+| `disconnected_shell_count` | `BIGINT` | shells whose faces fall into separate edge-connected parts |
+| `self_intersection_count` | `BIGINT` | pairs of faces that cross each other |
 | `code` | `VARCHAR` | `'VALID'` or `'INVALID'` |
 | `message` | `VARCHAR` | human-readable summary |
 
@@ -455,14 +489,14 @@ fails several at once. That is why the report carries per-check counters rather 
 
 | Function | Signature | Returns | Preconditions |
 | --- | --- | --- | --- |
-| `ST_3DVolume` | `(SOLID_3D)` | `DOUBLE` | closed + manifold + oriented, no degenerate faces — **else raises** |
+| `ST_3DVolume` | `(SOLID_3D)` | `DOUBLE` | closed + manifold + oriented, no degenerate faces, no self-intersections — **else raises** |
 | `ST_3DSurfaceArea` | `(SOLID_3D)` | `DOUBLE` | no degenerate faces — **else raises** |
 | `ST_3DArea` | `(SOLID_3D)` | `DOUBLE` | alias of `ST_3DSurfaceArea` |
 | `ST_3DFootprintArea` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | none |
 | `ST_3DPerimeter` | `(SOLID_3D)` | `DOUBLE` | none |
 | `ST_3DLength` | `(GEOM_3D)` | `DOUBLE` | none |
 
-All measurements are **Cartesian in the input units** — there is no stored CRS. Reproject with
+All measurements are **Cartesian in the input units** — no function reads a CRS. Reproject with
 `ST_3DTransform` first if the source units are not metric.
 
 ```sql
@@ -592,6 +626,12 @@ threshold returns `false` rather than raising, for both `DWithin` variants.
 `ST_3DDFullyWithin` asks whether the *maximum* distance is within the threshold, i.e. whether
 one geometry lies entirely inside a buffer of the other. `ST_3DIntersects` treats touching
 geometries as intersecting.
+
+A polygon is measured as the surface it encloses: a point in a concave face's notch or over
+a hole is at its distance from the face's edges, not 0. `ST_3DClosestPoint(a, b)` is the point
+of `a` nearest `b`. On planar faces the family agrees with PostGIS; PostGIS is not the
+reference for faces with holes, whose interior rings its 3D point-in-polygon test ignores in
+the face's plane ([TEST_COVERAGE.md](./TEST_COVERAGE.md#live-comparison-on-real-data--the-distance-family)).
 
 Find neighbours of a reference building:
 
@@ -811,12 +851,15 @@ CGAL/SFCGAL backend — see [DESIGN_DOC.md §11](./DESIGN_DOC.md#11-roadmap).
 ## Appendix: test fixtures
 
 The `ST_AsWKB*` family (`ST_AsWKBPolyhedralTetra`, `ST_AsWKBOpenTetra`, `ST_AsWKBHollowCube`,
-`ST_AsWKBMultiCube`, `ST_AsWKBPointZ`, `ST_AsWKBLineZ`, `ST_AsWKBMultiLineZ`,
+`ST_AsWKBMultiCube`, `ST_AsWKBTwoCubes`, `ST_AsWKBPointZ`, `ST_AsWKBLineZ`, `ST_AsWKBMultiLineZ`,
 `ST_AsWKBPolygonZ`, `ST_AsWKBWarpedPolygonZ`, `ST_AsWKBMultiPointZ`, `ST_AsWKBMultiPolygonZ`)
 generates small WKB fixtures for the test suite. `ST_AsWKBMultiCube` has a second overload,
 `ST_AsWKBMultiCube(separation DOUBLE)`, which places the two cubes `separation` apart on every
 axis; total volume stays 16 at any separation, which is what the conditioning regression in
-`test/sql/st_3d_multisolid.test` pins.
+`test/sql/st_3d_multisolid.test` pins. `ST_AsWKBTwoCubes(offset DOUBLE)` puts two 2 × 2 × 2
+cubes, at the origin and at `offset` on every axis, into one `PolyhedralSurface Z`: they
+overlap below 2, touch at a vertex at 2 and are apart above it, which is what
+`test/sql/st_3d_validation.test` pins the self-intersection and connectivity checks with.
 
 **These are not public API.** They are registered only when the `THREE_D_TEST_FIXTURES`
 environment variable is set. The `Makefile` exports it, so every `make` target has them; a

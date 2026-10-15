@@ -65,6 +65,12 @@ public:
 		}
 		WriteBytes(b, sizeof(b));
 	}
+	//! A u32 byte length followed by the string's bytes.
+	void WriteString(const std::string &v) {
+		WriteU32(static_cast<uint32_t>(v.size()));
+		WriteBytes(v.data(), v.size());
+	}
+
 	void WriteU32Array(const uint32_t *data, size_t count) {
 		if (kLittleEndianHost) {
 			WriteBytes(data, count * sizeof(uint32_t));
@@ -184,6 +190,16 @@ public:
 	}
 	//! Reads `count` values, or throws the truncation error before reading any
 	//! when they do not all fit.
+	//! A string written by ByteWriter::WriteString; its declared length is bounded
+	//! by the bytes that remain before anything is allocated.
+	std::string ReadString(const char *what) {
+		uint32_t len = ReadU32();
+		RequireCount(len, 1, what);
+		std::string v(reinterpret_cast<const char *>(data + pos), len);
+		pos += len;
+		return v;
+	}
+
 	void ReadU32Array(uint32_t *dst, size_t count) {
 		if (kLittleEndianHost) {
 			RequireElements(count, sizeof(uint32_t));

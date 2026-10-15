@@ -18,4 +18,10 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 //! Throws if metadata conflicts with WKB face counts.
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata);
 
+//! Re-derive everything a SOLID_3D payload caches (bounding box, triangulation,
+//! validation) from its topology and vertices, and serialize the result. For
+//! payloads from outside the extension, whose caches cannot be trusted. Throws
+//! what DeserializePayload throws on a malformed payload.
+std::vector<uint8_t> RebuildSolidPayload(const uint8_t *data, size_t size);
+
 } // namespace duckdb_3d

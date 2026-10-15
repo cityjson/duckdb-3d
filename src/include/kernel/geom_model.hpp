@@ -2,6 +2,7 @@
 
 #include "kernel/core_types.hpp"
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace duckdb_3d {
@@ -32,6 +33,26 @@ struct GeomModel {
 	std::vector<uint32_t> ring_offsets;
 	std::vector<uint32_t> part_offsets;
 	BBox3D bbox = {};
+
+	//! Coordinate reference system ("EPSG:28992", or any definition PROJ
+	//! accepts); empty when unknown.
+	std::string crs;
+
+	//! Triangulation cache for the surface classes (Polygon, MultiPolygon,
+	//! PolyhedralSurface), empty for the others. Polygon p's triangles are
+	//! [polygon_triangle_offsets[p], polygon_triangle_offsets[p + 1]), each three
+	//! indices into `vertices`. A polygon without area has none; its boundary is
+	//! all there is of it.
+	std::vector<uint32_t> polygon_triangle_offsets;
+	std::vector<uint32_t> triangle_indices;
+
+	//! Number of polygons: 1 for a Polygon with rings, the part count for a
+	//! MultiPolygon or PolyhedralSurface, 0 otherwise.
+	uint32_t PolygonCount() const;
+
+	//! Polygon `polygon`'s rings: [first_ring, first_ring + ring_count) of
+	//! ring_offsets' rings, the first one its exterior.
+	void PolygonRings(uint32_t polygon, uint32_t &first_ring, uint32_t &ring_count) const;
 
 	//! Recompute the bounding box from vertices.
 	void ComputeBBox();

@@ -1,0 +1,691 @@
+"""live_diff.py: compare duckdb-3d with a live PostGIS + SFCGAL on real city models.
+
+Dev-time only, like gen_golden.py: CI keeps comparing against the frozen goldens in
+test/data/postgis_oracle/, and nothing here runs under `make test`. This harness is
+what a change to a function is verified with before it is committed: it reads
+published CityJSON / CityJSONSeq files, builds the same ISO WKB bytes for both
+engines, runs each check on both and reports every disagreement beyond the check's
+tolerance.
+
+The WKB is built here, in Python, straight from the CityJSON boundaries, so neither
+engine's reader is part of the comparison: a disagreement is about the maths.
+
+    python3 scripts/oracle/live_diff.py --checks distance --report out.md
+
+Needs: a release build (build/release/extension/three_d/three_d.duckdb_extension),
+the `duckdb` Python package at the build's DuckDB version, `psycopg2`, and a
+PostgreSQL database with the postgis and postgis_sfcgal extensions (--dsn).
+Downloads are cached in --workdir and pinned by sha256.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import random
+import struct
+import sys
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import duckdb
+import psycopg2
+
+REPO = Path(__file__).resolve().parents[2]
+EXTENSION = REPO / "build" / "release" / "extension" / "three_d" / "three_d.duckdb_extension"
+
+# Published datasets, pinned by sha256 (the same pins as the CityParquet tool-chain
+# corpus). A mismatch is an error: data that changed under the test changes what
+# the report means.
+DATASETS = {
+    "delft": ("https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl",
+              "2f3d95698bf5871999aac04744fc74a7de0609e88d9e5af6a1dd5fd050635067"),
+    "railway": ("https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/LoD3_Railway.city.json",
+                "60a80c34d50e167556d858c4fe3b4b11b297c3b450c7785db289e90dcc289b4e"),
+    "rotterdam": ("https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json",
+                  "958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"),
+    "denhaag": ("https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DenHaag_01.city.json",
+                "7d500b53f7e1e7dfc8f6bd0b2b4ab26c06a27b71b86ec1005f05f1d35afb17f8"),
+    "vienna": ("https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json",
+               "849a148b5fb91ebfa6e3efe7bd78be47cc5cdd2fb6699e0cb042f44dd702cc62"),
+}
+
+
+# --------------------------------------------------------------------------
+# Reading CityJSON into WKB
+# --------------------------------------------------------------------------
+
+@dataclass
+class Item:
+    """One geometry under test."""
+    key: str          # unique: dataset/object/lod/geometry index[/face]
+    dataset: str
+    object_id: str
+    object_type: str
+    lod: str
+    role: str         # "solid", "surface" or "face"
+    wkb: bytes
+    shells: list[int] = field(default_factory=list)  # per-shell face counts (solids)
+    attributes: dict = field(default_factory=dict)
+    bbox: tuple = ()
+    faces: list = field(default_factory=list)   # [[ring of (x, y, z)]], for the independent oracle
+    holes: bool = False                          # some face has an interior ring
+    deviation: float = 0.0                       # largest distance of a vertex from its face's plane
+
+
+def _polygon(face, verts) -> bytes:
+    out = bytearray(struct.pack("<BII", 1, 1003, len(face)))
+    for ring in face:
+        out += struct.pack("<I", len(ring) + 1)
+        for i in list(ring) + [ring[0]]:
+            out += struct.pack("<ddd", *verts[i])
+    return bytes(out)
+
+
+def _surface(faces, verts) -> bytes:
+    out = bytearray(struct.pack("<BII", 1, 1015, len(faces)))
+    for face in faces:
+        out += _polygon(face, verts)
+    return bytes(out)
+
+
+def _bbox(faces, verts) -> tuple:
+    pts = [verts[i] for face in faces for ring in face for i in ring]
+    xs, ys, zs = zip(*pts)
+    return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+
+
+def _features(path: Path):
+    """Yield (vertices, CityObjects) per feature, for CityJSON and CityJSONSeq."""
+    with open(path) as f:
+        first = json.loads(f.readline() if path.suffix == ".jsonl" else f.read())
+        tr = first.get("transform", {"scale": [1, 1, 1], "translate": [0, 0, 0]})
+        s, t = tr["scale"], tr["translate"]
+
+        def scaled(vs):
+            return [(v[0] * s[0] + t[0], v[1] * s[1] + t[1], v[2] * s[2] + t[2]) for v in vs]
+
+        if path.suffix == ".jsonl":
+            for line in f:
+                feat = json.loads(line)
+                yield scaled(feat["vertices"]), feat["CityObjects"]
+        else:
+            yield scaled(first["vertices"]), first["CityObjects"]
+
+
+def _newell(ring):
+    """Unnormalised Newell normal of a ring, about its first vertex."""
+    o = ring[0]
+    nx = ny = nz = 0.0
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        ax, ay, az = a[0] - o[0], a[1] - o[1], a[2] - o[2]
+        bx, by, bz = b[0] - o[0], b[1] - o[1], b[2] - o[2]
+        nx += (ay - by) * (az + bz)
+        ny += (az - bz) * (ax + bx)
+        nz += (ax - bx) * (ay + by)
+    return nx, ny, nz
+
+
+def face_plane(face):
+    """(unit normal, centroid) of a face: the exterior ring's Newell normal through its centroid."""
+    ext = face[0]
+    nx, ny, nz = _newell(ext)
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if length == 0.0:
+        return None
+    pts = [v for ring in face for v in ring]
+    c = tuple(sum(v[k] for v in pts) / len(pts) for k in range(3))
+    return (nx / length, ny / length, nz / length), c
+
+
+def face_deviation(face) -> float:
+    plane = face_plane(face)
+    if plane is None:
+        return 0.0
+    n, c = plane
+    return max(abs((v[0] - c[0]) * n[0] + (v[1] - c[1]) * n[1] + (v[2] - c[2]) * n[2]) for ring in face for v in ring)
+
+
+def _coords(faces, verts):
+    return [[[tuple(verts[i]) for i in ring] for ring in face] for face in faces]
+
+
+def _item(key, name, oid, co, lod, role, wkb, shells, attributes, faces, verts) -> Item:
+    coords = _coords(faces, verts)
+    return Item(key, name, oid, co["type"], lod, role, wkb, shells, attributes, _bbox(faces, verts), coords,
+                any(len(f) > 1 for f in coords), max((face_deviation(f) for f in coords), default=0.0))
+
+
+def read_dataset(name: str, path: Path, max_faces_per_dataset: int) -> list[Item]:
+    items: list[Item] = []
+    faces_taken = 0
+    for verts, objects in _features(path):
+        for oid, co in objects.items():
+            for gi, g in enumerate(co.get("geometry", [])):
+                lod = str(g.get("lod"))
+                key = f"{name}/{oid}/{lod}/{gi}"
+                if g["type"] == "Solid":
+                    faces = [face for shell in g["boundaries"] for face in shell]
+                    items.append(_item(key, name, oid, co, lod, "solid", _surface(faces, verts),
+                                       [len(shell) for shell in g["boundaries"]], co.get("attributes", {}),
+                                       faces, verts))
+                elif g["type"] in ("MultiSurface", "CompositeSurface"):
+                    faces = g["boundaries"]
+                    if not faces:
+                        continue
+                    items.append(_item(key, name, oid, co, lod, "surface", _surface(faces, verts), [],
+                                       co.get("attributes", {}), faces, verts))
+                else:
+                    continue
+                if faces_taken < max_faces_per_dataset:
+                    for fi, face in enumerate(faces):
+                        if faces_taken >= max_faces_per_dataset:
+                            break
+                        items.append(_item(f"{key}/{fi}", name, oid, co, lod, "face", _polygon(face, verts), [],
+                                           {}, [face], verts))
+                        faces_taken += 1
+    return items
+
+
+def fetch(name: str, workdir: Path) -> Path:
+    url, sha = DATASETS[name]
+    path = workdir / url.rsplit("/", 1)[1]
+    if not path.exists():
+        print(f"fetching {url}", file=sys.stderr)
+        urllib.request.urlretrieve(url, path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != sha:
+        raise SystemExit(f"{path}: sha256 {digest} does not match the pinned {sha}")
+    return path
+
+
+# --------------------------------------------------------------------------
+# Independent oracle: distance between planar polygons with holes
+# --------------------------------------------------------------------------
+#
+# PostGIS is not an oracle for faces with holes: its 3D point-in-polygon test
+# ignores interior rings (a point at the centre of a 1 x 1 hole in a face gets
+# 2.12 instead of 0.5). This is a separate, deliberately plain computation used
+# for those rows. A face is taken as its rings projected onto its plane (the
+# exterior ring's Newell normal through the centroid), which is exact for
+# planar faces. Two compact planar regions are either intersecting (distance 0)
+# or their closest pair has a vertex of one against the other, or an edge
+# against an edge; nothing else needs testing.
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _seg_seg(p1, q1, p2, q2) -> float:
+    """Distance between segments p1q1 and p2q2 (Ericson, Real-Time Collision Detection, 5.1.9)."""
+    d1, d2, r = _sub(q1, p1), _sub(q2, p2), _sub(p1, p2)
+    a, e, f = _dot(d1, d1), _dot(d2, d2), _dot(d2, r)
+    if a == 0.0 and e == 0.0:
+        return math.dist(p1, p2)
+    if a == 0.0:
+        s, t = 0.0, min(1.0, max(0.0, f / e))
+    else:
+        c = _dot(d1, r)
+        if e == 0.0:
+            s, t = min(1.0, max(0.0, -c / a)), 0.0
+        else:
+            b = _dot(d1, d2)
+            denom = a * e - b * b
+            s = min(1.0, max(0.0, (b * f - c * e) / denom)) if denom != 0.0 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, min(1.0, max(0.0, -c / a))
+            elif t > 1.0:
+                t, s = 1.0, min(1.0, max(0.0, (b - c) / a))
+    c1 = (p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s)
+    c2 = (p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t)
+    return math.dist(c1, c2)
+
+
+class OracleFace:
+    def __init__(self, face):
+        self.rings = face
+        self.edges = [(ring[i], ring[(i + 1) % len(ring)]) for ring in face for i in range(len(ring))]
+        self.plane = face_plane(face)
+        pts = [v for ring in face for v in ring]
+        self.box = tuple(min(v[k] for v in pts) for k in range(3)) + tuple(max(v[k] for v in pts) for k in range(3))
+        if self.plane is not None:
+            n, c = self.plane
+            u = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
+            u = _sub(u, tuple(n[k] * _dot(u, n) for k in range(3)))
+            lu = math.sqrt(_dot(u, u))
+            self.u = tuple(x / lu for x in u)
+            self.v = (n[1] * self.u[2] - n[2] * self.u[1], n[2] * self.u[0] - n[0] * self.u[2],
+                      n[0] * self.u[1] - n[1] * self.u[0])
+            self.rings2 = [[self._to2(p) for p in ring] for ring in face]
+
+    def _to2(self, p):
+        d = _sub(p, self.plane[1])
+        return (_dot(d, self.u), _dot(d, self.v))
+
+    def contains_projection(self, p) -> bool:
+        """Even-odd test of p's projection against every ring: holes excluded."""
+        x, y = self._to2(p)
+        inside = False
+        for ring in self.rings2:
+            for i in range(len(ring)):
+                (x1, y1), (x2, y2) = ring[i], ring[(i + 1) % len(ring)]
+                if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                    inside = not inside
+        return inside
+
+    def point_distance(self, p) -> float:
+        best = min(_seg_seg(p, p, a, b) for a, b in self.edges)
+        if self.plane is not None and self.contains_projection(p):
+            n, c = self.plane
+            best = min(best, abs(_dot(_sub(p, c), n)))
+        return best
+
+    def crossed_by(self, a, b) -> bool:
+        """Does segment ab pass through the face's interior?"""
+        if self.plane is None:
+            return False
+        n, c = self.plane
+        sa, sb = _dot(_sub(a, c), n), _dot(_sub(b, c), n)
+        if (sa > 0 and sb > 0) or (sa < 0 and sb < 0) or sa == sb:
+            return False
+        t = sa / (sa - sb)
+        return self.contains_projection((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                                         a[2] + (b[2] - a[2]) * t))
+
+
+def _box_gap(a, b) -> float:
+    return math.sqrt(sum(max(0.0, a[i] - b[i + 3], b[i] - a[i + 3]) ** 2 for i in range(3)))
+
+
+def oracle_face_face(f: OracleFace, g: OracleFace) -> float:
+    if any(g.crossed_by(a, b) for a, b in f.edges) or any(f.crossed_by(a, b) for a, b in g.edges):
+        return 0.0
+    best = min(min(g.point_distance(v) for ring in f.rings for v in ring),
+               min(f.point_distance(v) for ring in g.rings for v in ring))
+    for a, b in f.edges:
+        for c, d in g.edges:
+            best = min(best, _seg_seg(a, b, c, d))
+    return best
+
+
+def oracle_distance(fa: list, fb: list) -> float:
+    """Distance between two sets of OracleFace (a point is a list with one point tuple)."""
+    best = math.inf
+    for f in fa:
+        for g in fb:
+            if _box_gap(f.box, g.box) >= best:
+                continue
+            best = min(best, oracle_face_face(f, g))
+            if best == 0.0:
+                return 0.0
+    return best
+
+
+def oracle_max_distance(fa: list, pb: list) -> float:
+    """Largest distance between the vertices of every ring of `fa` (faces as
+    lists of rings) and the points `pb`. On polygons the maximum is attained at
+    vertices, interior rings included: real data has holes that leave their
+    exterior, and PostGIS's ST_3DMaxDistance reads only the exterior ring."""
+    va = [v for face in fa for ring in face for v in ring]
+    return max(math.dist(u, v) for u in va for v in pb)
+
+
+def oracle_point_distance(p, faces: list) -> float:
+    best = math.inf
+    for f in faces:
+        if _box_gap(f.box, p + p) >= best:
+            continue
+        best = min(best, f.point_distance(p))
+    return best
+
+
+# --------------------------------------------------------------------------
+# Engines
+# --------------------------------------------------------------------------
+
+class Engines:
+    def __init__(self, extension: Path, dsn: str):
+        self.duck = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+        self.duck.execute(f"LOAD '{extension}'")
+        self.pg = psycopg2.connect(dsn)
+        self.pg.autocommit = True
+        with self.pg.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS postgis_sfcgal")
+            cur.execute("SELECT postgis_full_version()")
+            self.pg_version = cur.fetchone()[0]
+
+    def load(self, table: str, columns: list[tuple[str, str, str]], rows: list[tuple]):
+        """Create `table` in both engines from `rows`; columns are (name, duck type, pg type)."""
+        self.duck.execute(f"DROP TABLE IF EXISTS {table}")
+        self.duck.execute(f"CREATE TABLE {table} ({', '.join(f'{n} {d}' for n, d, _ in columns)})")
+        if rows:
+            self.duck.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' for _ in columns)})", rows)
+        with self.pg.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {table}")
+            cur.execute(f"CREATE TABLE {table} ({', '.join(f'{n} {p}' for n, _, p in columns)})")
+            if rows:
+                psycopg2.extras.execute_values(
+                    cur, f"INSERT INTO {table} VALUES %s",
+                    [tuple(psycopg2.Binary(v) if isinstance(v, (bytes, bytearray)) else v for v in r) for r in rows],
+                    page_size=500)
+
+    def duck_rows(self, sql: str) -> dict:
+        return {r[0]: r[1:] for r in self.duck.execute(sql).fetchall()}
+
+    def pg_rows(self, sql: str) -> dict:
+        with self.pg.cursor() as cur:
+            cur.execute(sql)
+            return {r[0]: r[1:] for r in cur.fetchall()}
+
+
+# --------------------------------------------------------------------------
+# Checks
+# --------------------------------------------------------------------------
+
+@dataclass
+class Outcome:
+    check: str
+    compared: int = 0
+    agree: int = 0
+    skipped: dict = field(default_factory=dict)   # reason -> count
+    disagreements: list = field(default_factory=list)  # (key, ours, theirs, note)
+    max_abs: float = 0.0
+    oracle: str = "PostGIS"
+    note: str = ""
+    informational: bool = False  # reported, but a disagreement does not fail the run
+
+
+def close(a, b, abs_tol, rel_tol) -> bool:
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if math.isinf(a) or math.isinf(b):
+        return a == b
+    return abs(a - b) <= abs_tol + rel_tol * max(abs(a), abs(b))
+
+
+def compare(outcome: Outcome, ours: dict, theirs: dict, abs_tol=1e-6, rel_tol=1e-9, labels=None):
+    for key, their_vals in theirs.items():
+        if key not in ours:
+            outcome.skipped["missing on duckdb-3d side"] = outcome.skipped.get("missing on duckdb-3d side", 0) + 1
+            continue
+        our_vals = ours[key]
+        outcome.compared += 1
+        ok = True
+        for i, (a, b) in enumerate(zip(our_vals, their_vals)):
+            if isinstance(a, float) and isinstance(b, float) and not (math.isnan(a) or math.isnan(b)):
+                outcome.max_abs = max(outcome.max_abs, abs(a - b))
+            if not close(a, b, abs_tol, rel_tol):
+                ok = False
+        if ok:
+            outcome.agree += 1
+        else:
+            outcome.disagreements.append((key, our_vals, their_vals))
+
+
+def bbox_gap(a: tuple, b: tuple) -> float:
+    d2 = 0.0
+    for i in range(3):
+        g = max(0.0, a[i] - b[i + 3], b[i] - a[i + 3])
+        d2 += g * g
+    return math.sqrt(d2)
+
+
+def point_wkb(x, y, z) -> bytes:
+    return struct.pack("<BIddd", 1, 1001, x, y, z)
+
+
+def near_pairs(items: list[Item], within: float, limit: int, rng: random.Random) -> list[tuple[Item, Item]]:
+    """Pairs of distinct objects of the same dataset, LoD and role whose boxes come within `within`."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault((it.dataset, it.lod, it.role), []).append(it)
+    pairs = []
+    for group in groups.values():
+        group.sort(key=lambda it: it.bbox[0])
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if b.bbox[0] - a.bbox[3] > within:
+                    break
+                if a.object_id != b.object_id and bbox_gap(a.bbox, b.bbox) <= within:
+                    pairs.append((a, b))
+    rng.shuffle(pairs)
+    return pairs[:limit]
+
+
+PLANAR = 1e-7  # a face whose vertices all lie within this of its plane (m) counts as planar
+
+
+def _row_class(a: Item, b: Item | None) -> tuple[str, float]:
+    """Which reference a row is compared against, and the tolerance that comes with it.
+
+    - "exact": planar faces without holes. PostGIS, to --distance-tol.
+    - "holes": a face has an interior ring. The independent oracle above.
+    - "non-planar": the independent oracle measures a non-planar face as its rings
+      projected onto the Newell plane, duckdb-3d against its triangulation. Every
+      triangle lies within the face's deviation of that plane, so the two can differ
+      by up to twice the faces' summed deviation. PostGIS is reported beside it
+      only for information: it measures against a plane of its own fitting, which
+      can sit further from the vertices than the deviation (Delft has faces 0.7 mm
+      from planar where PostGIS reports 0 against a true 5 mm).
+    """
+    dev = a.deviation + (b.deviation if b else 0.0)
+    bound = 2.0 * dev if dev > PLANAR else 0.0
+    if a.holes or (b is not None and b.holes):
+        return "holes", bound
+    return ("non-planar" if bound else "exact"), bound
+
+
+def check_distance(eng: Engines, items: list[Item], args) -> list[Outcome]:
+    """The distance family on GEOM_3D: object pairs, faces against faces and
+    points, and closest point / shortest line against their definitions."""
+    rng = random.Random(args.seed)
+    geoms = [it for it in items if it.role in ("solid", "surface", "face")]
+    pairs = near_pairs([it for it in geoms if it.role != "face"], args.within, args.pairs, rng)
+    face_pairs = near_pairs([it for it in geoms if it.role == "face"], 1.0, args.pairs, rng)
+    # Holed faces are rare in LoD2 data; probe all of them, not a sample.
+    holed = [it for it in geoms if it.holes]
+    rows, meta = [], {}
+    for a, b in pairs + face_pairs:
+        for t in (0.0, 0.5, 2.0):
+            k = f"{a.key}|{b.key}|{t}"
+            rows.append((k, a.wkb, b.wkb, t))
+            meta[k] = (a, b, None, t)
+    # Points around faces: in the face's box, grown by a metre, so many fall in
+    # notches and over holes where a wrong decomposition shows. Points in the
+    # plane of a holed face, over its holes, are added as well.
+    faces = [it for it in geoms if it.role == "face"]
+    rng.shuffle(faces)
+    probe = faces[: args.points] + [it for it in holed if it.role == "face"]
+    for it in probe:
+        x0, y0, z0, x1, y1, z1 = it.bbox
+        pts = [(rng.uniform(x0 - 1, x1 + 1), rng.uniform(y0 - 1, y1 + 1), rng.uniform(z0 - 1, z1 + 1))
+               for _ in range(4)]
+        if it.holes:
+            for ring in it.faces[0][1:]:
+                c = tuple(sum(v[k] for v in ring) / len(ring) for k in range(3))
+                pts.append(c)
+        for j, p in enumerate(pts):
+            k = f"{it.key}|pt{j}|0.5"
+            rows.append((k, it.wkb, point_wkb(*p), 0.5))
+            meta[k] = (it, None, p, 0.5)
+    eng.load("pairs", [("k", "VARCHAR", "text"), ("a", "BLOB", "bytea"), ("b", "BLOB", "bytea"),
+                       ("t", "DOUBLE", "float8")], rows)
+
+    # duckdb-3d refuses polygons that admit no tiling; such rows are reported, not compared.
+    duck_sql = """
+        SELECT k, TRY(ST_3DDistance(ga, gb)), TRY(ST_3DDWithin(ga, gb, t)), TRY(ST_3DIntersects(ga, gb)),
+               TRY(ST_3DMaxDistance(ga, gb)), TRY(ST_3DLength(ST_3DShortestLine(ga, gb))),
+               TRY(ST_3DDistance(ST_3DClosestPoint(ga, gb), gb)), TRY(ST_3DDistance(ST_3DClosestPoint(ga, gb), ga))
+        FROM (SELECT k, t, TRY(ST_Geom3DFromWKB(a)) AS ga, TRY(ST_Geom3DFromWKB(b)) AS gb FROM pairs)"""
+    pg_sql = """
+        SELECT k, ST_3DDistance(ga, gb), ST_3DDWithin(ga, gb, t), ST_3DIntersects(ga, gb), ST_3DMaxDistance(ga, gb)
+        FROM (SELECT k, t, ST_GeomFromWKB(a) AS ga, ST_GeomFromWKB(b) AS gb FROM pairs) s"""
+    ours = eng.duck_rows(duck_sql)
+    theirs = eng.pg_rows(pg_sql)
+    refused = {k for k, v in ours.items() if v[0] is None}
+
+    classes = {k: _row_class(m[0], m[1]) for k, m in meta.items()}
+    oracle_faces = {}
+
+    def faces_of(it):
+        if it.key not in oracle_faces:
+            oracle_faces[it.key] = [OracleFace(f) for f in it.faces]
+        return oracle_faces[it.key]
+
+    reference = {}
+    for k, (a, b, p, t) in meta.items():
+        if k in refused:
+            continue
+        cls, bound = classes[k]
+        if cls in ("holes", "non-planar"):
+            d = oracle_point_distance(p, faces_of(a)) if p is not None else oracle_distance(faces_of(a), faces_of(b))
+            pb = [p] if p is not None else [v for face in b.faces for ring in face for v in ring]
+            reference[k] = (d, d <= t + 1e-9, d <= 1e-9, oracle_max_distance(a.faces, pb))
+        else:
+            reference[k] = theirs[k]
+
+    out = []
+    tol = args.distance_tol
+    pg_beside = {k: theirs[k] for k in reference if classes[k][0] == "non-planar"}
+    for cls, oracle, refs, info in (
+            ("exact", "PostGIS", reference, False),
+            ("holes", "independent oracle (planar polygons with holes)", reference, False),
+            ("non-planar", "independent oracle, within twice the faces' deviation from their planes", reference, False),
+            ("non-planar", "PostGIS, for information", pg_beside, True)):
+        keys = [k for k in refs if classes[k][0] == cls]
+        if not keys:
+            continue
+        for i, name in enumerate(["ST_3DDistance", "ST_3DDWithin", "ST_3DIntersects", "ST_3DMaxDistance"]):
+            o = Outcome(f"{name} [{cls}]", oracle=oracle, informational=info)
+            for k in keys:
+                a, b, p, t = meta[k]
+                bound = classes[k][1]
+                mine, ref = ours[k][i], refs[k][i]
+                o.compared += 1
+                if isinstance(ref, float):
+                    o.max_abs = max(o.max_abs, abs(mine - ref))
+                    ok = abs(mine - ref) <= tol + bound + 1e-9 * abs(ref) if name != "ST_3DMaxDistance" \
+                        else abs(mine - ref) <= tol + 1e-9 * abs(ref)
+                else:
+                    # A predicate may differ only where the reference distance is
+                    # within the row's tolerance of the threshold.
+                    d = refs[k][0]
+                    edge = t if name == "ST_3DDWithin" else 0.0
+                    ok = mine == ref or abs(d - edge) <= tol + bound
+                if ok:
+                    o.agree += 1
+                else:
+                    o.disagreements.append((k, (mine,), (ref,)))
+            out.append(o)
+
+    # Closest point and shortest line against their definitions, on every row.
+    for i, name, check in ((4, "ST_3DShortestLine length is the distance", lambda v: v[4] - v[0]),
+                           (5, "ST_3DClosestPoint is at the distance from the second", lambda v: v[5] - v[0]),
+                           (6, "ST_3DClosestPoint lies on the first", lambda v: v[6])):
+        o = Outcome(name, oracle="definition")
+        for k, v in ours.items():
+            if k in refused:
+                continue
+            o.compared += 1
+            diff = abs(check(v))
+            o.max_abs = max(o.max_abs, diff)
+            if diff <= tol:
+                o.agree += 1
+            else:
+                o.disagreements.append((k, (v[i],), (v[0] if i != 6 else 0.0,)))
+        out.append(o)
+
+    counts = {c: sum(1 for k in reference if classes[k][0] == c) for c in ("exact", "holes", "non-planar")}
+    out[0].note = (f"{len(pairs)} object pairs with boxes within {args.within} m and {len(face_pairs)} face pairs "
+                   f"(thresholds 0, 0.5, 2), {len(rows) - 3 * (len(pairs) + len(face_pairs))} face/point pairs "
+                   f"({len([it for it in probe if it.holes])} holed faces probed at their holes' centres); rows per "
+                   f"class: {counts}; {len(refused)} refused by duckdb-3d (a polygon admits no tiling); "
+                   f"tolerance {tol} m")
+    return out
+
+
+CHECKS = {"distance": check_distance}
+
+
+# --------------------------------------------------------------------------
+# Report
+# --------------------------------------------------------------------------
+
+def write_report(path: Path, outcomes: list[Outcome], eng: Engines, args, counts: dict):
+    lines = ["# duckdb-3d against PostGIS on real data", ""]
+    lines.append(f"- Reference: `{eng.pg_version}`")
+    lines.append(f"- duckdb-3d: `{args.extension}`")
+    lines.append(f"- Datasets: " + ", ".join(f"{d} ({n} geometries)" for d, n in counts.items()))
+    lines.append(f"- Seed {args.seed}")
+    lines.append("")
+    lines.append("| Check | Reference | Compared | Agree | Disagree | Max abs diff | Skipped |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for o in outcomes:
+        skipped = "; ".join(f"{v} {k}" for k, v in o.skipped.items()) or "0"
+        lines.append(f"| {o.check} | {o.oracle} | {o.compared} | {o.agree} | {len(o.disagreements)} | {o.max_abs:.3g} "
+                     f"| {skipped} |")
+    lines.append("")
+    for o in outcomes:
+        if o.note:
+            lines.append(f"- **{o.check}**: {o.note}")
+    for o in outcomes:
+        if not o.disagreements:
+            continue
+        lines.append("")
+        lines.append(f"## {o.check}: {len(o.disagreements)} disagreements (first 25)")
+        lines.append("")
+        lines.append("| Key | duckdb-3d | reference |")
+        lines.append("|---|---|---|")
+        for key, a, b in o.disagreements[:25]:
+            lines.append(f"| `{key}` | {a} | {b} |")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--datasets", default=",".join(DATASETS))
+    ap.add_argument("--checks", default=",".join(CHECKS))
+    ap.add_argument("--workdir", type=Path, default=REPO / "build" / "live_diff")
+    ap.add_argument("--extension", type=Path, default=EXTENSION)
+    ap.add_argument("--dsn", default="dbname=oracle")
+    ap.add_argument("--report", type=Path, default=None)
+    ap.add_argument("--seed", type=int, default=20261015)
+    ap.add_argument("--pairs", type=int, default=3000, help="object pairs (and face pairs) per run")
+    ap.add_argument("--points", type=int, default=1500, help="faces probed with random points")
+    ap.add_argument("--within", type=float, default=5.0, help="box gap for an object pair, in metres")
+    ap.add_argument("--faces", type=int, default=20000, help="faces kept per dataset")
+    ap.add_argument("--distance-tol", type=float, default=1e-6)
+    args = ap.parse_args()
+
+    args.workdir.mkdir(parents=True, exist_ok=True)
+    items: list[Item] = []
+    counts = {}
+    for name in args.datasets.split(","):
+        got = read_dataset(name, fetch(name, args.workdir), args.faces)
+        counts[name] = len(got)
+        items.extend(got)
+    eng = Engines(args.extension, args.dsn)
+    outcomes = []
+    for name in args.checks.split(","):
+        outcomes.extend(CHECKS[name](eng, items, args))
+    report = args.report or (args.workdir / "report.md")
+    write_report(report, outcomes, eng, args, counts)
+    print(report.read_text())
+    if any(o.disagreements for o in outcomes if not o.informational):
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    import psycopg2.extras  # noqa: F401  (execute_values)
+    main()

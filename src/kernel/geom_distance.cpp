@@ -1,8 +1,11 @@
 #include "kernel/geom_distance.hpp"
+#include "kernel/triangulation.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
+#include <utility>
 
 namespace duckdb_3d {
 
@@ -107,11 +110,23 @@ Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vert
 		double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
 		return at(0.0, 1.0 - w, w); // edge bc
 	}
-	// Interior: project onto the face plane via barycentric coords.
-	double denom = 1.0 / (va + vb + vc);
-	double v = vb * denom;
-	double w = vc * denom;
-	return at(1.0 - v - w, v, w);
+	// Interior: project onto the triangle's plane. Ericson's barycentric weights
+	// (vb, vc over va + vb + vc) divide by the square of a sliver's tiny area and
+	// carry its rounding microns off the triangle; the plane projection does not.
+	Vec3 n = Cross(ab, ac);
+	double nn = Dot(n, n);
+	if (!(nn > 0.0)) {
+		// No plane (the vertices are collinear): the nearest point of its edges.
+		Vertex3D best = ClosestPointOnSegment(p, a, b);
+		for (const auto &q : {ClosestPointOnSegment(p, b, c), ClosestPointOnSegment(p, c, a)}) {
+			if (DistPointPoint(p, q) < DistPointPoint(p, best)) {
+				best = q;
+			}
+		}
+		return best;
+	}
+	double s = Dot(n, ap) / nn;
+	return {p.x - n.x * s, p.y - n.y * s, p.z - n.z * s};
 }
 
 double DistPointTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
@@ -232,12 +247,13 @@ ClosestPointPair ClosestPointPairTriangleTriangle(const Vertex3D &a1, const Vert
 	ClosestPointPair best = ClosestPointPairSegmentTriangle(a1, b1, a2, b2, c2);
 	KeepCloser(best, ClosestPointPairSegmentTriangle(b1, c1, a2, b2, c2));
 	KeepCloser(best, ClosestPointPairSegmentTriangle(c1, a1, a2, b2, c2));
-	// The reverse six checks are covered because ClosestPointPairSegmentTriangle
-	// evaluates segment-vs-triangle edges; still run the symmetric edges for
-	// robustness in degenerate cases.
-	KeepCloser(best, ClosestPointPairSegmentTriangle(a2, b2, a1, b1, c1));
-	KeepCloser(best, ClosestPointPairSegmentTriangle(b2, c2, a1, b1, c1));
-	KeepCloser(best, ClosestPointPairSegmentTriangle(c2, a2, a1, b1, c1));
+	// The second triangle's edges against the first: these find a vertex of the
+	// second nearest the first's interior. Their pairs come back (on the second,
+	// on the first) and are swapped.
+	for (const auto &edge : {std::make_pair(&a2, &b2), std::make_pair(&b2, &c2), std::make_pair(&c2, &a2)}) {
+		auto reverse = ClosestPointPairSegmentTriangle(*edge.first, *edge.second, a1, b1, c1);
+		KeepCloser(best, {reverse.q, reverse.p});
+	}
 	return best;
 }
 
@@ -271,20 +287,40 @@ Element MakeElement(int n, const Vertex3D &a, const Vertex3D &b = {}, const Vert
 	return e;
 }
 
-//! Fan-triangulate the ring spanning vertex indices [begin,end) into triangles.
-void FanTriangulate(const GeomModel &m, uint32_t begin, uint32_t end, std::vector<Element> &out) {
-	if (end - begin < 3) {
+//! Append polygon `p` of `m` as the elements distance measures against: its
+//! cached triangles, or its boundary edges when it has no area (and so no
+//! triangles).
+void DecomposePolygon(const GeomModel &m, uint32_t p, std::vector<Element> &out) {
+	uint32_t t_begin = m.polygon_triangle_offsets[p];
+	uint32_t t_end = m.polygon_triangle_offsets[p + 1];
+	for (uint32_t t = t_begin; t < t_end; t++) {
+		const auto *tri = &m.triangle_indices[static_cast<size_t>(t) * 3];
+		out.push_back(MakeElement(3, m.vertices[tri[0]], m.vertices[tri[1]], m.vertices[tri[2]]));
+	}
+	if (t_begin != t_end) {
 		return;
 	}
-	const Vertex3D &v0 = m.vertices[begin];
-	for (uint32_t i = begin + 1; i + 1 < end; i++) {
-		out.push_back(MakeElement(3, v0, m.vertices[i], m.vertices[i + 1]));
+	uint32_t first_ring, ring_count;
+	m.PolygonRings(p, first_ring, ring_count);
+	for (uint32_t r = first_ring; r < first_ring + ring_count; r++) {
+		uint32_t begin = m.ring_offsets[r];
+		uint32_t end = m.ring_offsets[r + 1];
+		if (end - begin == 1) {
+			out.push_back(MakeElement(1, m.vertices[begin]));
+		} else if (end - begin == 2) {
+			out.push_back(MakeElement(2, m.vertices[begin], m.vertices[begin + 1]));
+		} else {
+			for (uint32_t i = begin; i < end; i++) {
+				out.push_back(MakeElement(2, m.vertices[i], m.vertices[i + 1 < end ? i + 1 : begin]));
+			}
+		}
 	}
 }
 
 //! Decompose a geometry into primitive elements according to its dimension.
-//! Surfaces are fan-triangulated over each face's exterior ring (holes are
-//! ignored for distance — a documented v1 simplification).
+//! Polygons and surface patches contribute the triangles that tile them, holes
+//! excluded: the cache every GEOM_3D value carries, or computed here for a model
+//! built in memory without one (which throws for a polygon that admits no tiling).
 std::vector<Element> Decompose(const GeomModel &m) {
 	std::vector<Element> out;
 	switch (m.type) {
@@ -307,19 +343,22 @@ std::vector<Element> Decompose(const GeomModel &m) {
 		}
 		break;
 	case GeomType::Polygon:
-		// Single polygon: ring 0 is the exterior ring.
-		if (m.ring_offsets.size() >= 2) {
-			FanTriangulate(m, m.ring_offsets[0], m.ring_offsets[1], out);
-		}
-		break;
 	case GeomType::MultiPolygon:
-	case GeomType::PolyhedralSurface:
-		// Each part's first ring is its exterior boundary.
-		for (size_t k = 0; k + 1 < m.part_offsets.size(); k++) {
-			uint32_t ring = m.part_offsets[k];
-			FanTriangulate(m, m.ring_offsets[ring], m.ring_offsets[ring + 1], out);
+	case GeomType::PolyhedralSurface: {
+		uint32_t polygon_count = m.PolygonCount();
+		if (m.polygon_triangle_offsets.size() == polygon_count + 1) {
+			for (uint32_t p = 0; p < polygon_count; p++) {
+				DecomposePolygon(m, p, out);
+			}
+		} else {
+			GeomModel triangulated = m;
+			TriangulateGeomModel(triangulated);
+			for (uint32_t p = 0; p < polygon_count; p++) {
+				DecomposePolygon(triangulated, p, out);
+			}
 		}
 		break;
+	}
 	default:
 		// Fall back to treating raw vertices as points.
 		for (const auto &v : m.vertices) {

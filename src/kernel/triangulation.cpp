@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace duckdb_3d {
@@ -20,10 +22,12 @@ namespace {
 
 using Point2D = std::array<double, 2>;
 
-//! Buffers TriangulateFace needs for every face, kept across the faces of one
-//! model so a solid's triangulation allocates per solid rather than per face.
+} // anonymous namespace
+
+//! Buffers TriangulatePolygon needs for every face, kept across the faces of
+//! one model so a solid's triangulation allocates per solid rather than per face.
 //! Nothing in here carries meaning from one face to the next.
-struct TriangulationScratch {
+struct PolygonTriangulator::Scratch {
 	std::vector<std::vector<Point2D>> polygon; //!< the face's rings, in its plane
 	std::vector<uint32_t> flat_to_vertex;      //!< earcut's flattened index -> model vertex
 	std::vector<uint32_t> ring_offsets;        //!< each ring's start in the flattened index space
@@ -34,12 +38,82 @@ struct TriangulationScratch {
 	mapbox::detail::Earcut<uint32_t> earcut;
 };
 
+namespace {
+
+using TriangulationScratch = PolygonTriangulator::Scratch;
+
+//! A polygon's rings as runs of vertex indices: ring r is positions
+//! [ring_offsets[r], ring_offsets[r + 1]), each mapped through `indices` (or
+//! taken as an index itself when `indices` is null).
+struct RingSpans {
+	const Vertex3D *vertices;
+	const uint32_t *indices;
+	const uint32_t *ring_offsets;
+	uint32_t ring_count;
+
+	uint32_t Index(uint32_t position) const {
+		return indices ? indices[position] : position;
+	}
+	const Vertex3D &Vertex(uint32_t position) const {
+		return vertices[Index(position)];
+	}
+};
+
+//! Unnormalised Newell area vector of ring `r`, computed exactly as
+//! NewellRingAreaVector does (geometry_math.cpp), so a solid's faces triangulate
+//! the same through either path.
+Vertex3D RingAreaVector(const RingSpans &rings, uint32_t r) {
+	uint32_t vi_start = rings.ring_offsets[r];
+	uint32_t n = rings.ring_offsets[r + 1] - vi_start;
+	Vertex3D area = {0, 0, 0};
+	if (n < 3) {
+		return area;
+	}
+	const auto &origin = rings.Vertex(vi_start);
+	for (uint32_t i = 0; i < n; i++) {
+		const auto &vcur = rings.Vertex(vi_start + i);
+		const auto &vnext = rings.Vertex(vi_start + ((i + 1) % n));
+		const Vertex3D cur = {vcur.x - origin.x, vcur.y - origin.y, vcur.z - origin.z};
+		const Vertex3D next = {vnext.x - origin.x, vnext.y - origin.y, vnext.z - origin.z};
+		area.x += (cur.y - next.y) * (cur.z + next.z);
+		area.y += (cur.z - next.z) * (cur.x + next.x);
+		area.z += (cur.x - next.x) * (cur.y + next.y);
+	}
+	return area;
+}
+
+//! True when every ring's vertices lie on one line: the summed unsigned area of
+//! the fan from each ring's first vertex vanishes, relative to the ring's
+//! extent. A ring whose lobes cancel has net area zero but a fan that does not.
+bool RingsAreCollinear(const RingSpans &rings) {
+	for (uint32_t r = 0; r < rings.ring_count; r++) {
+		uint32_t begin = rings.ring_offsets[r];
+		uint32_t end = rings.ring_offsets[r + 1];
+		const auto &o = rings.Vertex(begin);
+		double fan = 0, extent2 = 0;
+		for (uint32_t i = begin + 1; i < end; i++) {
+			const auto &a = rings.Vertex(i);
+			Vertex3D da = {a.x - o.x, a.y - o.y, a.z - o.z};
+			extent2 = std::max(extent2, da.x * da.x + da.y * da.y + da.z * da.z);
+			if (i + 1 < end) {
+				const auto &b = rings.Vertex(i + 1);
+				Vertex3D db = {b.x - o.x, b.y - o.y, b.z - o.z};
+				fan += std::hypot(std::hypot(da.y * db.z - da.z * db.y, da.z * db.x - da.x * db.z),
+				                  da.x * db.y - da.y * db.x);
+			}
+		}
+		if (!(fan <= kEpsRelative * extent2)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //! Unnormalised face area vector: the sum of the face's ring Newell vectors.
-Vertex3D FaceAreaVector(const SolidModel &model, uint32_t face_idx) {
+Vertex3D FaceAreaVector(const RingSpans &rings) {
 	Vertex3D n = {0, 0, 0};
-	for (uint32_t ring_idx = model.face_ring_offsets[face_idx]; ring_idx < model.face_ring_offsets[face_idx + 1];
-	     ring_idx++) {
-		auto ring_normal = NewellRingAreaVector(model, ring_idx);
+	for (uint32_t r = 0; r < rings.ring_count; r++) {
+		auto ring_normal = RingAreaVector(rings, r);
 		n.x += ring_normal.x;
 		n.y += ring_normal.y;
 		n.z += ring_normal.z;
@@ -213,12 +287,20 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 //! tile the face: a ring that self-intersects or a hole that leaves the exterior
 //! has no triangulation whose area matches the polygon's, and handing back a
 //! partial one would silently corrupt every measurement that sums triangles.
-bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uint32_t> &out,
-                     TriangulationScratch &scratch) {
-	uint32_t ring_start = model.face_ring_offsets[face_idx];
-	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
-	if (ring_start == ring_end) {
-		return false;
+PolygonTriangulation TriangulatePolygon(const RingSpans &rings, std::vector<uint32_t> &out,
+                                        TriangulationScratch &scratch) {
+	if (rings.ring_count == 0) {
+		return PolygonTriangulation::ZeroArea;
+	}
+	// An exterior of fewer than three vertices encloses nothing; a hole that
+	// short is not a ring at all, so the polygon is malformed.
+	if (rings.ring_offsets[1] - rings.ring_offsets[0] < 3) {
+		return PolygonTriangulation::ZeroArea;
+	}
+	for (uint32_t r = 1; r < rings.ring_count; r++) {
+		if (rings.ring_offsets[r + 1] - rings.ring_offsets[r] < 3) {
+			return PolygonTriangulation::Untileable;
+		}
 	}
 
 	// Every quantity from here to earcut must be finite. A face whose area
@@ -227,20 +309,34 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	// z-order hash would cast those to int32 (undefined behaviour), and every
 	// comparison in the tiling check is false for NaN. Such a face is rejected
 	// here, and validation reports it degenerate.
-	auto normal = FaceAreaVector(model, face_idx);
+	auto normal = FaceAreaVector(rings);
 	if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 	double normal_len = std::hypot(std::hypot(normal.x, normal.y), normal.z); // no intermediate overflow
 	if (!std::isfinite(normal_len)) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
-	if (normal_len < kEpsAbsolute) {
-		return false; // zero-area face: nothing to tile
+	// Squared extent of the exterior ring from its first vertex: "no net area" is
+	// relative to it, so the outcome does not depend on the unit of length.
+	double extent2 = 0;
+	{
+		const auto &o = rings.Vertex(rings.ring_offsets[0]);
+		for (uint32_t i = rings.ring_offsets[0] + 1; i < rings.ring_offsets[1]; i++) {
+			const auto &a = rings.Vertex(i);
+			double dx = a.x - o.x, dy = a.y - o.y, dz = a.z - o.z;
+			extent2 = std::max(extent2, dx * dx + dy * dy + dz * dz);
+		}
+	}
+	if (!(normal_len > kEpsRelative * extent2)) {
+		// No net area. Either every ring lies on a line, or the ring crosses
+		// itself and its lobes cancel (a bow tie); only the first has nothing to
+		// tile.
+		return RingsAreCollinear(rings) ? PolygonTriangulation::ZeroArea : PolygonTriangulation::Untileable;
 	}
 	auto frame = FrameFor({normal.x / normal_len, normal.y / normal_len, normal.z / normal_len});
 	if (!AllFinite({frame.u.x, frame.u.y, frame.u.z, frame.v.x, frame.v.y, frame.v.z})) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 
 	// Project every ring into the face plane, referenced to the exterior ring's
@@ -252,28 +348,25 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	// so the small ones drown (DESIGN_DOC §8.2 makes the same point about volume,
 	// one power higher). Shifting is exact for areas, which are
 	// translation-invariant, and keeps the products at face scale.
-	const auto &origin = model.vertices[model.ring_vertex_indices[model.ring_vertex_offsets[ring_start]]];
+	const auto &origin = rings.Vertex(rings.ring_offsets[0]);
 	auto &polygon = scratch.polygon;
 	auto &flat_to_vertex = scratch.flat_to_vertex;
 	auto &ring_offsets = scratch.ring_offsets;
-	polygon.resize(ring_end - ring_start);
+	polygon.resize(rings.ring_count);
 	flat_to_vertex.clear();
 	ring_offsets.clear();
 	double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
-	for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-		uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-		uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-		if (vi_end - vi_start < 3) {
-			return false;
-		}
+	for (uint32_t r = 0; r < rings.ring_count; r++) {
+		uint32_t vi_start = rings.ring_offsets[r];
+		uint32_t vi_end = rings.ring_offsets[r + 1];
 		ring_offsets.push_back(static_cast<uint32_t>(flat_to_vertex.size()));
-		auto &ring = polygon[ring_idx - ring_start];
+		auto &ring = polygon[r];
 		ring.clear();
 		for (uint32_t vi = vi_start; vi < vi_end; vi++) {
-			uint32_t vertex = model.ring_vertex_indices[vi];
-			auto p = ToPlane(model.vertices[vertex], origin, frame);
+			uint32_t vertex = rings.Index(vi);
+			auto p = ToPlane(rings.vertices[vertex], origin, frame);
 			if (!std::isfinite(p[0]) || !std::isfinite(p[1])) {
-				return false;
+				return PolygonTriangulation::Untileable;
 			}
 			min_x = std::min(min_x, p[0]);
 			max_x = std::max(max_x, p[0]);
@@ -296,7 +389,7 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	// The face's 2D extent and area feed the tiling tolerance; they too must be
 	// representable.
 	if (!AllFinite({(max_x - min_x) * (max_y - min_y), expected2})) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 
 	// earcut's fallback splits nest, and the vendored copy caps the nesting so a
@@ -305,7 +398,7 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	auto &earcut = scratch.earcut;
 	earcut(polygon);
 	if (earcut.splitDepthExceeded) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 	auto &indices = earcut.indices;
 
@@ -326,10 +419,10 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 	double tolerance2 = kEpsRelative * std::max((max_x - min_x) * (max_y - min_y), expected2);
 	if (indices.empty() || expected2 <= 0 || std::abs(abs2 - expected2) > tolerance2 ||
 	    std::abs(abs2 - std::abs(signed2)) > tolerance2) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 	if (!RestoreDroppedVertices(indices, ring_offsets, scratch)) {
-		return false;
+		return PolygonTriangulation::Untileable;
 	}
 
 	// Wind every triangle like the exterior ring, so a triangle's orientation in
@@ -340,10 +433,21 @@ bool TriangulateFace(const SolidModel &model, uint32_t face_idx, std::vector<uin
 		out.push_back(flat_to_vertex[indices[flip ? t + 2 : t + 1]]);
 		out.push_back(flat_to_vertex[indices[flip ? t + 1 : t + 2]]);
 	}
-	return true;
+	return PolygonTriangulation::Tiled;
 }
 
 } // anonymous namespace
+
+PolygonTriangulator::PolygonTriangulator() : scratch(new Scratch()) {
+}
+
+PolygonTriangulator::~PolygonTriangulator() = default;
+
+PolygonTriangulation PolygonTriangulator::Triangulate(const Vertex3D *vertices, const uint32_t *ring_vertex_indices,
+                                                      const uint32_t *ring_offsets, uint32_t ring_count,
+                                                      std::vector<uint32_t> &out) {
+	return TriangulatePolygon({vertices, ring_vertex_indices, ring_offsets, ring_count}, out, *scratch);
+}
 
 void TriangulateSolidModel(SolidModel &model) {
 	uint32_t face_count = model.FaceCount();
@@ -355,9 +459,35 @@ void TriangulateSolidModel(SolidModel &model) {
 		model.face_triangle_offsets[f] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
 		// A face that cannot be tiled keeps an empty triangle range; validation
 		// counts it degenerate (DESIGN_DOC §8.1), which gates volume and area.
-		TriangulateFace(model, f, model.triangle_vertex_indices, scratch);
+		uint32_t ring_start = model.face_ring_offsets[f];
+		RingSpans rings {model.vertices.data(), model.ring_vertex_indices.data(),
+		                 model.ring_vertex_offsets.data() + ring_start, model.face_ring_offsets[f + 1] - ring_start};
+		TriangulatePolygon(rings, model.triangle_vertex_indices, scratch);
 	}
 	model.face_triangle_offsets[face_count] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
+}
+
+void TriangulateGeomModel(GeomModel &model) {
+	model.polygon_triangle_offsets.clear();
+	model.triangle_indices.clear();
+	uint32_t polygon_count = model.PolygonCount();
+	if (polygon_count == 0) {
+		return;
+	}
+	TriangulationScratch scratch;
+	model.polygon_triangle_offsets.reserve(polygon_count + 1);
+	for (uint32_t p = 0; p < polygon_count; p++) {
+		model.polygon_triangle_offsets.push_back(static_cast<uint32_t>(model.triangle_indices.size() / 3));
+		uint32_t first_ring, ring_count;
+		model.PolygonRings(p, first_ring, ring_count);
+		RingSpans rings {model.vertices.data(), nullptr, model.ring_offsets.data() + first_ring, ring_count};
+		if (TriangulatePolygon(rings, model.triangle_indices, scratch) == PolygonTriangulation::Untileable) {
+			throw std::invalid_argument("polygon " + std::to_string(p + 1) +
+			                            " cannot be triangulated: a ring crosses itself or a hole leaves the "
+			                            "exterior");
+		}
+	}
+	model.polygon_triangle_offsets.push_back(static_cast<uint32_t>(model.triangle_indices.size() / 3));
 }
 
 } // namespace duckdb_3d

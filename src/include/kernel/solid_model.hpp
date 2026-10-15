@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <string>
 
 namespace duckdb_3d {
 
@@ -14,6 +15,14 @@ struct ValidationCache {
 	uint32_t non_manifold_edge_count = 0;
 	uint32_t degenerate_face_count = 0;
 	uint32_t orientation_error_count = 0;
+	//! Vertices where a shell's faces meet in more than one fan, within one
+	//! edge-connected part of the shell.
+	uint32_t non_manifold_vertex_count = 0;
+	//! Shells whose faces are not all connected through shared edges.
+	uint32_t disconnected_shell_count = 0;
+	//! Pairs of faces that cross each other (within a shell, or across the shells
+	//! of one solid).
+	uint32_t self_intersection_count = 0;
 	bool is_closed = false;
 	bool is_manifold = false;
 	bool is_oriented = false;
@@ -47,6 +56,10 @@ struct SolidModel {
 
 	//! Cached bounding box
 	BBox3D bbox = {};
+
+	//! Coordinate reference system, as an authority:code string such as
+	//! "EPSG:7415" (or any definition PROJ accepts); empty when unknown.
+	std::string crs;
 
 	//! Cached validation
 	ValidationCache validation = {};

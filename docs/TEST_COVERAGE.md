@@ -21,7 +21,7 @@ variable is exported; the `Makefile` exports it.
 
 ## Oracles
 
-Three independent sources, each authoritative for a different class of claim.
+Five independent sources, each authoritative for a different class of claim.
 
 ### 3DBAG published attributes — real-geometry measurement
 
@@ -118,8 +118,45 @@ Three comparisons are deliberately indirect:
 | `ST_3DCentroid` | PostGIS has no 3D centroid. `ST_Centroid` raises outright on a `PolyhedralSurface`, and on the other classes it is a 2D, XY-projected-area-weighted point — not this extension's 3D-area-weighted `Point Z` | `geom_3d_construct.test`, `docs/TESTING.md` §6 and §15 |
 | `ST_3DDimension`, `ST_3DNumGeometries` on a `PolyhedralSurface` | PostGIS reads a *closed* `PolyhedralSurface` as a solid (`ST_Dimension` = 3, and 2 for an open one) and `ST_NumGeometries` as its patch count. This extension reports the topological dimension of the surface (2) and treats the surface as one geometry | oracled on the `geom` rows; `st_3d_introspection.test`, `geom_3d_accessors.test` |
 | `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces` | Shell and patch counting differ structurally: the `shells` sidecar partition is a CityGML concept PostGIS's flat `PolyhedralSurface` has no equivalent of | `test/cpp/test_inner_shell.cpp`, `st_3d_hollow_solid.test`, `st_3d_multisolid.test`, `cityjson_multisolid.test` |
-| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | PostGIS repairs or rejects; this extension flags without repairing. Its own report is authoritative | `st_3d_validation.test`, `test/cpp/test_validation.cpp`, `docs/TESTING.md` §8–9 |
+| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | PostGIS repairs or rejects; this extension flags without repairing | val3dity (above), `st_3d_validation.test`, `test/cpp/test_validation.cpp`, `docs/TESTING.md` §8–9 |
+| The distance family on faces with holes or non-planar faces | See the live comparison above | `live_diff.py`'s independent computation; `geom_3d_distance.test`, `test/cpp/test_geom_distance.cpp` |
 | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_MakeSolid`, `ST_3DExtrude`, `ST_Force3D`, `ST_3DHasZ` | Import and construction contracts, with no PostGIS analogue. Their correctness is proven *downstream*: every oracled measurement above runs on geometry they produced, so a broken importer fails the area/volume/bbox comparisons | `st_3d_from_wkb*.test`, `cityparquet_round_trip.test`, `geom_3d_construct.test`, `test/cpp/` |
+
+### val3dity — validity
+
+[val3dity](https://github.com/tudelft3d/val3dity), built from source and run with its
+defaults (1 mm snapping, 1 cm planarity tolerance), is the reference for what
+`ST_3DValidationReport` decides. It is a development-time comparison, not a CI step. On the
+3DBAG Delft tile it agrees with `is_valid` on all 1116 LoD1.2 solids and on 1109 of the 1116
+LoD2.2 solids. The seven LoD2.2 differences are documented tolerances rather than missing
+checks: one non-planar roof (duckdb-3d does not test planarity), five solids whose faces
+collapse under 1 mm snapping (duckdb-3d does not snap), and one repeated consecutive vertex,
+which import drops (DESIGN_DOC §2.1). The checks val3dity has and this extension added —
+connectivity (305), non-manifold vertices (303), self-intersection (306, 401), cavities
+outside the exterior or inside each other (403, 401) — have no disagreement. The kernel
+tests in `test/cpp/test_validation.cpp` pin each check on constructed solids and on real
+3DBAG buildings, including that the verdict survives rotation and a change of unit.
+
+### Live comparison on real data — the distance family
+
+`scripts/oracle/live_diff.py` runs the distance family on five published datasets (3DBAG
+Delft, the TU Delft LoD3 railway model, Rotterdam Delfshaven, Den Haag, Vienna) in duckdb-3d
+and a live PostGIS, and reports every disagreement: object pairs, face pairs and random
+points around faces, at thresholds 0, 0.5 and 2. Like `gen_golden.py`, it is a development
+tool. Each row is compared against the reference that is right for it:
+
+| Rows | Reference |
+| --- | --- |
+| Planar faces, no holes | PostGIS, to 1e-6 m |
+| Faces with holes | An independent computation in the script: rings projected onto the face's plane, even-odd containment, vertex and edge distances |
+| Non-planar faces | The same computation, within twice the faces' deviation from their planes; PostGIS reported beside it for information |
+| `ST_3DClosestPoint`, `ST_3DShortestLine` | Their definitions: the point lies on the first geometry, at the distance from the second |
+
+PostGIS is not the reference for the last three rows: its 3D point-in-polygon test ignores
+interior rings in the face's plane (a point at the centre of a 1 x 1 hole is 2.12 from the
+face, not 0.5), and it measures a non-planar face against a plane of its own fitting, which
+on Delft puts some faces 0.7 mm from planar 5 mm out. `test/sql/geom_3d_distance.test` pins
+both by construction.
 
 ### Metamorphic properties — dependency-free invariants
 

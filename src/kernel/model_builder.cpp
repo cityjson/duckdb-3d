@@ -1,4 +1,5 @@
 #include "kernel/model_builder.hpp"
+#include "kernel/payload.hpp"
 #include "kernel/validation.hpp"
 #include "kernel/triangulation.hpp"
 #include <cstring>
@@ -275,6 +276,14 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	ValidateSolidModel(model);
 
 	return model;
+}
+
+std::vector<uint8_t> RebuildSolidPayload(const uint8_t *data, size_t size) {
+	auto model = DeserializePayload(data, size);
+	model.ComputeBBox();
+	TriangulateSolidModel(model);
+	ValidateSolidModel(model);
+	return SerializePayload(model);
 }
 
 } // namespace duckdb_3d

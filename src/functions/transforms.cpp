@@ -598,9 +598,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	// Transform functions
 	ScalarFunctionSet translate_set("st_3dtranslate");
 	translate_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_3DTranslateSolidFun));
-	translate_set.AddFunction(
 	    ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, solid_3d_type,
 	                   ST_3DTranslateSolidFun));
 	translate_set.AddFunction(
@@ -612,9 +609,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    "ST_3DTranslate(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 10.0, 0.0, -1.0)",
 	                    {"transform"}});
 	ScalarFunctionSet scale_set("st_3dscale");
-	scale_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                     solid_3d_type, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
@@ -626,8 +620,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	     "ST_3DScale(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 2.0, 2.0, 2.0)",
 	     {"transform"}});
 	ScalarFunctionSet rotatex_set("st_3drotatex");
-	rotatex_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateXGeomFun));
 	RegisterDocumented(loader, std::move(rotatex_set),
@@ -638,8 +630,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    {"transform"}});
 
 	ScalarFunctionSet rotatey_set("st_3drotatey");
-	rotatey_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateYGeomFun));
 	RegisterDocumented(loader, std::move(rotatey_set),
@@ -650,8 +640,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    {"transform"}});
 
 	ScalarFunctionSet rotatez_set("st_3drotatez");
-	rotatez_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateZGeomFun));
 	RegisterDocumented(loader, std::move(rotatez_set),
@@ -670,10 +658,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 		fun.SetInitStateCallback(TransformInitLocalState);
 		transform_set.AddFunction(std::move(fun));
 	};
-	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER}, LogicalType::BLOB,
-	                             ST_3DTransformIntFun));
-	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
-	                             ST_3DTransformStrFun));
 	add_transform(ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type,
 	                             ST_3DTransformIntFun));
 	add_transform(

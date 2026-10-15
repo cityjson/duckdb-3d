@@ -21,6 +21,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	geom_3d_type.SetAlias("GEOM_3D");
 	loader.RegisterType("GEOM_3D", geom_3d_type);
 
+	RegisterPayloadCasts(loader, solid_3d_type, geom_3d_type);
 	RegisterFixtureFunctions(loader);
 	RegisterSolidIOFunctions(loader, solid_3d_type);
 	RegisterSolidAccessorFunctions(loader, solid_3d_type, geom_3d_type);

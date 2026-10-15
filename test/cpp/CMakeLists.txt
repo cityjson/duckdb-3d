@@ -22,6 +22,7 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/wkb_export.cpp
     ${REPO_ROOT}/src/kernel/geometry_math.cpp
     ${REPO_ROOT}/src/kernel/validation.cpp
+    ${REPO_ROOT}/src/kernel/self_intersection.cpp
     ${REPO_ROOT}/src/kernel/triangulation.cpp
     ${REPO_ROOT}/src/kernel/measurements.cpp
     ${REPO_ROOT}/src/kernel/metadata_parser.cpp

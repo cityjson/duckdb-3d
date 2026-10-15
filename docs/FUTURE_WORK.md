@@ -53,8 +53,8 @@ grouping counts, rather than a CityJSON special case inside the kernel.
 
 ### The constraint
 
-Coordinates are raw `DOUBLE` XYZ with **no stored SRID**, so both CRSs must be given on every
-`ST_3DTransform` call, and all measurement math is Cartesian in the input units. Callers
+Coordinates are raw `DOUBLE` XYZ. The payload has a CRS slot that no function sets or reads
+yet, so both CRSs must be given on every `ST_3DTransform` call, and all measurement math is Cartesian in the input units. Callers
 reproject into a suitable metric CRS before measuring. See
 [FUNCTIONS.md](./FUNCTIONS.md#st_3dtransform--crs-reprojection) for the current semantics.
 
@@ -63,8 +63,8 @@ reproject into a suitable metric CRS before measuring. See
 1. **Vertical datum / 3D reprojection.** Currently Z is passed through untouched. Ellipsoidal↔
    orthometric height and geoid models are out of scope; genuinely hard and rarely needed for
    the city-model workflows here. Revisit only on demand.
-2. **Stored SRID + `ST_SRID` / `ST_SetSRID`.** Add an SRID field to the `D3DS`/`D3DG` payload
-   headers (a versioned change under DESIGN_DOC §5.1). This would enable the single-argument
+2. **Stored CRS + `ST_SRID` / `ST_SetSRID`.** Fill and read the payload's CRS slot (DESIGN_DOC
+   §5.1). This would enable the single-argument
    `ST_3DTransform(geom, target_srid)` form (reading the stored source SRID, like PostGIS) and
    cross-CRS mismatch detection (e.g. refuse `ST_3DDistance` across differing SRIDs). Lowest
    cost, high safety value — the natural next step.
@@ -74,24 +74,18 @@ reproject into a suitable metric CRS before measuring. See
    `proj_context_set_search_paths`) is still outstanding and is the main gap before shipping
    CRS support in a released binary.
 
-## 3. Triangulation Outside The Solid Kernel
+## 3. Triangulation Time On Adversarial Rings
 
-### The constraint
+The vendored earcut bounds its split recursion, so a self-overlapping ring cannot exhaust the
+stack, but `splitEarcut`'s diagonal search is still roughly cubic in the ring size before the
+bound trips. Done means a cap on work (or ring size) that fails the face as degenerate, with a
+test on a ring large enough to take seconds without it.
 
-`SOLID_3D` faces are triangulated whole (holes bridged, every vertex kept, never partially;
-DESIGN_DOC *Topology is the source of truth*). The distance family on `GEOM_3D` does not use
-that triangulator: `geom_distance.cpp` fan-triangulates each face's exterior ring and ignores
-its holes. A fan is only correct for a convex ring, so on a concave face some fan triangles lie
-outside it, and a point there can measure distance 0 to the face; a point over a hole measures
-distance to the hole's interior.
+## 4. Planarity In Validation
 
-### Open work
-
-1. **Route `GEOM_3D` surfaces through the face triangulator.** It works on a ring list and a
-   vertex array, so the change is in `Decompose`; done means a concave-face and a holed-face
-   distance case pinned against the PostGIS oracle.
-2. **Bound triangulation time on adversarial rings.** The vendored earcut bounds its split
-   recursion, so a self-overlapping ring cannot exhaust the stack, but `splitEarcut`'s diagonal
-   search is still roughly cubic in the ring size before the bound trips. Done means a cap on
-   work (or ring size) that fails the face as degenerate, with a test on a ring large enough to
-   take seconds without it.
+`ST_3DValidationReport` does not test planarity; a non-planar face is measured through its
+triangulation, and the self-intersection tolerance scales with each face's deviation from its
+plane (DESIGN_DOC §8.1). val3dity rejects faces more than 1 cm from planar (its 203/204), and
+that is the one class of verdict where the two differ on 3DBAG Delft. Done would mean a
+planarity counter with a stated, unit-aware tolerance — or a decision that the triangulated
+reading is the contract and planarity stays a separate `ST_IsPlanar` question.

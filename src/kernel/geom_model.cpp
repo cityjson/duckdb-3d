@@ -34,4 +34,26 @@ void GeomModel::ComputeBBox() {
 	}
 }
 
+uint32_t GeomModel::PolygonCount() const {
+	switch (type) {
+	case GeomType::Polygon:
+		return ring_offsets.size() >= 2 ? 1 : 0;
+	case GeomType::MultiPolygon:
+	case GeomType::PolyhedralSurface:
+		return part_offsets.empty() ? 0 : static_cast<uint32_t>(part_offsets.size() - 1);
+	default:
+		return 0;
+	}
+}
+
+void GeomModel::PolygonRings(uint32_t polygon, uint32_t &first_ring, uint32_t &ring_count) const {
+	if (type == GeomType::Polygon) {
+		first_ring = 0;
+		ring_count = static_cast<uint32_t>(ring_offsets.size() - 1);
+		return;
+	}
+	first_ring = part_offsets[polygon];
+	ring_count = part_offsets[polygon + 1] - part_offsets[polygon];
+}
+
 } // namespace duckdb_3d
