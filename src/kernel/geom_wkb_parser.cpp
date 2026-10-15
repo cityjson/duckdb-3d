@@ -2,18 +2,29 @@
 #include "kernel/geometry_math.hpp"
 #include "kernel/byte_io.hpp"
 
+#include <cmath>
 #include <stdexcept>
 
 namespace duckdb_3d {
 
 namespace {
 
-Vertex3D ReadPointZ(WkbCursor &cur) {
+//! Read one XYZ coordinate, refusing a non-finite ordinate: a NaN or infinite
+//! vertex has no place in a box, a distance or an index. The one exception is
+//! a point whose three ordinates are all NaN, which is how WKB writes POINT
+//! EMPTY (`empty_allowed` for a Point Z body, alone or in a MultiPoint).
+Vertex3D ReadPointZ(WkbCursor &cur, bool empty_allowed = false) {
 	Vertex3D v;
 	v.x = cur.ReadF64();
 	v.y = cur.ReadF64();
 	v.z = cur.ReadF64();
-	return v;
+	if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)) {
+		return v;
+	}
+	if (empty_allowed && std::isnan(v.x) && std::isnan(v.y) && std::isnan(v.z)) {
+		return v;
+	}
+	throw std::runtime_error("ParseGeomWKB: coordinate is not finite");
 }
 
 void ReadLineStringZ(WkbCursor &cur, GeomModel &model) {
@@ -87,7 +98,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	switch (wkb_type) {
 	case 1001: { // Point Z
 		model.type = GeomType::Point;
-		model.vertices.push_back(ReadPointZ(cur));
+		model.vertices.push_back(ReadPointZ(cur, true));
 		break;
 	}
 	case 1002: { // LineString Z
@@ -113,7 +124,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 			if (child_type != 1001) {
 				throw std::runtime_error("ParseGeomWKB: MultiPoint Z child is not Point Z");
 			}
-			model.vertices.push_back(ReadPointZ(cur));
+			model.vertices.push_back(ReadPointZ(cur, true));
 			cur.swap_bytes = outer_swap;
 			model.part_offsets.push_back(static_cast<uint32_t>(model.vertices.size()));
 		}

@@ -2,6 +2,7 @@
 #include "kernel/geom_wkb_parser.hpp"
 #include <array>
 #include <cstring>
+#include <limits>
 
 using namespace duckdb_3d;
 
@@ -351,4 +352,40 @@ TEST_CASE("ParseGeomWKB: ISO WKB has no CRS", "[geom_wkb_parser][ewkb]") {
 	b.U32(1001);
 	b.Point(1, 2, 3);
 	REQUIRE(ParseGeomWKB(b.buffer.data(), b.buffer.size()).crs.empty());
+}
+
+TEST_CASE("ParseGeomWKB: refuses a non-finite coordinate", "[geom_wkb_parser]") {
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	const double inf = std::numeric_limits<double>::infinity();
+	SECTION("NaN in a line") {
+		GeomWKBBuilder b;
+		b.U8(1);
+		b.U32(1002);
+		b.U32(2);
+		b.Point(nan, 0, 0);
+		b.Point(1, 1, 1);
+		REQUIRE_THROWS_WITH(ParseGeomWKB(b.buffer.data(), b.buffer.size()), Catch::Contains("finite"));
+	}
+	SECTION("infinity in a ring") {
+		GeomWKBBuilder b;
+		b.U8(1);
+		b.U32(1003);
+		b.U32(1);
+		b.Ring({{0, 0, 0}, {-inf, 0, 0}, {1, 1, 0}});
+		REQUIRE_THROWS_WITH(ParseGeomWKB(b.buffer.data(), b.buffer.size()), Catch::Contains("finite"));
+	}
+	SECTION("a point NaN in one ordinate only") {
+		GeomWKBBuilder b;
+		b.U8(1);
+		b.U32(1001);
+		b.Point(1, 2, nan);
+		REQUIRE_THROWS_WITH(ParseGeomWKB(b.buffer.data(), b.buffer.size()), Catch::Contains("finite"));
+	}
+	SECTION("POINT EMPTY, all three NaN, is still read") {
+		GeomWKBBuilder b;
+		b.U8(1);
+		b.U32(1001);
+		b.Point(nan, nan, nan);
+		REQUIRE(ParseGeomWKB(b.buffer.data(), b.buffer.size()).vertices.size() == 1);
+	}
 }
