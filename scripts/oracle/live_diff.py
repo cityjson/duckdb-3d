@@ -1010,10 +1010,7 @@ def _tally(o: Outcome, key, ours, theirs, equal) -> None:
 def oracle_slope_azimuth(face):
     """(slope, azimuth) in degrees of a face from its Newell normal, computed
     here; azimuth None for a horizontal face, both None without area."""
-    n = [0.0, 0.0, 0.0]
-    for ring in face:
-        v = _newell(ring)
-        n = [n[k] + v[k] for k in range(3)]
+    n = list(_newell(face[0]))
     length = _length(n)
     if length == 0.0:
         return None, None
@@ -1050,9 +1047,22 @@ def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
                CASE WHEN s IS NOT NULL THEN list_transform(ST_3DFaces(ST_3DFromWKB(w, s)), lambda f: ST_3DAsBinary(f.polygon)) END,
                CASE WHEN s IS NOT NULL THEN ST_3DNumSolids(ST_3DFromWKB(w, s)) END,
                CASE WHEN s IS NOT NULL THEN ST_3DAsBinary(ST_3DExteriorShell(ST_3DFromWKB(w, s))) END,
-               ST_3DFaceSlopes(g), ST_3DFaceAzimuths(g)
-        FROM (SELECT k, w, s, TRY(ST_Geom3DFromWKB(w)) AS g FROM element_items) i JOIN element_text t ON i.k = t.k
-        WHERE g IS NOT NULL""")
+               ST_3DFaceSlopes(g), ST_3DFaceAzimuths(g),
+               CASE WHEN s IS NOT NULL THEN ST_3DFaceAreas(ST_3DFromWKB(w, s)) END,
+               CASE WHEN s IS NOT NULL THEN TRY(ST_3DSurfaceArea(ST_3DFromWKB(w, s))) END,
+               CASE WHEN s IS NOT NULL THEN ST_3DFaceSlopes(ST_3DFromWKB(w, s)) END,
+               CASE WHEN s IS NOT NULL THEN ST_3DFaceAzimuths(ST_3DFromWKB(w, s)) END,
+               g IS NOT NULL
+        FROM (SELECT k, w, s, TRY(ST_Geom3DFromWKB(w)) AS g FROM element_items) i JOIN element_text t ON i.k = t.k""")
+    # SFCGAL's area of every solid face, one face at a time (see check_measures).
+    face_rows = [(f"{it.key}/{f}", sfcgal_face(face)) for it in items if it.role == "solid"
+                 for f, face in enumerate(it.faces)]
+    eng.load("element_faces", [("k", "VARCHAR", "text"), ("fw", "BLOB", "bytea")], face_rows)
+    with eng.pg.cursor() as cur:
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION oracle_area(g geometry) RETURNS double precision AS $$
+            BEGIN RETURN ST_3DArea(g); EXCEPTION WHEN others THEN RETURN NULL; END $$ LANGUAGE plpgsql""")
+    face_areas = eng.pg_rows("SELECT k, oracle_area(ST_GeomFromWKB(fw)) FROM element_faces")
     by_key = {it.key: it for it in items}
     o_box = Outcome("ST_3DXMin .. ST_3DZMax", oracle="PostGIS ST_XMin .. ST_ZMax")
     o_ext = Outcome("ST_3DExtent", oracle="PostGIS ST_3DExtent")
@@ -1062,11 +1072,65 @@ def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
     o_faces = Outcome("ST_3DFaces(SOLID_3D)",
                       oracle="PostGIS ST_RemoveRepeatedPoints of each ST_GeometryN of the solid's surface, as WKB")
     o_shell = Outcome("ST_3DExteriorShell", oracle="the PolyhedralSurface of those faces, for one-shell solids")
-    o_slope = Outcome("ST_3DFaceSlopes, ST_3DFaceAzimuths", oracle="independent: Newell normal per face")
+    o_slope = Outcome("ST_3DFaceSlopes, ST_3DFaceAzimuths (GEOM_3D)",
+                      oracle="independent: exterior ring's Newell normal per face")
+    o_sslope = Outcome("ST_3DFaceSlopes, ST_3DFaceAzimuths (SOLID_3D)",
+                       oracle="independent: exterior ring's Newell normal per face")
+    o_farea = Outcome("ST_3DFaceAreas(SOLID_3D)", oracle="SFCGAL ST_3DArea per face")
+    o_fnewell = Outcome("ST_3DFaceAreas(SOLID_3D) [faces SFCGAL refuses]",
+                        oracle="independent: Newell vector area per ring")
+    o_sarea = Outcome("ST_3DSurfaceArea(SOLID_3D)", oracle="the sum of those face areas")
+    tol = args.distance_tol
+    no_tiles = "a face with no triangles: zero area, or no tiling (NULL by definition)"
+    refused = "ST_Geom3DFromWKB refuses the geometry (a polygon with no triangulation)"
+
+    def skip(o, why):
+        o.skipped[why] = o.skipped.get(why, 0) + 1
+
+    def check_normals(o, key, faces, slopes, azimuths):
+        for f, face in enumerate(faces):
+            got_slope, got_az = slopes[f], azimuths[f]
+            if got_slope is None:
+                skip(o, no_tiles)
+                continue
+            ref_slope, ref_az = oracle_slope_azimuth(face)
+            same = (ref_slope is not None and (ref_az is None) == (got_az is None)
+                    and abs(got_slope - ref_slope) <= 1e-9
+                    and (ref_az is None or min(abs(got_az - ref_az), 360 - abs(got_az - ref_az)) <= 1e-9))
+            if ref_slope is not None:
+                o.max_abs = max(o.max_abs, abs(got_slope - ref_slope))
+            _tally(o, f"{key}/{f}", (got_slope, got_az), (ref_slope, ref_az), same)
+
     for k, (x0, y0, z0, x1, y1, z1, parts, wkt_same, ewkt_crs, ewkb_srid, faces, nsolids, shell, slopes,
-            azimuths) in ours.items():
+            azimuths, s_areas, s_total, s_slopes, s_azimuths, has_geom) in ours.items():
         it = by_key[k]
         p = theirs[k]
+        if it.role == "solid":
+            total = 0.0
+            for f, face in enumerate(it.faces):
+                ours_a, ref = s_areas[f], face_areas[f"{k}/{f}"][0]
+                if ours_a is None:
+                    skip(o_farea, no_tiles)
+                    continue
+                # Faces SFCGAL refuses have the independent Newell area instead.
+                o = o_farea
+                if ref is None:
+                    o, ref = o_fnewell, oracle_area([face])
+                total += ref
+                bound = tol * max(1.0, ref) + _perimeter([face]) * face_deviation(face)
+                o.max_abs = max(o.max_abs, abs(ours_a - ref))
+                _tally(o, f"{k}/{f}", (ours_a,), (ref,), abs(ours_a - ref) <= bound)
+            if s_total is None:
+                skip(o_sarea, "the solid has a degenerate face (raises)")
+            else:
+                bound = tol * max(1.0, total) + _perimeter(it.faces) * it.deviation
+                o_sarea.max_abs = max(o_sarea.max_abs, abs(s_total - total))
+                _tally(o_sarea, k, (s_total,), (total,), abs(s_total - total) <= bound)
+            check_normals(o_sslope, k, it.faces, s_slopes, s_azimuths)
+        if not has_geom:
+            for o in (o_box, o_parts, o_wkt, o_srid, o_slope):
+                skip(o, refused)
+            continue
         _tally(o_box, k, (x0, y0, z0, x1, y1, z1), tuple(p[:6]), (x0, y0, z0, x1, y1, z1) == tuple(p[:6]))
         pg_parts = [bytes(b) for b in p[6]]
         _tally(o_parts, k, len(parts), len(pg_parts), [bytes(b) for b in parts] == pg_parts)
@@ -1087,15 +1151,7 @@ def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
                 if nsolids == 1 and len(it.shells) == 1:
                     expected = struct.pack("<BII", 1, 1015, len(pg_faces)) + b"".join(pg_faces)
                     _tally(o_shell, k, len(shell), len(expected), bytes(shell) == expected)
-        for f, face in enumerate(it.faces):
-            ref_slope, ref_az = oracle_slope_azimuth(face)
-            got_slope, got_az = slopes[f], azimuths[f]
-            same = ((ref_slope is None) == (got_slope is None) and (ref_az is None) == (got_az is None)
-                    and (ref_slope is None or abs(got_slope - ref_slope) <= 1e-9)
-                    and (ref_az is None or min(abs(got_az - ref_az), 360 - abs(got_az - ref_az)) <= 1e-9))
-            if ref_slope is not None and got_slope is not None:
-                o_slope.max_abs = max(o_slope.max_abs, abs(got_slope - ref_slope))
-            _tally(o_slope, f"{k}/{f}", (got_slope, got_az), (ref_slope, ref_az), same)
+        check_normals(o_slope, k, it.faces, slopes, azimuths)
     ext_ours = eng.duck_rows("""
         SELECT d, e.min_x, e.min_y, e.min_z, e.max_x, e.max_y, e.max_z
         FROM (SELECT d, ST_3DExtent(TRY(ST_Geom3DFromWKB(w))) AS e FROM element_items GROUP BY d)""")
@@ -1105,9 +1161,13 @@ def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
     for d, box in ext_ours.items():
         _tally(o_ext, d, box, ext_theirs[d], tuple(box) == tuple(ext_theirs[d]))
     o_ext.note = "per dataset; rows ST_Geom3DFromWKB refuses are left out of ours and kept in PostGIS's"
-    o_slope.note = (f"slope to 1e-9 degrees, azimuth to 1e-9 degrees around the circle; largest slope "
-                    f"difference {o_slope.max_abs:.3g}")
-    return [o_box, o_ext, o_parts, o_wkt, o_srid, o_faces, o_shell, o_slope]
+    for o in (o_slope, o_sslope):
+        o.note = (f"by construction: slope to 1e-9 degrees, azimuth to 1e-9 degrees around the circle; largest "
+                  f"slope difference {o.max_abs:.3g}")
+    for o in (o_farea, o_fnewell, o_sarea):
+        o.note = (f"tolerance {tol:g} relative plus perimeter times the largest deviation from a face's plane, "
+                  f"as two triangulations of a warped face differ")
+    return [o_box, o_ext, o_parts, o_wkt, o_srid, o_faces, o_shell, o_slope, o_sslope, o_farea, o_fnewell, o_sarea]
 
 
 CHECKS = {"distance": check_distance, "solids": check_solids, "measures": check_measures,

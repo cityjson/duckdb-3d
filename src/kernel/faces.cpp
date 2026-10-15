@@ -38,15 +38,25 @@ double Length(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-//! Fill `face`'s normal from its Newell vector, when the face has triangles to
-//! say it has an interior.
-void SetNormal(FaceMeasure &face, const Vertex3D &newell, bool has_triangles) {
-	double length = Length(newell);
+//! Area of the triangle a, b, c, from edge vectors so that it does not depend
+//! on where the triangle sits.
+double TriangleArea(const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
+	const Vertex3D ab = {b.x - a.x, b.y - a.y, b.z - a.z};
+	const Vertex3D ac = {c.x - a.x, c.y - a.y, c.z - a.z};
+	return 0.5 * Length({ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x});
+}
+
+//! A face with triangles has an area, their sum, and a normal along its
+//! exterior ring's Newell vector; one without has neither.
+void SetMeasures(FaceMeasure &face, double triangle_area, bool has_triangles, const Vertex3D &exterior_newell) {
+	face.has_area = has_triangles;
+	face.area = has_triangles ? triangle_area : 0.0;
+	double length = Length(exterior_newell);
 	if (!has_triangles || length == 0.0) {
 		return;
 	}
 	face.has_normal = true;
-	face.normal = {newell.x / length, newell.y / length, newell.z / length};
+	face.normal = {exterior_newell.x / length, exterior_newell.y / length, exterior_newell.z / length};
 }
 
 bool IsSurface(GeomType type) {
@@ -57,26 +67,17 @@ bool IsSurface(GeomType type) {
 
 std::vector<FaceMeasure> SolidFaceMeasures(const SolidModel &model) {
 	std::vector<FaceMeasure> faces(model.FaceCount());
+	const bool cached = model.face_triangle_offsets.size() == faces.size() + 1;
 	for (uint32_t f = 0; f < faces.size(); f++) {
-		Vertex3D newell = {0, 0, 0};
-		for (uint32_t r = model.face_ring_offsets[f]; r < model.face_ring_offsets[f + 1]; r++) {
-			auto ring = NewellRingAreaVector(model, r);
-			newell.x += ring.x;
-			newell.y += ring.y;
-			newell.z += ring.z;
+		const uint32_t t_begin = cached ? model.face_triangle_offsets[f] : 0;
+		const uint32_t t_end = cached ? model.face_triangle_offsets[f + 1] : 0;
+		double area = 0.0;
+		for (uint32_t t = t_begin; t < t_end; t++) {
+			area += TriangleArea(model.vertices[model.triangle_vertex_indices[t * 3]],
+			                     model.vertices[model.triangle_vertex_indices[t * 3 + 1]],
+			                     model.vertices[model.triangle_vertex_indices[t * 3 + 2]]);
 		}
-		bool has_triangles = model.face_triangle_offsets.size() == faces.size() + 1 &&
-		                     model.face_triangle_offsets[f + 1] > model.face_triangle_offsets[f];
-		auto &face = faces[f];
-		face.area = 0.5 * Length(newell);
-		// A face the triangulation could not tile has rings, but no interior that
-		// its Newell vector would measure.
-		if (!has_triangles && face.area != 0.0) {
-			face.has_area = false;
-			face.area = 0.0;
-			continue;
-		}
-		SetNormal(face, newell, has_triangles);
+		SetMeasures(faces[f], area, t_end > t_begin, NewellRingAreaVector(model, model.face_ring_offsets[f]));
 	}
 	return faces;
 }
@@ -100,30 +101,18 @@ std::vector<FaceMeasure> GeomFaceMeasures(const GeomModel &geom) {
 		uint32_t first_ring = 0;
 		uint32_t ring_count = 0;
 		model.PolygonRings(p, first_ring, ring_count);
-		Vertex3D newell = {0, 0, 0};
-		for (uint32_t r = first_ring; r < first_ring + ring_count; r++) {
-			const uint32_t begin = model.ring_offsets[r];
-			auto ring =
-			    RingNewell(model.ring_offsets[r + 1] - begin, [&](uint32_t i) { return model.vertices[begin + i]; });
-			// Holes may be wound either way in WKB; on a planar polygon either way
-			// keeps the exterior's direction, and only the direction is used.
-			newell.x += ring.x;
-			newell.y += ring.y;
-			newell.z += ring.z;
-		}
-		auto &face = faces[p];
+		const uint32_t begin = model.ring_offsets[first_ring];
+		const Vertex3D exterior = RingNewell(model.ring_offsets[first_ring + 1] - begin,
+		                                     [&](uint32_t i) { return model.vertices[begin + i]; });
 		const uint32_t t_begin = model.polygon_triangle_offsets[p];
 		const uint32_t t_end = model.polygon_triangle_offsets[p + 1];
+		double area = 0.0;
 		for (uint32_t t = t_begin; t < t_end; t++) {
-			const auto &a = model.vertices[model.triangle_indices[t * 3]];
-			const auto &b = model.vertices[model.triangle_indices[t * 3 + 1]];
-			const auto &c = model.vertices[model.triangle_indices[t * 3 + 2]];
-			const Vertex3D ab = {b.x - a.x, b.y - a.y, b.z - a.z};
-			const Vertex3D ac = {c.x - a.x, c.y - a.y, c.z - a.z};
-			face.area +=
-			    0.5 * Length({ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x});
+			area += TriangleArea(model.vertices[model.triangle_indices[t * 3]],
+			                     model.vertices[model.triangle_indices[t * 3 + 1]],
+			                     model.vertices[model.triangle_indices[t * 3 + 2]]);
 		}
-		SetNormal(face, newell, t_end > t_begin);
+		SetMeasures(faces[p], area, t_end > t_begin, exterior);
 	}
 	return faces;
 }

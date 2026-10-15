@@ -1,4 +1,5 @@
 #include "kernel/measurements.hpp"
+#include "kernel/faces.hpp"
 #include "kernel/geometry_math.hpp"
 #include <algorithm>
 #include <cmath>
@@ -50,25 +51,13 @@ double ComputeSurfaceArea(const SolidModel &model) {
 		throw std::runtime_error("ST_3DSurfaceArea: solid has no triangulation cache");
 	}
 
+	// Each face measures its triangles, as ST_3DFaceAreas does: on a warped face
+	// that is the surface the volume and distance functions see, and a hole is
+	// left out whichever way it is wound.
 	double total_area = 0.0;
-	uint32_t face_count = model.FaceCount();
-
-	for (uint32_t face_idx = 0; face_idx < face_count; face_idx++) {
-		uint32_t ring_start = model.face_ring_offsets[face_idx];
-		uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
-		Vertex3D face_area = {0, 0, 0};
-
-		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			auto ring_area = NewellRingAreaVector(model, ring_idx);
-			face_area.x += ring_area.x;
-			face_area.y += ring_area.y;
-			face_area.z += ring_area.z;
-		}
-
-		total_area +=
-		    0.5 * std::sqrt(face_area.x * face_area.x + face_area.y * face_area.y + face_area.z * face_area.z);
+	for (const auto &face : SolidFaceMeasures(model)) {
+		total_area += face.area;
 	}
-
 	return total_area;
 }
 

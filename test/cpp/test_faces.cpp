@@ -4,6 +4,7 @@
 #include "kernel/geom_wkb_parser.hpp"
 #include "kernel/measurements.hpp"
 #include "kernel/triangulation.hpp"
+#include "kernel/validation.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -29,6 +30,29 @@ GeomModel Polygon(std::vector<std::vector<Vertex3D>> rings) {
 SolidModel Box() {
 	GeomModel square = Polygon({{{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}}});
 	return BuildExtrudedSolid(square, 3.0);
+}
+
+//! A solid model of loose faces, each a list of rings, triangulated: enough for
+//! per-face measures, which do not need a closed shell.
+SolidModel LooseFaces(const std::vector<std::vector<std::vector<Vertex3D>>> &faces) {
+	SolidModel m;
+	m.solid_shell_offsets = {0, 1};
+	m.shell_face_offsets = {0, static_cast<uint32_t>(faces.size())};
+	m.face_ring_offsets = {0};
+	m.ring_vertex_offsets = {0};
+	for (auto &face : faces) {
+		for (auto &ring : face) {
+			for (auto &v : ring) {
+				m.ring_vertex_indices.push_back(static_cast<uint32_t>(m.vertices.size()));
+				m.vertices.push_back(v);
+			}
+			m.ring_vertex_offsets.push_back(static_cast<uint32_t>(m.ring_vertex_indices.size()));
+		}
+		m.face_ring_offsets.push_back(static_cast<uint32_t>(m.ring_vertex_offsets.size() - 1));
+	}
+	m.ComputeBBox();
+	TriangulateSolidModel(m);
+	return m;
 }
 
 } // namespace
@@ -81,6 +105,66 @@ TEST_CASE("Faces: a polygon's hole is left out of its area", "[faces]") {
 	REQUIRE(faces[0].normal.y == 0.0);
 }
 
+TEST_CASE("Faces: a solid face's hole is left out of its area, whichever way it is wound", "[faces]") {
+	const std::vector<Vertex3D> outer = {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}, {0, 10, 0}};
+	const std::vector<Vertex3D> against = {{3, 3, 0}, {3, 7, 0}, {7, 7, 0}, {7, 3, 0}};
+	const std::vector<Vertex3D> along = {{3, 3, 0}, {7, 3, 0}, {7, 7, 0}, {3, 7, 0}};
+	for (auto &hole : {against, along}) {
+		auto faces = SolidFaceMeasures(LooseFaces({{outer, hole}}));
+		REQUIRE(faces.size() == 1);
+		REQUIRE(faces[0].has_area);
+		REQUIRE(faces[0].area == Approx(84.0));
+		REQUIRE(faces[0].normal.z == 1.0);
+	}
+}
+
+TEST_CASE("Faces: a warped face measures its triangles, as the same polygon does", "[faces]") {
+	// One corner lifted by 1: the vector area of the ring is 4, its triangles more.
+	auto solid = LooseFaces({{{{0, 0, 0}, {2, 0, 0}, {2, 2, 1}, {0, 2, 0}}}});
+	auto faces = SolidFaceMeasures(solid);
+	auto as_polygon = GeomFaceMeasures(SolidFacePolygon(solid, 0));
+	REQUIRE(faces[0].area > 4.0 + 1e-3);
+	REQUIRE(faces[0].area == Approx(as_polygon[0].area).epsilon(1e-12));
+}
+
+TEST_CASE("Faces: a solid's surface area is its faces' areas, warped faces included", "[faces]") {
+	auto box = Box();
+	// Lift one top corner, which warps the top and two walls.
+	for (auto &v : box.vertices) {
+		if (v.x == 2 && v.y == 2 && v.z == 3) {
+			v.z = 4;
+		}
+	}
+	TriangulateSolidModel(box);
+	ValidateSolidModel(box);
+	double total = 0;
+	for (auto &f : SolidFaceMeasures(box)) {
+		REQUIRE(f.has_area);
+		total += f.area;
+	}
+	REQUIRE(ComputeSurfaceArea(box) == Approx(total).epsilon(1e-12));
+}
+
+TEST_CASE("Faces: the normal follows the exterior ring alone", "[faces]") {
+	// A tilted exterior with a hole off its plane: the hole does not lean the normal.
+	auto faces = SolidFaceMeasures(
+	    LooseFaces({{{{0, 0, 0}, {4, 0, 0}, {4, 4, 4}, {0, 4, 4}}, {{1, 1, 1}, {1, 2, 2.5}, {2, 2, 2}, {2, 1, 1}}}}));
+	REQUIRE(faces[0].normal.x == 0.0);
+	REQUIRE(faces[0].normal.y == Approx(-std::sqrt(0.5)));
+	REQUIRE(faces[0].normal.z == Approx(std::sqrt(0.5)));
+}
+
+TEST_CASE("Faces: a solid face without triangles has no area and no normal", "[faces]") {
+	// Collinear, so zero area; and a bow-tie, which the triangulator cannot tile.
+	auto faces = SolidFaceMeasures(
+	    LooseFaces({{{{5, 5, 5}, {6, 6, 6}, {7, 7, 7}}}, {{{0, 0, 0}, {2, 2, 0}, {2, 0, 0}, {0, 2, 0}}}}));
+	REQUIRE(faces.size() == 2);
+	for (auto &f : faces) {
+		REQUIRE_FALSE(f.has_area);
+		REQUIRE_FALSE(f.has_normal);
+	}
+}
+
 TEST_CASE("Faces: a horizontal face far from the origin leans exactly nowhere", "[faces]") {
 	// At RD New magnitudes a Newell vector on absolute coordinates picks up a
 	// horizontal component from rounding; referenced locally it has none.
@@ -117,12 +201,11 @@ TEST_CASE("Faces: slope and azimuth follow from the normal", "[faces]") {
 	REQUIRE(azimuth >= 0.0);
 }
 
-TEST_CASE("Faces: a face without area has area 0 and no normal", "[faces]") {
+TEST_CASE("Faces: a polygon without triangles has no area and no normal", "[faces]") {
 	auto sliver = Polygon({{{0, 0, 0}, {1, 1, 1}, {2, 2, 2}}});
 	auto faces = GeomFaceMeasures(sliver);
 	REQUIRE(faces.size() == 1);
-	REQUIRE(faces[0].has_area);
-	REQUIRE(faces[0].area == 0.0);
+	REQUIRE_FALSE(faces[0].has_area);
 	REQUIRE_FALSE(faces[0].has_normal);
 }
 

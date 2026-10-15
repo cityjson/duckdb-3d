@@ -84,9 +84,10 @@ FROM (SELECT ST_Geom3DFromWKB(ST_3DAsWKB(s)) AS g, ST_Geom3DFromWKB('LINESTRING 
 ----
 6	true	[]
 
-# A face without area has area 0 and no normal, slope or azimuth.
+# A face without triangles, here of zero area, has no area, normal, slope or
+# azimuth.
 query IIII
 SELECT ST_3DFaceAreas(g), ST_3DFaceNormals(g), ST_3DFaceSlopes(g), ST_3DFaceAzimuths(g)
 FROM (SELECT ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 1 1 1, 2 2 2, 0 0 0))'::GEOMETRY) AS g);
 ----
-[0.0]	[NULL]	[NULL]	[NULL]
+[NULL]	[NULL]	[NULL]	[NULL]

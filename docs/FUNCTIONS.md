@@ -470,14 +470,19 @@ Every geometry these return carries its input's CRS.
 
 - **`ST_3DFaces`** lists each face with its solid and its shell within that solid (1 is the
   exterior, 2 onward the cavities), and the face as a `Polygon`. `UNNEST` it for one row per
-  face. A face the triangulation cannot tile (`ST_3DValidationReport` counts it degenerate) has
-  a `NULL` polygon, since a `GEOM_3D` cannot hold it; `ST_3DFaceN` gives `NULL` for it too.
-- **`ST_3DFaceAreas`** gives each face's area, holes left out. They sum to `ST_3DSurfaceArea`
-  for a solid and to `ST_3DArea` for a `GEOM_3D`. A face that cannot be tiled has a `NULL`
-  area.
-- **`ST_3DFaceNormals`** gives each face's unit normal, along its Newell vector, so it follows
-  the right-hand rule around the exterior ring: out of a valid solid, and into a cavity, which
-  is out of the material. A face without area has a `NULL` normal.
+  face. A face whose ring crosses itself has a `NULL` polygon, since a `GEOM_3D` cannot hold
+  it; `ST_3DFaceN` gives `NULL` for it too, and so do `ST_3DExteriorShell` and
+  `ST_3DInteriorShellN` for a shell holding it. A face of zero area is returned as it is.
+- **`ST_3DFaceAreas`** gives each face's area: the sum of its triangles, so a hole is left out
+  whichever way it is wound, and a warped face measures the surface the distance and volume
+  functions see. A solid's face and the same face as a polygon have the same area. They sum
+  to `ST_3DSurfaceArea` for a solid and to `ST_3DArea` for a `GEOM_3D`.
+- **`ST_3DFaceNormals`** gives each face's unit normal, along its exterior ring's Newell
+  vector, so it follows the right-hand rule around that ring: out of a valid solid, and into a
+  cavity, which is out of the material. Holes do not lean it.
+- A face with no triangles, one of zero area or one the triangulator cannot tile
+  (`ST_3DValidationReport` counts either as degenerate on a solid), has a `NULL` area,
+  normal, slope and azimuth.
 - **`ST_3DFaceSlopes`** gives each face's tilt from horizontal, `atan2(√(nx² + ny²), |nz|)` in
   degrees: 0 for a horizontal face, 90 for a vertical one, whichever way it faces.
 - **`ST_3DFaceAzimuths`** gives the compass direction a face's normal leans toward,
@@ -913,7 +918,11 @@ empty string removes the label.
 - Functions of two values (`ST_3DDistance`, `ST_3DIntersects`, `ST_3DDisjoint`, `ST_3DDWithin`,
   `ST_3DMaxDistance`, `ST_3DDFullyWithin`, `ST_3DClosestPoint`, `ST_3DShortestLine`) **raise**
   when the two CRSs differ. A value without a CRS differs from one with, as in PostGIS. Two
-  spellings of one CRS, such as an authority code and a PROJJSON carrying that id, are equal.
+  spellings of one CRS, such as an authority code in either case and a PROJJSON carrying that
+  id, are equal.
+- The exports (`ST_3DAsWKB`, `ST_3DAsBinary`, `ST_3DAsText`, `ST_3DAsGeoJSON`) write ISO forms,
+  which carry no CRS, as PostGIS's `ST_AsBinary` and `ST_AsText` do. Keep `ST_3DCRS` beside
+  them, or set it again with `ST_3DSetCRS` after reading them back.
 
 The 3DBAG tile is in `EPSG:7415` (RD New + NAP height), which its WKB does not carry:
 

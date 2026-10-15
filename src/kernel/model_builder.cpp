@@ -71,6 +71,16 @@ size_t TotalVertices(const std::vector<ParsedPolyhedralSurface> &surfaces) {
 	return n;
 }
 
+//! The last ring's first and last vertices are consecutive too: drop a last
+//! vertex that repeats the first, as a doubled closing vertex in WKB leaves.
+void DropWrapAroundDuplicates(SolidModel &model) {
+	const uint32_t start = model.ring_vertex_offsets.back();
+	while (model.ring_vertex_indices.size() > start + 1 &&
+	       model.ring_vertex_indices.back() == model.ring_vertex_indices[start]) {
+		model.ring_vertex_indices.pop_back();
+	}
+}
+
 //! Returns true if two consecutive vertices are duplicates (exact match)
 bool IsConsecutiveDuplicate(const Vertex3D &a, const Vertex3D &b) {
 	return a.x == b.x && a.y == b.y && a.z == b.z;
@@ -128,6 +138,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 					has_prev = true;
 				}
 
+				DropWrapAroundDuplicates(model);
 				vertex_cursor += ring_vcount;
 				ring_idx++;
 				total_rings++;
@@ -250,6 +261,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 						has_prev = true;
 					}
 
+					DropWrapAroundDuplicates(model);
 					vertex_cursor += ring_vcount;
 					ring_idx++;
 					total_rings++;

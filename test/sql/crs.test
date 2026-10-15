@@ -110,3 +110,13 @@ query IIII
 SELECT ST_3DDistance(g, p), ST_3DIntersects(s, p), ST_3DDisjoint(g, p), ST_3DMaxDistance(g, p) > 0 FROM tagged;
 ----
 9.0	false	true	true
+
+# One CRS in two spellings is one CRS: an authority code in either case, and a
+# PROJJSON carrying that id.
+query II
+SELECT ST_3DDistance(ST_3DSetCRS(a, 'EPSG:28992'), ST_3DSetCRS(b, 'epsg:28992')),
+       ST_3DDistance(ST_3DSetCRS(a, 'EPSG:28992'),
+                     ST_3DSetCRS(b, '{"type":"ProjectedCRS","name":"Amersfoort / RD New","id":{"authority":"EPSG","code":28992}}'))
+FROM (SELECT ST_3DGeomFromText('POINT Z (0 0 0)') AS a, ST_3DGeomFromText('POINT Z (3 4 0)') AS b);
+----
+5.0	5.0

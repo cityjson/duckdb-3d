@@ -644,17 +644,24 @@ shape; that sum is `ST_3DPerimeter` over the patches, should anyone want it.
 
 The per-face functions answer roof and façade questions — orientation, pitch, area by
 facing — that otherwise need a round trip through another tool. Each face's measures are
-chosen to add up to the whole: a solid face's area is half the length of its rings' summed
-Newell vectors, so the faces sum to `ST_3DSurfaceArea`; a `GEOM_3D` face's area is the sum
-of its triangles, so the faces sum to `ST_3DArea`.
+chosen to add up to the whole. A face's area is the sum of its triangles, on a solid and on
+a `GEOM_3D` alike, and `ST_3DSurfaceArea` and `ST_3DArea` are the sums of those. The
+triangles are the surface the volume and distance functions measure (§2.2), so on a warped
+face, where any planar measure is a choice, the area agrees with them; on every face SFCGAL
+measures it also agrees with SFCGAL's `ST_3DArea`, which triangulates too. The alternative, half the length of the rings'
+summed Newell vectors, is the area of the face's projection onto its mean plane: it falls
+short on a warped face (by 2.7 m² on one Delft roof face of 4.9 m²) and adds a hole wound
+like its exterior instead of removing it.
 
-The normal is the face's Newell vector, normalised, with each ring's vertices taken
+The normal is the exterior ring's Newell vector, normalised, with the ring's vertices taken
 relative to its first. On georeferenced coordinates the absolute values are in the hundreds
 of thousands, and the cross terms of a horizontal roof would otherwise leave horizontal
 components of rounding size; relative to the first vertex they cancel exactly, so a flat
-roof has slope 0 and no azimuth rather than an arbitrary one. A face the triangulation
-could not tile has no normal and no area: it is reported by validation (§8.1), and its
-measures are `NULL` rather than a number nothing has checked.
+roof has slope 0 and no azimuth rather than an arbitrary one. Holes are left out of it: on a
+planar face they cannot change its direction, and on a warped one they should not. A face
+with no triangles, of zero area or one the triangulation could not tile, has no area and no
+normal: it is reported by validation (§8.1), and its measures are `NULL` rather than a
+number nothing has checked.
 
 Slope is the angle between the normal and the vertical, folded to 0–90° so that it does not
 depend on which way the face is wound. Azimuth is the compass direction of the normal's

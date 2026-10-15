@@ -16,14 +16,20 @@ namespace duckdb {
 // ──────────────────────────────────────────────────────────────
 // Every payload keeps its box in the front header, so these never read the body.
 
-static duckdb_3d::BBox3D PayloadBBox(string_t payload, const char *function) {
+//! The payload's box into `box`, or false for an empty geometry, which has none.
+static bool PayloadBBox(string_t payload, const char *function, duckdb_3d::BBox3D &box) {
 	auto data = reinterpret_cast<const uint8_t *>(payload.GetData());
 	auto size = payload.GetSize();
 	switch (GetPayloadKind(data, size)) {
 	case PayloadKind::Solid:
-		return duckdb_3d::ReadSolidPayloadHeader(data, size).bbox;
-	case PayloadKind::Geom:
-		return duckdb_3d::ReadGeomPayloadHeader(data, size).bbox;
+		box = duckdb_3d::ReadSolidPayloadHeader(data, size).bbox;
+		return true;
+	case PayloadKind::Geom: {
+		auto info = duckdb_3d::ReadGeomPayloadHeader(data, size);
+		box = info.bbox;
+		// POINT EMPTY is stored as one vertex of NaNs, whose box is no box.
+		return info.vertex_count > 0 && box.min_x <= box.max_x && box.min_y <= box.max_y && box.min_z <= box.max_z;
+	}
 	default:
 		throw InvalidInputException("%s: argument is not a SOLID_3D or GEOM_3D value", function);
 	}
@@ -61,7 +67,12 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
-		WriteBBox(result, i, PayloadBBox(values[idx], "ST_3DBounds"));
+		duckdb_3d::BBox3D box;
+		if (!PayloadBBox(values[idx], "ST_3DBounds", box)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+		WriteBBox(result, i, box);
 	}
 	if (args.AllConstant()) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
@@ -70,9 +81,15 @@ static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &resu
 
 template <double duckdb_3d::BBox3D::*FIELD>
 static void BBoxFieldFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t payload) {
-		return PayloadBBox(payload, "bounding box accessor").*FIELD;
-	});
+	UnaryExecutor::ExecuteWithNulls<string_t, double>(args.data[0], result, args.size(),
+	                                                  [](string_t payload, ValidityMask &mask, idx_t idx) {
+		                                                  duckdb_3d::BBox3D box;
+		                                                  if (!PayloadBBox(payload, "bounding box accessor", box)) {
+			                                                  mask.SetInvalid(idx);
+			                                                  return 0.0;
+		                                                  }
+		                                                  return box.*FIELD;
+	                                                  });
 }
 
 // ST_3DExtent: the box of every box. The state keeps the first CRS it sees, so
@@ -119,8 +136,12 @@ struct ExtentOperation {
 
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &) {
+		duckdb_3d::BBox3D box;
+		if (!PayloadBBox(input, "ST_3DExtent", box)) {
+			return;
+		}
 		auto crs = PayloadCrs(input);
-		Absorb(state, PayloadBBox(input, "ST_3DExtent"), crs.data(), static_cast<uint32_t>(crs.size()));
+		Absorb(state, box, crs.data(), static_cast<uint32_t>(crs.size()));
 	}
 
 	template <class INPUT_TYPE, class STATE, class OP>
@@ -156,7 +177,13 @@ static void ExtentFinalize(Vector &states, AggregateInputData &, Vector &result,
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *state_ptrs[sdata.sel->get_index(i)];
 		if (!state.is_set) {
-			FlatVector::SetNull(result, i + offset, true);
+			// An ungrouped aggregate finalizes into a constant vector, which
+			// FlatVector::SetNull would assert on.
+			if (result.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+				ConstantVector::SetNull(result, true);
+			} else {
+				FlatVector::SetNull(result, i + offset, true);
+			}
 			continue;
 		}
 		WriteBBox(result, i + offset, state.box);

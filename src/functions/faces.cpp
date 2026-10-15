@@ -192,6 +192,18 @@ static string_t WriteGeomModel(Vector &result, const duckdb_3d::GeomModel &model
 	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 }
 
+//! A shell as a GEOM_3D surface, or NULL when one of its faces admits no tiling
+//! and so cannot be a GEOM_3D polygon, as ST_3DFaces gives that face.
+static string_t WriteShell(Vector &result, const duckdb_3d::SolidModel &model, uint32_t shell, ValidityMask &mask,
+                           idx_t idx) {
+	try {
+		return WriteGeomModel(result, duckdb_3d::SolidShellSurface(model, shell));
+	} catch (std::invalid_argument &) {
+		mask.SetInvalid(idx);
+		return string_t();
+	}
+}
+
 static void ST_3DExteriorShellFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
 	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
@@ -202,7 +214,7 @@ static void ST_3DExteriorShellFun(DataChunk &args, ExpressionState &state, Vecto
 			    mask.SetInvalid(idx);
 			    return string_t();
 		    }
-		    return WriteGeomModel(result, duckdb_3d::SolidShellSurface(model, 0));
+		    return WriteShell(result, model, 0, mask, idx);
 	    });
 }
 
@@ -229,7 +241,7 @@ static void ST_3DInteriorShellNFun(DataChunk &args, ExpressionState &state, Vect
 			    mask.SetInvalid(idx);
 			    return string_t();
 		    }
-		    return WriteGeomModel(result, duckdb_3d::SolidShellSurface(model, static_cast<uint32_t>(n)));
+		    return WriteShell(result, model, static_cast<uint32_t>(n), mask, idx);
 	    });
 }
 

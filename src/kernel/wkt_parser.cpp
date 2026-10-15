@@ -142,6 +142,22 @@ private:
 				return c.cls;
 			}
 		}
+		// PostGIS also reads the tag written onto the name, as in POINTZ; no
+		// class name itself ends in Z or M.
+		for (auto &c : classes) {
+			const std::string name = c.name;
+			if (word.size() > name.size() && word.compare(0, name.size(), name) == 0) {
+				const std::string tag = word.substr(name.size());
+				if (tag == "Z") {
+					ordinates_ = 3;
+					return c.cls;
+				}
+				if (tag == "M" || tag == "ZM") {
+					pos_ = start;
+					Fail("GEOM_3D holds no M ordinate");
+				}
+			}
+		}
 		pos_ = start;
 		Fail(word.empty() ? "expected a geometry class" : "GEOM_3D has no class " + word);
 	}
@@ -262,8 +278,8 @@ private:
 		}
 	}
 
-	//! "(c, c, ...)", written as a count and the coordinates.
-	void CoordinateList() {
+	//! "(c, c, ...)", written as a count and the coordinates; returns the count.
+	uint32_t CoordinateList() {
 		Expect('(');
 		size_t at = Reserve();
 		uint32_t count = 0;
@@ -273,18 +289,28 @@ private:
 		} while (Peek(',') && (pos_++, true));
 		Expect(')');
 		Patch(at, count);
+		return count;
 	}
 
-	//! "(ring, ring, ...)", written as a ring count and the rings.
-	void RingList() {
+	//! "(ring, ring, ...)", written as a ring count and the rings. A triangle's
+	//! is one closed ring of four points.
+	void RingList(bool triangle = false) {
 		Expect('(');
+		const size_t start = pos_;
 		size_t at = Reserve();
 		uint32_t count = 0;
 		do {
-			CoordinateList();
+			if (CoordinateList() != 4 && triangle) {
+				pos_ = start;
+				Fail("a triangle has exactly four points");
+			}
 			count++;
 		} while (Peek(',') && (pos_++, true));
 		Expect(')');
+		if (triangle && count != 1) {
+			pos_ = start;
+			Fail("a triangle has one ring");
+		}
 		Patch(at, count);
 	}
 
@@ -295,6 +321,9 @@ private:
 
 	void ReadBody(uint32_t cls, size_t class_at) {
 		if (ReadEmpty()) {
+			if (ordinates_ == 0) {
+				Fail("GEOM_3D needs a Z ordinate");
+			}
 			if (cls == kPoint) {
 				for (int i = 0; i < 3; i++) {
 					WriteF64(std::numeric_limits<double>::quiet_NaN());
@@ -314,8 +343,10 @@ private:
 			CoordinateList();
 			return;
 		case kPolygon:
-		case kTriangle:
 			RingList();
+			return;
+		case kTriangle:
+			RingList(true);
 			return;
 		default:
 			break;
@@ -348,7 +379,7 @@ private:
 				break;
 			case kTin:
 				ChildHeader(kTriangle);
-				RingList();
+				RingList(true);
 				break;
 			default:
 				pos_ = class_at;

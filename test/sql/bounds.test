@@ -58,3 +58,13 @@ statement error
 SELECT ST_3DExtent(g) FROM (SELECT ST_3DSetCRS(g, 'EPSG:28992') AS g FROM b UNION ALL SELECT g FROM b);
 ----
 different CRSs
+
+# An empty geometry has no box, as PostGIS's ST_XMin gives NULL, and
+# ST_3DExtent passes over it.
+query IIII
+SELECT ST_3DBounds(ST_3DGeomFromText('POLYGON Z EMPTY')) IS NULL,
+       ST_3DXMin(ST_3DGeomFromText('POINT Z EMPTY')) IS NULL,
+       (SELECT ST_3DExtent(g) IS NULL FROM (SELECT ST_3DGeomFromText('POINT Z EMPTY') AS g)),
+       (SELECT (ST_3DExtent(g)).max_z FROM (VALUES (ST_3DGeomFromText('POINT Z EMPTY')), (ST_3DGeomFromText('POINT Z (1 2 3)'))) v(g));
+----
+true	true	true	3.0

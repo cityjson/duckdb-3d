@@ -1,5 +1,6 @@
 #include "functions/three_d_functions.hpp"
 
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -35,9 +36,16 @@ bool SameCrs(const std::string &a, const std::string &b) {
 	if (a.empty() || b.empty()) {
 		return false;
 	}
-	// Two spellings of one CRS, such as an AUTH:CODE and a PROJJSON carrying that
-	// id, are the same; DuckDB's comparison decides.
-	return CoordinateReferenceSystem(a).Equals(CoordinateReferenceSystem(b));
+	// Two spellings of one CRS, such as an AUTH:CODE in either case and a PROJJSON
+	// carrying that id, are the same: they resolve to one identifier.
+	CoordinateReferenceSystem crs_a(a);
+	CoordinateReferenceSystem crs_b(b);
+	if (crs_a.Equals(crs_b)) {
+		return true;
+	}
+	auto id_a = crs_a.GetIdentifier();
+	auto id_b = crs_b.GetIdentifier();
+	return !id_a.empty() && StringUtil::CIEquals(id_a, id_b);
 }
 
 static std::string DisplayCrs(const std::string &crs) {

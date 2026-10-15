@@ -99,22 +99,34 @@ TEST_CASE("WKT: whitespace is free between tokens", "[wkt]") {
 	REQUIRE(Wkb("LINESTRING\tZ\n( 0 0 0 ,1 1 1 , 2 0 -1.5 )") == Wkb("LINESTRING Z (0 0 0, 1 1 1, 2 0 -1.5)"));
 }
 
+TEST_CASE("WKT: a Z tag may be written onto the class name", "[wkt]") {
+	REQUIRE(Wkb("POINTZ(1 2 3)") == Wkb("POINT Z (1 2 3)"));
+	REQUIRE(Wkb("tinz (((0 0 0, 1 0 0, 0 1 0, 0 0 0)))") == Wkb("TIN Z (((0 0 0, 1 0 0, 0 1 0, 0 0 0)))"));
+	REQUIRE_THROWS_AS(Wkb("POINTM(1 2 3)"), std::invalid_argument);
+	REQUIRE_THROWS_AS(Wkb("POINTZM(1 2 3 4)"), std::invalid_argument);
+}
+
 TEST_CASE("WKT: what GEOM_3D cannot hold is refused", "[wkt]") {
 	const char *refused[] = {
-	    "POINT (1 2)",                            // no Z
-	    "POINT Z (1 2)",                          // Z tag, two ordinates
-	    "POINT ZM (1 2 3 4)",                     // M
-	    "POINT M (1 2 3)",                        // M
-	    "POINT (1 2 3 4)",                        // four ordinates
-	    "GEOMETRYCOLLECTION Z (POINT Z (1 2 3))", // no collections in GEOM_3D
-	    "CIRCULARSTRING Z (0 0 0, 1 1 0, 2 0 0)", // curves
-	    "POINT Z (1 2 3",                         // unclosed
-	    "POINT Z (1 2 3) x",                      // trailing text
-	    "POINT Z (1 2 three)",                    // not a number
-	    "LINESTRING Z (0 0 0, 1 1)",              // a short coordinate
-	    "LINESTRING Z (0 0 0, 1 1 1 0 0 0)",      // a missing comma
-	    "LINESTRING (0 0 0, 1 1)",                // dimensions mixed
-	    "SRID=abc;POINT Z (1 2 3)",               // a bad SRID
+	    "POINT (1 2)",                                                             // no Z
+	    "POINT Z (1 2)",                                                           // Z tag, two ordinates
+	    "POINT ZM (1 2 3 4)",                                                      // M
+	    "POINT M (1 2 3)",                                                         // M
+	    "POINT (1 2 3 4)",                                                         // four ordinates
+	    "GEOMETRYCOLLECTION Z (POINT Z (1 2 3))",                                  // no collections in GEOM_3D
+	    "CIRCULARSTRING Z (0 0 0, 1 1 0, 2 0 0)",                                  // curves
+	    "POINT Z (1 2 3",                                                          // unclosed
+	    "POINT Z (1 2 3) x",                                                       // trailing text
+	    "POINT Z (1 2 three)",                                                     // not a number
+	    "LINESTRING Z (0 0 0, 1 1)",                                               // a short coordinate
+	    "LINESTRING Z (0 0 0, 1 1 1 0 0 0)",                                       // a missing comma
+	    "LINESTRING (0 0 0, 1 1)",                                                 // dimensions mixed
+	    "SRID=abc;POINT Z (1 2 3)",                                                // a bad SRID
+	    "POINT EMPTY",                                                             // no Z, as every untagged form needs
+	    "POLYGON EMPTY",                                                           // likewise
+	    "TRIANGLE Z ((0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 0))",                        // a triangle has four points
+	    "TRIANGLE Z ((0 0 0, 1 0 0, 1 1 0, 0 0 0), (0 0 0, 1 0 0, 1 1 0, 0 0 0))", // and one ring
+	    "TIN Z (((0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 0)))",                           // so does each of a TIN's
 	    "",
 	};
 	for (auto text : refused) {
