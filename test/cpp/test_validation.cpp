@@ -440,22 +440,44 @@ TEST_CASE("Validation: faces meeting at a vertex in two fans make it non-manifol
 	REQUIRE(model.validation.is_valid == false);
 }
 
+//! A 2 x 2 m cavity from z = 4 to 9 under a pyramid roof whose apex is at
+//! (5, 5, apex_z), wound inward.
+std::vector<Face> SpireCavity(double apex_z) {
+	Vertex3D v000 = {4, 4, 4}, v100 = {6, 4, 4}, v110 = {6, 6, 4}, v010 = {4, 6, 4};
+	Vertex3D v001 = {4, 4, 9}, v101 = {6, 4, 9}, v111 = {6, 6, 9}, v011 = {4, 6, 9}, apex = {5, 5, apex_z};
+	std::vector<Face> faces = {{{v000, v010, v110, v100}}, {{v000, v100, v101, v001}}, {{v010, v011, v111, v110}},
+	                           {{v000, v001, v011, v010}}, {{v100, v110, v111, v101}}, {{v001, v101, apex}},
+	                           {{v111, v011, apex}},       {{v011, v001, apex}},       {{v101, v111, apex}}};
+	for (auto &f : faces) {
+		std::reverse(f[0].begin(), f[0].end());
+	}
+	return faces;
+}
+
 TEST_CASE("Validation: penetration within the faces' non-planarity is not an intersection", "[validation]") {
 	// The exterior's top face is non-planar: one corner is raised by e, so it
-	// deviates from its plane by about e/4. A cavity poking through that face by
-	// less than the deviation is within tolerance; by much more, it is not.
+	// deviates from its plane by about e/4. A cavity's spire poking through that
+	// face by less than the deviation is within tolerance; by much more, it is
+	// not.
 	const double e = 0.01;
 	auto exterior = BoxFaces({0, 0, 0}, {10, 10, 10});
 	exterior[1][0][2].z += e; // the top face's (10, 10, 10) corner
 	exterior[3][0][2].z += e; // the same vertex in the back face
 	exterior[5][0][2].z += e; // and in the right face
 	SECTION("within") {
-		auto model = BuildFaces(Concat(exterior, BoxFaces({4, 4, 4}, {6, 6, 10 + 0.02 * e}, true)), {6, 6});
+		auto model = BuildFaces(Concat(exterior, SpireCavity(10 + 0.02 * e)), {6, 9});
 		REQUIRE(model.validation.self_intersection_count == 0);
 	}
 	SECTION("beyond") {
-		auto model = BuildFaces(Concat(exterior, BoxFaces({4, 4, 4}, {6, 6, 10 + 3 * e}, true)), {6, 6});
+		auto model = BuildFaces(Concat(exterior, SpireCavity(10 + 3 * e)), {6, 9});
 		REQUIRE(model.validation.self_intersection_count == 4);
+	}
+	SECTION("a cavity whose top lies on the warped face touches it over an area") {
+		// Within the face's non-planarity the two tops are one surface: the
+		// shells meet over 4 m^2, which is an intersection, not a crossing to
+		// tolerate.
+		auto model = BuildFaces(Concat(exterior, BoxFaces({4, 4, 4}, {6, 6, 10 + 0.02 * e}, true)), {6, 6});
+		REQUIRE(model.validation.self_intersection_count > 0);
 	}
 }
 
@@ -497,6 +519,79 @@ TEST_CASE("Validation: a thin slab with a raised top vertex does not intersect i
 		REQUIRE(model.validation.self_intersection_count == 0);
 		REQUIRE(model.validation.is_valid == true);
 	}
+}
+
+TEST_CASE("Validation: a triangle folded back onto a warped neighbouring face intersects it", "[validation]") {
+	// Helsinki BID_b43b0752-e830-40bc-84a0-25a75342740c at LoD 2 (Helsinki_tex),
+	// which val3dity rejects as non-manifold (303). Face 6 is the triangle
+	// (17, 14, 18) of face 10's quad (15, 14, 17, 18) wound the other way: the
+	// shell folds back on itself over a sliver 8 cm tall. Every edge is used
+	// twice in opposite directions, so only the overlap shows it. Face 10 is
+	// warped by about a millimetre, so the two triangles are coplanar only
+	// within the faces' tolerance.
+	const std::vector<Face> building = {
+	    {{{25505358.05, 6679003.974, 18.76},
+	      {25505357.327, 6679002.681, 17.561},
+	      {25505364.394, 6678998.523, 17.561},
+	      {25505365.118, 6678999.816, 18.76}}},
+	    {{{25505364.394, 6678998.523, 14.03},
+	      {25505364.394, 6678998.523, 17.561},
+	      {25505357.327, 6679002.681, 17.561},
+	      {25505357.327, 6679002.681, 14.03}}},
+	    {{{25505363.523, 6679005.691, 14.03},
+	      {25505363.523, 6679005.691, 16.79},
+	      {25505367.241, 6679003.611, 16.79},
+	      {25505367.241, 6679003.611, 14.03}}},
+	    {{{25505364.394, 6678998.523, 14.03},
+	      {25505357.327, 6679002.681, 14.03},
+	      {25505359.562, 6679006.675, 14.03},
+	      {25505362.994, 6679004.755, 14.03},
+	      {25505363.523, 6679005.691, 14.03},
+	      {25505367.241, 6679003.611, 14.03}}},
+	    {{{25505366.376, 6679002.066, 16.79},
+	      {25505365.118, 6678999.816, 18.76},
+	      {25505364.394, 6678998.523, 17.561},
+	      {25505364.394, 6678998.523, 14.03},
+	      {25505367.241, 6679003.611, 14.03},
+	      {25505367.241, 6679003.611, 16.79}}},
+	    {{{25505362.994, 6679004.755, 14.03},
+	      {25505359.562, 6679006.675, 14.03},
+	      {25505359.562, 6679006.675, 16.395},
+	      {25505362.963, 6679004.772, 16.329},
+	      {25505362.981, 6679004.762, 16.79},
+	      {25505362.994, 6679004.755, 16.79}}},
+	    {{{25505362.963, 6679004.772, 16.25}, {25505362.963, 6679004.772, 16.329}, {25505362.686, 6679004.237, 16.79}}},
+	    {{{25505363.523, 6679005.691, 16.79},
+	      {25505363.523, 6679005.691, 14.03},
+	      {25505362.994, 6679004.755, 14.03},
+	      {25505362.994, 6679004.755, 16.79}}},
+	    {{{25505359.562, 6679006.675, 14.03},
+	      {25505357.327, 6679002.681, 14.03},
+	      {25505357.327, 6679002.681, 17.561},
+	      {25505358.05, 6679003.974, 18.76},
+	      {25505359.562, 6679006.675, 16.395}}},
+	    {{{25505363.523, 6679005.691, 16.79},
+	      {25505362.994, 6679004.755, 16.79},
+	      {25505362.981, 6679004.762, 16.79},
+	      {25505362.686, 6679004.237, 16.79},
+	      {25505366.376, 6679002.066, 16.79},
+	      {25505367.241, 6679003.611, 16.79}}},
+	    {{{25505362.981, 6679004.762, 16.79},
+	      {25505362.963, 6679004.772, 16.329},
+	      {25505362.963, 6679004.772, 16.25},
+	      {25505362.686, 6679004.237, 16.79}}},
+	    {{{25505358.05, 6679003.974, 18.76},
+	      {25505365.118, 6678999.816, 18.76},
+	      {25505366.376, 6679002.066, 16.79},
+	      {25505362.686, 6679004.237, 16.79},
+	      {25505362.963, 6679004.772, 16.329},
+	      {25505359.562, 6679006.675, 16.395}}},
+	};
+	auto model = BuildFaces(building);
+	REQUIRE(model.validation.is_closed == true);
+	REQUIRE(model.validation.non_manifold_edge_count == 0);
+	REQUIRE(model.validation.self_intersection_count >= 1);
+	REQUIRE(model.validation.is_valid == false);
 }
 
 TEST_CASE("Validation: the self-intersection verdict survives a rotation", "[validation]") {

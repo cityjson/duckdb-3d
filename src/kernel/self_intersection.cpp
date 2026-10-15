@@ -75,13 +75,14 @@ FacePlane FitFacePlane(const SolidModel &model, uint32_t face, const Vertex3D &o
 	return plane;
 }
 
-//! A triangle in solid-local coordinates with its face's plane, its share of
-//! a pair's tolerance (twice its face's deviation, plus half the rounding
-//! term) and its bounding box grown by that share.
+//! A triangle in solid-local coordinates with its face's plane and deviation,
+//! its share of a pair's tolerance (twice its face's deviation, plus half the
+//! feature floor) and its bounding box grown by that share.
 struct Triangle {
 	Vertex3D p[3];
 	Vertex3D normal;
 	double offset;
+	double deviation;
 	Vertex3D own_normal;
 	double lo[3];
 	double hi[3];
@@ -180,9 +181,11 @@ double CoplanarOverlapWidth(const Triangle &reference, const Triangle &other) {
 }
 
 //! Three separate decisions, each with its own number. Coplanar: one
-//! triangle lies within the rounding term `eps` of the other's face plane;
-//! then they cross when their overlap in that plane is wider than the
-//! tolerance. Otherwise each must reach further than the tolerance to both
+//! triangle lies on the other's face plane as closely as the two faces' own
+//! vertices lie on their planes (their deviations, plus the rounding term
+//! `eps`), so a triangle folded back onto a warped neighbour is coplanar
+//! with it; then they cross when their overlap in that plane is wider than
+//! the tolerance. Otherwise each must reach further than the tolerance to both
 //! sides of the other's face plane: depth is measured against face planes,
 //! so a sliver triangle's ill-defined plane cannot make a neighbour look
 //! deep. Where they cross is measured on the triangles themselves, whose
@@ -198,8 +201,9 @@ bool TrianglesCross(const Triangle &a, const Triangle &b, double tolerance, doub
 		db[i] = Dot(a.normal, b.p[i]) - a.offset;
 		da[i] = Dot(b.normal, a.p[i]) - b.offset;
 	}
-	bool b_on_a = std::max({std::abs(db[0]), std::abs(db[1]), std::abs(db[2])}) <= eps;
-	bool a_on_b = std::max({std::abs(da[0]), std::abs(da[1]), std::abs(da[2])}) <= eps;
+	const double coplanar = a.deviation + b.deviation + eps;
+	bool b_on_a = std::max({std::abs(db[0]), std::abs(db[1]), std::abs(db[2])}) <= coplanar;
+	bool a_on_b = std::max({std::abs(da[0]), std::abs(da[1]), std::abs(da[2])}) <= coplanar;
 	if (b_on_a || a_on_b) {
 		return b_on_a ? CoplanarOverlapWidth(a, b) > tolerance : CoplanarOverlapWidth(b, a) > tolerance;
 	}
@@ -315,6 +319,7 @@ uint32_t CountSelfIntersections(const SolidModel &model) {
 				tri.own_normal = Scale(n, 1.0 / n_length);
 				tri.normal = plane.normal;
 				tri.offset = plane.offset;
+				tri.deviation = plane.deviation;
 				tri.tolerance = 2 * plane.deviation;
 				tri.face = f;
 				for (int axis = 0; axis < 3; axis++) {

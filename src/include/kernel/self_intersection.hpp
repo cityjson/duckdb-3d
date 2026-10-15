@@ -11,9 +11,10 @@ namespace duckdb_3d {
 //!
 //! Faces that only touch (a shared edge or vertex, a coplanar neighbour) do
 //! not count. A pair of triangles from different faces counts when:
-//!   - one lies within the rounding term (kEpsRelative times the solid's
-//!     bounding-box diagonal) of the other's face plane, and their overlap in
-//!     that plane is wider (twice the area over the perimeter) than the
+//!   - one lies on the other's face plane as closely as the two faces' own
+//!     vertices lie on their planes (the sum of their deviations, plus
+//!     kEpsRelative times the solid's bounding-box diagonal), and their overlap
+//!     in that plane is wider (twice the area over the perimeter) than the
 //!     tolerance; or
 //!   - each reaches further than the tolerance to both sides of the other's
 //!     face plane, the two segments where each triangle meets the other's

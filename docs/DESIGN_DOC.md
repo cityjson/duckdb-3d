@@ -111,12 +111,14 @@ coerced into something the kernel can chew on. Errors name the function and the 
 ### 2.4 Self-contained kernel
 
 The current function set runs on a pure C++ geometry kernel with no CGAL or SFCGAL
-dependency. This keeps the extension small, portable, and cheap to build. Everything that
-would genuinely require a robust exact-arithmetic backend — 3D booleans, true 3D convex
-hulls, skeletons, medial axes — is deliberately **out of scope** rather than approximated.
-PROJ is the one external library, confined to CRS reprojection; face triangulation uses the
-header-only `mapbox/earcut.hpp`, vendored under `third_party/` with its split recursion
-bounded.
+dependency. This keeps the extension small, portable, and cheap to build. Orientation tests
+that must be exact — the 3D convex hull's — use Shewchuk's adaptive predicates, vendored
+under `third_party/predicates/`; they are exact on double input and cost a plain
+floating-point evaluation unless the answer is close to zero. Everything that needs exact
+constructions rather than exact signs — 3D booleans, skeletons, medial axes — is
+deliberately **out of scope** rather than approximated. PROJ is the one external library,
+confined to CRS reprojection; face triangulation uses the header-only `mapbox/earcut.hpp`,
+vendored under `third_party/` with its split recursion bounded.
 
 ### 2.5 Coexist with `spatial`, don't compete
 
@@ -363,9 +365,13 @@ exactly on both planes. The boundary condition removes folds of a junction: two 
 whose ridges cross each other by a centimetre, along slivers at the ridge, cross only
 within the tolerance of both faces' edges, and a different tiling of the same rings need
 not cross at all. A thin face piercing a wall far from the wall's edges still counts,
-however thin it is. Triangles within the rounding term of each other's face planes are
-coplanar, and count when their overlap in that plane is wider (twice the area over the
-perimeter) than the tolerance. Faces closer than the tolerance that do not cross are not
+however thin it is. Two triangles are coplanar when one lies on the other's face plane as
+closely as the faces' own vertices do — within the sum of the two faces' deviations, plus
+the rounding term — and count when their overlap in that plane is wider (twice the area
+over the perimeter) than the tolerance. Measuring coplanarity against the deviations rather
+than the rounding term alone is what catches a triangle folded back onto a warped
+neighbour: a face that repeats part of another face's ring, wound the other way, uses every
+edge twice in opposite directions and is visible only as an overlap. Faces closer than the tolerance that do not cross are not
 counted. Candidate pairs come from a sweep over triangle bounding boxes along the solid's
 longest axis, and a pair of faces is counted once however many of their triangles cross.
 
@@ -380,13 +386,15 @@ crossing smaller than that says more about which triangulation was chosen than a
 solid. It follows that the triangulation cache is part of a validity verdict, which is one
 more reason the `BLOB` casts rebuild it (§4) rather than trust it. val3dity is exact on its
 own triangulation after snapping vertices to 1 mm; it and this rule agree on every 3DBAG
-Delft solid apart from planarity and snapping differences (§8.4).
+Delft solid apart from planarity and snapping differences, and on Helsinki every
+self-intersection val3dity finds that this rule does not is within the faces' deviation
+(§8.4).
 
 **Tolerances** are named constants in `src/kernel/core_types.hpp`, and every one that
 decides validity is relative, so a verdict survives rigid motions and uniform scaling:
 measured on the 1116 Delft LoD2.2 solids, rotating, translating, or scaling them by 1000 or
 by 0.001 changes no verdict. Scaling the axes unequally changes angles and planarity, so it
-may change a verdict on a face whose features are already at tolerance scale (9 of the
+may change a verdict on a face whose features are already at tolerance scale (10 of the
 1116 under a tenfold vertical stretch, each a fold or crossing at tolerance scale before the
 stretch).
 
@@ -495,10 +503,19 @@ dependency:
   one roof val3dity finds non-planar (duckdb-3d does not test planarity), five solids whose
   faces collapse to two vertices under 1 mm snapping (duckdb-3d does not snap), and one with
   a repeated consecutive vertex, which import drops as lossless bookkeeping (§2.1). None
-  comes from connectivity, non-manifold vertices or self-intersection. That agreement covers
-  the negative side only: val3dity reports no self-intersection on the tile, so the
-  detector's positives are pinned by constructed solids in `test/cpp/test_validation.cpp`
-  (overlapping boxes, crossing cavities, a thin face through warped walls), not by real data.
+  comes from connectivity, non-manifold vertices or self-intersection. val3dity reports no
+  self-intersection on that tile, so the detector's positives are tested on Helsinki
+  (`Helsinki_tex`, 77 249 LoD 2 solids) and by constructed solids in
+  `test/cpp/test_validation.cpp`. On Helsinki the two agree on 76 839 solids (99.5 %). Of the
+  410 differences, 355 are planarity, 23 are vertices exactly 1 mm apart that val3dity
+  snaps together, 9 are faces duckdb-3d finds degenerate, and 1 is a polygon interior
+  val3dity finds disconnected; the rest concern self-intersection. val3dity rejects 21 solids
+  for a self-intersection (306) that duckdb-3d accepts: 18 cross by less than `2·(dev_a +
+  dev_b)`, one by less than the `1e-5` term beyond that, and two do not cross at all on
+  duckdb-3d's triangulation. duckdb-3d rejects one solid val3dity accepts: a
+  triangle folded back onto its 1.5 mm-warped wall, overlapping it over a strip 2.1 cm wide.
+  The solids val3dity calls non-manifold (303) only because a face folds back onto a
+  neighbour are self-intersections here, and all are caught.
 - **Live comparison on real data.** `scripts/oracle/live_diff.py` runs the distance family on
   five published datasets (3DBAG Delft, the TU Delft railway LoD3 model, Rotterdam
   Delfshaven, Den Haag, Vienna) in duckdb-3d and PostGIS and reports every disagreement. It
@@ -600,6 +617,6 @@ surface; PROJ-backed `ST_3DTransform`. See the
 `ST_PointOnSurface`, `ST_Boundary`, `ST_AsX3D`, `ST_AsGML`, `ST_AsKML`.
 
 **Deferred pending a backend decision.** Everything requiring robust exact arithmetic: 3D
-booleans (union / difference / intersection), true 3D convex hulls, tessellation, straight
+booleans (union / difference / intersection), tessellation, straight
 skeletons, medial axes, and topology-repair workflows. These are gated on whether to take on
 a CGAL or SFCGAL dependency — a decision deliberately not yet made, per §2.4.
