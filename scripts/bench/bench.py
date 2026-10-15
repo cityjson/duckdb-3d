@@ -20,6 +20,7 @@ the payload bytes or doubles -- so comparing two builds also proves they
 return bit-identical answers ("DIFF" otherwise).
 """
 import argparse
+import json
 import re
 import statistics
 import subprocess
@@ -75,26 +76,42 @@ def bench_queries(ds):
     ]
 
 
-def build_script(inputs, reps, threads, datasets, only=None):
-    out = [f"ATTACH '{inputs}' AS i (READ_ONLY);", f"SET threads = {threads};"]
+def build_steps(inputs, reps, threads, datasets, only=None):
+    """The benchmark as steps: ("sql", statement) to run untimed, and
+    ("bench", dataset, query name, rep, statement) to time."""
+    steps = [("sql", f"ATTACH '{inputs}' AS i (READ_ONLY);"), ("sql", f"SET threads = {threads};")]
     for ds in datasets:
-        out.append(setup_sql(ds))
-    out.append(".timer on")
+        steps += [("sql", stmt.strip() + ";") for stmt in setup_sql(ds).split(";") if stmt.strip()]
     for ds in datasets:
         for name, q in bench_queries(ds):
             if only and name not in only:
                 continue
-            for r in range(reps):
-                out.append(f".print @@BENCH {ds} {name} {r}")
-                out.append(q)
+            steps += [("bench", ds, name, r, q) for r in range(reps)]
+    return steps
+
+
+def build_script(steps):
+    out = []
+    timed = False
+    for step in steps:
+        if step[0] == "bench" and not timed:
+            out.append(".timer on")
+            timed = True
+        if step[0] == "sql":
+            out.append(step[1])
+        else:
+            _, ds, name, r, q = step
+            out.append(f".print @@BENCH {ds} {name} {r}")
+            out.append(q)
     return "\n".join(out) + "\n"
 
 
 TIME_RE = re.compile(r"Run Time \(s\): real ([0-9.]+) user ([0-9.]+) sys ([0-9.]+)")
 
 
-def run(binary, script):
-    proc = subprocess.run([binary, "-unsigned", "-csv", "-noheader"], input=script, capture_output=True, text=True)
+def run(binary, steps):
+    proc = subprocess.run([binary, "-unsigned", "-csv", "-noheader"], input=build_script(steps), capture_output=True,
+                          text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"{binary} failed")
@@ -117,10 +134,51 @@ def run(binary, script):
     return results
 
 
+# A loadable extension runs in the Python duckdb module of the same DuckDB
+# version, one fresh process per run, timed around each query.
+PY_RUNNER = """
+import json, os, sys, time
+import duckdb
+ext, steps = sys.argv[1], json.load(sys.stdin)
+con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+con.execute(f"LOAD '{ext}'")
+out = []
+for step in steps:
+    if step[0] == "sql":
+        con.execute(step[1])
+        continue
+    _, ds, name, r, q = step
+    t0, c0 = time.perf_counter(), os.times()
+    rows = con.execute(q).fetchall()
+    t1, c1 = time.perf_counter(), os.times()
+    cpu = (c1.user - c0.user) + (c1.system - c0.system)
+    out.append([ds, name, t1 - t0, cpu, [",".join(str(v) for v in row) for row in rows]])
+json.dump(out, sys.stdout)
+"""
+
+
+def run_extension(extension, steps):
+    proc = subprocess.run([sys.executable, "-c", PY_RUNNER, extension], input=json.dumps(steps),
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(f"{extension} failed")
+    results = {}
+    for ds, name, wall, cpu, rows in json.loads(proc.stdout):
+        r = results.setdefault((ds, name), {"times": [], "cpu": [], "values": set()})
+        r["times"].append(wall)
+        r["cpu"].append(cpu)
+        r["values"] |= set(rows)
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--inputs", required=True)
-    ap.add_argument("--duckdb", required=True, help="comma-separated binaries (three_d linked in)")
+    target = ap.add_mutually_exclusive_group(required=True)
+    target.add_argument("--duckdb", help="comma-separated binaries (three_d linked in)")
+    target.add_argument("--extensions", help="comma-separated loadable three_d extensions, run in the Python "
+                        "duckdb module of the same DuckDB version")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--rounds", type=int, default=1)
@@ -128,14 +186,15 @@ def main():
     ap.add_argument("--queries", default="", help="comma-separated subset of query names")
     args = ap.parse_args()
     datasets = args.datasets.split(",")
-    script = build_script(args.inputs, args.reps, args.threads, datasets, set(filter(None, args.queries.split(","))))
-    binaries = args.duckdb.split(",")
+    steps = build_steps(args.inputs, args.reps, args.threads, datasets, set(filter(None, args.queries.split(","))))
+    binaries = (args.duckdb or args.extensions).split(",")
+    runner = run if args.duckdb else run_extension
     # Rounds alternate the binaries so drift in machine load hits all of them
     # alike; samples from every round are pooled before taking the median.
     all_results = [{} for _ in binaries]
     for _ in range(args.rounds):
         for k, b in enumerate(binaries):
-            for key, r in run(b, script).items():
+            for key, r in runner(b, steps).items():
                 acc = all_results[k].setdefault(key, {"times": [], "cpu": [], "values": set()})
                 acc["times"] += r["times"]
                 acc["cpu"] += r["cpu"]
