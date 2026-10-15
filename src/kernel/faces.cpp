@@ -110,9 +110,9 @@ std::vector<FaceMeasure> GeomFaceMeasures(const GeomModel &geom) {
 		double area = 0.0;
 		for (uint32_t t = t_begin; t < t_end; t++) {
 			const size_t k = static_cast<size_t>(t) * 3;
-			area += TriangleArea(model.vertices[model.triangle_indices[k]],
-			                     model.vertices[model.triangle_indices[k + 1]],
-			                     model.vertices[model.triangle_indices[k + 2]]);
+			area +=
+			    TriangleArea(model.vertices[model.triangle_indices[k]], model.vertices[model.triangle_indices[k + 1]],
+			                 model.vertices[model.triangle_indices[k + 2]]);
 		}
 		SetMeasures(faces[p], area, t_end > t_begin, exterior);
 	}
