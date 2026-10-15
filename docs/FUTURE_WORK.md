@@ -96,7 +96,7 @@ query where decoding is shown to dominate, and the same results bit for bit.
 
 The distance sweep (DESIGN_DOC §8.5) is fast on buildings and quadratic on large
 triangulations whose triangles are long slivers, such as a 4 000-gon cap. A per-geometry tree
-did not help either case. What would help the slow one is a bound tighter than a box (the
+is slower on buildings and, like the sweep, visits every tied pair in the slow case. What would help the slow one is a bound tighter than a box (the
 separation of two triangles' planes, say) or pruning pairs that can only tie the minimum,
 which would change which tied pair `ST_3DClosestPoint` reports. Done means a stated tie rule
 and a test on such a pair.

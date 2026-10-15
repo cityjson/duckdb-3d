@@ -858,7 +858,7 @@ A polygon is measured as the surface it encloses: a point in a concave face's no
 a hole is at its distance from the face's edges, not 0. `ST_3DClosestPoint(a, b)` is the point
 of `a` nearest `b`. On planar faces the family agrees with PostGIS; PostGIS is not the
 reference for faces with holes, whose interior rings its 3D point-in-polygon test ignores in
-the face's plane ([TEST_COVERAGE.md](./TEST_COVERAGE.md#live-comparison-on-real-data--the-distance-family)).
+the face's plane ([TEST_COVERAGE.md](./TEST_COVERAGE.md#live-comparison-on-real-data--distance-solids-measures-and-elements)).
 
 Find neighbours of a reference building:
 

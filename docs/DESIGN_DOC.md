@@ -615,11 +615,14 @@ value and its tie-breaking do not depend on the seed. Pinned against an unpruned
 
 The sweep tests every element of one side against the elements of the other that come near
 the first geometry's box, so it is quadratic in the worst case. A bounding-volume hierarchy
-per geometry was tried and measured: on real building pairs it took 60 µs a distance where
-the sweep takes 52, and 11.3 µs an intersection test where the sweep takes 4.7, because a building has around a hundred
-triangles and building the trees costs more than the box tests it saves. The slow synthetic
-case, two 4 000-gon prisms stacked a metre apart, is slow for another reason: every pair of
-cap triangles is exactly at the minimum distance, and no box bound prunes a tie.
+per geometry is slower on buildings: over 26 371 pairs of 3DBAG Delft, Den Haag and Vienna
+solids (each with its four nearest neighbours and one random partner), timed in the kernel on
+one core, a distance takes 60 µs with per-geometry trees and 52 µs with the sweep, and an
+intersection test 11.3 µs against 4.7. A building has around a hundred triangles, and building
+the trees costs more than the box tests they save. Where the sweep is slow, a tree is slow
+too: between two finely tessellated caps stacked a short way apart, every pair of cap
+triangles is at exactly the minimum distance, no box bound prunes a tie, and both visit every
+such pair.
 
 On planar faces without holes the result is PostGIS's: on 3DBAG Delft object pairs, face
 pairs and points around faces, `ST_3DDistance` agrees with PostGIS's to 1.3e-10 m and the

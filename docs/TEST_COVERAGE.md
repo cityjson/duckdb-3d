@@ -137,7 +137,7 @@ outside the exterior or inside each other (403, 401) — have no disagreement. T
 tests in `test/cpp/test_validation.cpp` pin each check on constructed solids and on real
 3DBAG buildings, including that the verdict survives rotation and a change of unit.
 
-### Live comparison on real data — distance, solids and measures
+### Live comparison on real data — distance, solids, measures and elements
 
 `scripts/oracle/live_diff.py` runs the distance family on five published datasets (3DBAG
 Delft, the TU Delft LoD3 railway model, Rotterdam Delfshaven, Den Haag, Vienna) in duckdb-3d
@@ -170,13 +170,32 @@ SFCGAL's volume predicates on points and object pairs. `--checks measures` compa
 
 On the five datasets (seed 20261015) every row agrees: 82 047 faces against SFCGAL and
 105 087 geometries against the Newell area, 95 477 polygon and 9 610 surface perimeters,
-105 087 part counts and 6 221 solid centroids. SFCGAL is handed each face starting at a vertex
+105 087 part counts and 6 226 solid centroids. SFCGAL is handed each face starting at a vertex
 whose successors are not collinear: it takes the plane from the first three vertices, and on
 eight Vienna wall faces whose first three are collinear it reports area 0. Two Den Haag
 centroids differ from the oracle by up to 1.5 cm only through the diagonal of two non-planar
-quads; with the same diagonals the two agree to 1e-14. On 4 098 of the 6 221 solids the faces
+quads; with the same diagonals the two agree to 1e-14. On 4 103 of the 6 226 solids the faces
 are planar enough that the centroid is held to 1e-6 m; the largest difference elsewhere is
 7.6 cm, on a Den Haag building whose faces lie up to 30 cm from planar.
+
+`--checks elements` compares what takes a value apart or builds one from text:
+
+| Function | Reference |
+| --- | --- |
+| `ST_3DXMin` … `ST_3DZMax`, `ST_3DExtent` | PostGIS `ST_XMin` … `ST_ZMax`, `ST_3DExtent` |
+| `ST_3DGeometryN(GEOM_3D)` | PostGIS `ST_GeometryN`, byte for byte as WKB |
+| `ST_3DGeomFromText` | PostGIS `ST_GeomFromText` of the same text, as WKB |
+| CRS from EWKT and EWKB | PostGIS `ST_AsEWKT` / `ST_AsEWKB` of `ST_SetSRID` |
+| `ST_3DFaces`, `ST_3DExteriorShell` | PostGIS `ST_GeometryN` of the solid's surface after `ST_RemoveRepeatedPoints`, as WKB |
+| `ST_3DFaceAreas(SOLID_3D)` | SFCGAL `ST_3DArea` per face; each ring's Newell vector area on the faces SFCGAL refuses |
+| `ST_3DFaceSlopes`, `ST_3DFaceAzimuths` | Their definition, from the exterior ring's Newell normal |
+
+On the five datasets (seed 20261015) every row agrees: 105 087 geometries' bounds, parts,
+WKT and CRS round trips exact; 6 422 solids' faces and shells byte for byte; 92 311 face areas
+against SFCGAL to 1e-10 and 13 122 more against the Newell area; 413 025 face slopes and
+azimuths to 1.4e-14 degrees. Skipped rows are the ones the functions refuse or answer NULL by
+definition: 11 polygons the import cannot triangulate, 16 solids with a ring of fewer than
+three distinct vertices, and faces with no triangles.
 
 ### Metamorphic properties — dependency-free invariants
 
