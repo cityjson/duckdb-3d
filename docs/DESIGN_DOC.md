@@ -279,6 +279,38 @@ storage: a `SOLID_3D` or `GEOM_3D` column in a `.duckdb` database keeps its type
 file is reopened, and its caches are trusted as they were written, as any column's values
 are. Anything that arrives as a `BLOB` — Parquet, CSV, another tool's table — is rebuilt.
 
+### 5.2 Where the time goes: materialise once, keep WKB at rest
+
+A value is one self-contained payload per row, not Arrow or a columnar layout across rows,
+and that is deliberate: what costs time is building a value, not reading one. Measured on one
+core (kernel figures on the 3DBAG Delft LoD 2.2 tile, SQL figures on 75 413 valid Helsinki
+LoD 2 solids already in a table):
+
+| Step | Per solid |
+| --- | --- |
+| Import: parse WKB, build, triangulate, validate (Delft LoD 2.2) | about 110 µs |
+| SQL: a header field (`ST_3DZMax`) over a `SOLID_3D` column | 0.24 µs |
+| Kernel: decode a payload into a model | 0.39 µs |
+| Kernel: volume of a decoded model | 0.41 µs |
+| SQL: `ST_3DVolume` over a `SOLID_3D` column | 0.91 µs |
+
+Three consequences follow.
+
+- **Materialise once.** `ST_3DVolume(ST_3DFromWKB(wkb, props))` spends nearly all its time
+  importing. A workload that asks more than one question of a set of solids builds the
+  `SOLID_3D` (or `GEOM_3D`) column once, into a DuckDB table, and queries that.
+- **Keep WKB at rest.** In Parquet the payload is about 20 % larger than the WKB it came from
+  and opaque to every other tool, and a payload read back from Parquet arrives as a `BLOB`
+  and is rebuilt anyway (§5.1). Store WKB, as CityParquet does; build values per session.
+- **No zero-copy view yet.** Decoding is about 40 % of a volume query over a materialised
+  column, but the whole query is under a microsecond a solid, two orders of magnitude below
+  an import. A second, byte-level implementation of each measure would buy a fraction of
+  that microsecond; it waits for a workload where it matters
+  ([FUTURE_WORK.md §5](./FUTURE_WORK.md)).
+
+Joins between two sets are the other place time goes; §8.5 covers pruning within a pair, and
+[FUNCTIONS.md](./FUNCTIONS.md#spatial-joins) the spatial join across pairs.
+
 ---
 
 ## 6. Layering
@@ -580,6 +612,14 @@ above it. And the sweep is seeded with the exact distance of one nearby pair, fo
 time, which is only ever used as a bound: the result is still taken from the sweep, so its
 value and its tie-breaking do not depend on the seed. Pinned against an unpruned sweep by
 `test/cpp/test_geom_distance.cpp`.
+
+The sweep tests every element of one side against the elements of the other that come near
+the first geometry's box, so it is quadratic in the worst case. A bounding-volume hierarchy
+per geometry was tried and measured: on real building pairs it took 60 µs a distance where
+the sweep takes 52, and 11.3 µs an intersection test where the sweep takes 4.7, because a building has around a hundred
+triangles and building the trees costs more than the box tests it saves. The slow synthetic
+case, two 4 000-gon prisms stacked a metre apart, is slow for another reason: every pair of
+cap triangles is exactly at the minimum distance, and no box bound prunes a tie.
 
 On planar faces without holes the result is PostGIS's: on 3DBAG Delft object pairs, face
 pairs and points around faces, `ST_3DDistance` agrees with PostGIS's to 1.3e-10 m and the

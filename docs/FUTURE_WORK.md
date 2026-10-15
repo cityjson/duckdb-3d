@@ -83,3 +83,20 @@ plane (DESIGN_DOC §8.1). val3dity rejects faces more than 1 cm from planar (its
 that is the one class of verdict where the two differ on 3DBAG Delft. Done would mean a
 planarity counter with a stated, unit-aware tolerance — or a decision that the triangulated
 reading is the contract and planarity stays a separate `ST_IsPlanar` question.
+
+## 5. A Zero-Copy Payload View
+
+Measures on a materialised column decode each payload into a `SolidModel` first: 0.39 µs of
+the 0.91 µs a solid that `ST_3DVolume` takes (DESIGN_DOC §5.2). A read-only view over the
+payload bytes would skip the copy for the measures that walk the arrays once (volume, surface
+area, footprint area). Done means a view type the measures accept alongside the model, a
+query where decoding is shown to dominate, and the same results bit for bit.
+
+## 6. Distance Between Large Geometries
+
+The distance sweep (DESIGN_DOC §8.5) is fast on buildings and quadratic on large
+triangulations whose triangles are long slivers, such as a 4 000-gon cap. A per-geometry tree
+did not help either case. What would help the slow one is a bound tighter than a box (the
+separation of two triangles' planes, say) or pruning pairs that can only tie the minimum,
+which would change which tied pair `ST_3DClosestPoint` reports. Done means a stated tie rule
+and a test on such a pair.
