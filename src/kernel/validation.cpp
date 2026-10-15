@@ -486,8 +486,9 @@ void ValidateSolidModel(SolidModel &model) {
 
 	// Validate each shell
 	uint32_t shell_count = model.ShellCount();
-	EdgeScratch edges;
-	TopologyScratch topology;
+	// Kept per thread between calls, as the triangulation's scratch is.
+	thread_local EdgeScratch edges;
+	thread_local TopologyScratch topology;
 	uint32_t disconnected_shells = 0;
 	uint32_t non_manifold_vertices = 0;
 	for (uint32_t s = 0; s < shell_count; s++) {

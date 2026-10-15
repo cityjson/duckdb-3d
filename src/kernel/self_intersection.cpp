@@ -279,8 +279,8 @@ uint32_t CountSelfIntersections(const SolidModel &model) {
 		return 0;
 	}
 	uint32_t count = 0;
-	std::vector<Triangle> triangles;
-	std::vector<uint64_t> pairs;
+	thread_local std::vector<Triangle> triangles;
+	thread_local std::vector<uint64_t> pairs;
 	for (uint32_t solid = 0; solid < model.SolidCount(); solid++) {
 		uint32_t first_shell = model.solid_shell_offsets[solid];
 		uint32_t face_start = model.shell_face_offsets[first_shell];

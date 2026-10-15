@@ -454,7 +454,9 @@ void TriangulateSolidModel(SolidModel &model) {
 	model.face_triangle_offsets.resize(face_count + 1);
 	model.triangle_vertex_indices.clear();
 
-	TriangulationScratch scratch;
+	// One scratch per thread, kept between calls: importing a column triangulates
+	// row after row, and each would otherwise allocate the same buffers again.
+	thread_local TriangulationScratch scratch;
 	for (uint32_t f = 0; f < face_count; f++) {
 		model.face_triangle_offsets[f] = static_cast<uint32_t>(model.triangle_vertex_indices.size() / 3);
 		// A face that cannot be tiled keeps an empty triangle range; validation
@@ -474,7 +476,7 @@ void TriangulateGeomModel(GeomModel &model) {
 	if (polygon_count == 0) {
 		return;
 	}
-	TriangulationScratch scratch;
+	thread_local TriangulationScratch scratch;
 	model.polygon_triangle_offsets.reserve(polygon_count + 1);
 	for (uint32_t p = 0; p < polygon_count; p++) {
 		model.polygon_triangle_offsets.push_back(static_cast<uint32_t>(model.triangle_indices.size() / 3));
