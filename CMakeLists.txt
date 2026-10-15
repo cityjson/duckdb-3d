@@ -27,7 +27,9 @@ set(EXTENSION_SOURCES
     src/functions/transforms.cpp
     src/functions/struct_metadata.cpp
     src/functions/casts.cpp
+    src/functions/bounds.cpp
     src/functions/crs.cpp
+    src/functions/faces.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
@@ -52,6 +54,8 @@ set(EXTENSION_SOURCES
     src/kernel/convex_hull.cpp
     src/kernel/geom_intersects.cpp
     src/kernel/solid_relations.cpp
+    src/kernel/faces.cpp
+    src/kernel/wkt_parser.cpp
     third_party/predicates/predicates.c)
 
 # PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain

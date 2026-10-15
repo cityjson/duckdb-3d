@@ -98,10 +98,10 @@ container. `test/data/postgis_oracle/README.md` documents every column.
 
 Three comparisons are deliberately indirect:
 
-- **Geometry-returning functions are never round-tripped.** PostGIS emits EWKB, whose SRID
-  flag this extension's ISO parser rejects. Transforms are compared through the transformed
-  bounding box and a re-measurement of volume/area/length; `ST_3DShortestLine` and
-  `ST_3DClosestPoint` through their length and distance-to-`b`.
+- **Geometry-returning functions are compared through what they measure.** Transforms
+  through the transformed bounding box and a re-measurement of volume/area/length;
+  `ST_3DShortestLine` and `ST_3DClosestPoint` through their length and distance-to-`b`. The
+  live comparison below compares `ST_3DGeometryN` and `ST_3DGeomFromText` byte for byte.
 - **WKT is compared numerically, not as a string.** `kernel/geom_serialize.cpp` formats
   ordinates with `%.9g` while PostGIS emits round-trip precision, and PostGIS writes no space
   after the comma. The test extracts the numbers from both and compares them pairwise, token
@@ -202,9 +202,6 @@ over the whole frozen 3DBAG corpus.
 
 ## Open work
 
-- **`ST_3DBounds` on `GEOM_3D`.** It is registered for `SOLID_3D` only, so the differential
-  oracle compares the full box on the `solid` rows and only `ST_3DZMin`/`ST_3DZMax` on the
-  `geom` rows. Extending the signature would let the whole box be oracled on every class.
 - **A hollow/multi-solid reference.** SFCGAL rejects the hollow cube as "not connected", so
   interior-shell subtraction has no differential oracle at all — only the kernel tests and
   the analytic 56/120 pins.

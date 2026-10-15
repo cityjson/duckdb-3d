@@ -171,6 +171,10 @@ opaque payload that only this extension interprets.
 | `SOLID_3D` | Closed polyhedral solids: solid → shell → face → ring topology, plus cached validation flags. | `D3DS` |
 | `GEOM_3D` | General 3D geometry: points, lines, polygons, their multi- forms, and polyhedral surfaces. | `D3DG` |
 
+A TIN is a polyhedral surface whose patches are triangles, and a Triangle is a polygon, so
+import reads them as those classes rather than adding two that no measure would treat
+differently.
+
 **Why an alias over `BLOB` rather than a new storage primitive?** DuckDB's named-type
 registration is well-supported and needs no new physical type; a versioned opaque payload
 gives full control over topology preservation and forward compatibility; and the value stays
@@ -635,6 +639,28 @@ has perimeter 0 and an open box has the rim of its opening. Edges are matched by
 coordinates, as the surface stores no shared topology. PostGIS instead sums every ring of
 every patch, which counts each interior edge twice and says nothing about the surface's
 shape; that sum is `ST_3DPerimeter` over the patches, should anyone want it.
+
+### 8.8 Face measures
+
+The per-face functions answer roof and façade questions — orientation, pitch, area by
+facing — that otherwise need a round trip through another tool. Each face's measures are
+chosen to add up to the whole: a solid face's area is half the length of its rings' summed
+Newell vectors, so the faces sum to `ST_3DSurfaceArea`; a `GEOM_3D` face's area is the sum
+of its triangles, so the faces sum to `ST_3DArea`.
+
+The normal is the face's Newell vector, normalised, with each ring's vertices taken
+relative to its first. On georeferenced coordinates the absolute values are in the hundreds
+of thousands, and the cross terms of a horizontal roof would otherwise leave horizontal
+components of rounding size; relative to the first vertex they cancel exactly, so a flat
+roof has slope 0 and no azimuth rather than an arbitrary one. A face the triangulation
+could not tile has no normal and no area: it is reported by validation (§8.1), and its
+measures are `NULL` rather than a number nothing has checked.
+
+Slope is the angle between the normal and the vertical, folded to 0–90° so that it does not
+depend on which way the face is wound. Azimuth is the compass direction of the normal's
+horizontal part, clockwise from +Y, which is grid north in a projected CRS: `atan2(nx, ny)`
+in [0, 360). Both are defined by the normal alone, so they are verified by construction
+against the Newell vector rather than against another engine, which has no such functions.
 
 ---
 

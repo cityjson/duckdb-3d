@@ -1,0 +1,60 @@
+# name: test/sql/bounds.test
+# description: ST_3DBounds, ST_3DXMin..ST_3DZMax on both types, and the ST_3DExtent aggregate
+# group: [sql]
+
+require three_d
+
+# The box of a line from (1, -2, 3) to (4, 5, -6), and of a prism over [0,2]^2 of
+# height 3, follow from their coordinates.
+statement ok
+CREATE TABLE b AS SELECT
+    ST_Geom3DFromWKB('LINESTRING Z (1 -2 3, 4 5 -6)'::GEOMETRY) AS g,
+    ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0) AS s;
+
+query II
+SELECT ST_3DBounds(g), ST_3DBounds(s) FROM b;
+----
+{'min_x': 1.0, 'min_y': -2.0, 'min_z': -6.0, 'max_x': 4.0, 'max_y': 5.0, 'max_z': 3.0}	{'min_x': 0.0, 'min_y': 0.0, 'min_z': 0.0, 'max_x': 2.0, 'max_y': 2.0, 'max_z': 3.0}
+
+query IIIIII
+SELECT ST_3DXMin(g), ST_3DXMax(g), ST_3DYMin(g), ST_3DYMax(g), ST_3DZMin(g), ST_3DZMax(g) FROM b;
+----
+1.0	4.0	-2.0	5.0	-6.0	3.0
+
+query IIIIII
+SELECT ST_3DXMin(s), ST_3DXMax(s), ST_3DYMin(s), ST_3DYMax(s), ST_3DZMin(s), ST_3DZMax(s) FROM b;
+----
+0.0	2.0	0.0	2.0	0.0	3.0
+
+# ST_3DExtent is the box of every box, NULLs skipped, NULL when there are none.
+query I
+SELECT ST_3DExtent(g) FROM (
+    SELECT ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY) AS g
+    UNION ALL SELECT ST_Geom3DFromWKB('LINESTRING Z (-1 5 0, 0 0 9)'::GEOMETRY)
+    UNION ALL SELECT NULL);
+----
+{'min_x': -1.0, 'min_y': 0.0, 'min_z': 0.0, 'max_x': 1.0, 'max_y': 5.0, 'max_z': 9.0}
+
+query I
+SELECT ST_3DExtent(s) FROM (SELECT s FROM b UNION ALL SELECT ST_3DTranslate(s, 10, 0, -1) FROM b);
+----
+{'min_x': 0.0, 'min_y': 0.0, 'min_z': -1.0, 'max_x': 12.0, 'max_y': 2.0, 'max_z': 3.0}
+
+query I
+SELECT ST_3DExtent(g) FROM b WHERE false;
+----
+NULL
+
+# Grouped, and over enough rows that the states are combined.
+query III
+SELECT k, ST_3DExtent(ST_3DTranslate(g, i, 0, 0)).min_x, ST_3DExtent(ST_3DTranslate(g, i, 0, 0)).max_x
+FROM b, (SELECT i, i % 2 AS k FROM range(100000) t(i)) GROUP BY k ORDER BY k;
+----
+0	1.0	100002.0
+1	2.0	100003.0
+
+# Boxes in different CRSs are not merged.
+statement error
+SELECT ST_3DExtent(g) FROM (SELECT ST_3DSetCRS(g, 'EPSG:28992') AS g FROM b UNION ALL SELECT g FROM b);
+----
+different CRSs

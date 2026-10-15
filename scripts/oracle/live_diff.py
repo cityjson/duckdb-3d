@@ -999,7 +999,119 @@ def check_measures(eng: Engines, items: list[Item], args) -> list[Outcome]:
     return [o_sfcgal, o_newell, o_perim, o_bound, o_ngeom, o_cent]
 
 
-CHECKS = {"distance": check_distance, "solids": check_solids, "measures": check_measures}
+def _tally(o: Outcome, key, ours, theirs, equal) -> None:
+    o.compared += 1
+    if equal:
+        o.agree += 1
+    else:
+        o.disagreements.append((key, ours, theirs))
+
+
+def oracle_slope_azimuth(face):
+    """(slope, azimuth) in degrees of a face from its Newell normal, computed
+    here; azimuth None for a horizontal face, both None without area."""
+    n = [0.0, 0.0, 0.0]
+    for ring in face:
+        v = _newell(ring)
+        n = [n[k] + v[k] for k in range(3)]
+    length = _length(n)
+    if length == 0.0:
+        return None, None
+    n = [c / length for c in n]
+    slope = math.degrees(math.atan2(math.hypot(n[0], n[1]), abs(n[2])))
+    if n[0] == 0.0 and n[1] == 0.0:
+        return slope, None
+    return slope, math.degrees(math.atan2(n[0], n[1])) % 360.0
+
+
+def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
+    """Bounds, ST_3DExtent, parts, faces, shells and WKT against PostGIS on the
+    same WKB; per-face slope and azimuth against a Newell normal computed here."""
+    rows = [(it.key, it.dataset, it.wkb,
+             json.dumps({"type": "Solid", "shells": [it.shells]}) if it.role == "solid" else None) for it in items]
+    eng.load("element_items", [("k", "VARCHAR", "text"), ("d", "VARCHAR", "text"), ("w", "BLOB", "bytea"),
+                               ("s", "VARCHAR", "text")], rows)
+    theirs = eng.pg_rows("""
+        SELECT k, ST_XMin(g), ST_YMin(g), ST_ZMin(g), ST_XMax(g), ST_YMax(g), ST_ZMax(g),
+               ARRAY(SELECT ST_AsBinary(ST_GeometryN(g, i), 'NDR') FROM generate_series(1, ST_NumGeometries(g)) i),
+               ST_AsText(g, 20), ST_AsEWKT(ST_SetSRID(g, 7415), 20), ST_AsEWKB(ST_SetSRID(g, 28992), 'NDR'),
+               ST_AsBinary(ST_GeomFromText(ST_AsText(g, 20)), 'NDR'),
+               ARRAY(SELECT ST_AsBinary(ST_RemoveRepeatedPoints(ST_GeometryN(g, i)), 'NDR')
+                     FROM generate_series(1, ST_NumGeometries(g)) i)
+        FROM (SELECT k, ST_GeomFromWKB(w) AS g FROM element_items) t""")
+    eng.load("element_text", [("k", "VARCHAR", "text"), ("wkt", "VARCHAR", "text"), ("ewkt", "VARCHAR", "text"),
+                              ("ewkb", "BLOB", "bytea"), ("wkt_wkb", "BLOB", "bytea")],
+             [(k, v[7], v[8], bytes(v[9]), bytes(v[10])) for k, v in theirs.items()])
+    ours = eng.duck_rows("""
+        SELECT i.k, ST_3DXMin(g), ST_3DYMin(g), ST_3DZMin(g), ST_3DXMax(g), ST_3DYMax(g), ST_3DZMax(g),
+               list_transform(range(1, ST_3DNumGeometries(g) + 1), lambda n: ST_3DAsBinary(ST_3DGeometryN(g, n))),
+               ST_3DGeomFromText(t.wkt)::BLOB = ST_Geom3DFromWKB(t.wkt_wkb)::BLOB,
+               ST_3DCRS(ST_3DGeomFromText(t.ewkt)), ST_3DSRID(ST_Geom3DFromWKB(t.ewkb)),
+               CASE WHEN s IS NOT NULL THEN list_transform(ST_3DFaces(ST_3DFromWKB(w, s)), lambda f: ST_3DAsBinary(f.polygon)) END,
+               CASE WHEN s IS NOT NULL THEN ST_3DNumSolids(ST_3DFromWKB(w, s)) END,
+               CASE WHEN s IS NOT NULL THEN ST_3DAsBinary(ST_3DExteriorShell(ST_3DFromWKB(w, s))) END,
+               ST_3DFaceSlopes(g), ST_3DFaceAzimuths(g)
+        FROM (SELECT k, w, s, TRY(ST_Geom3DFromWKB(w)) AS g FROM element_items) i JOIN element_text t ON i.k = t.k
+        WHERE g IS NOT NULL""")
+    by_key = {it.key: it for it in items}
+    o_box = Outcome("ST_3DXMin .. ST_3DZMax", oracle="PostGIS ST_XMin .. ST_ZMax")
+    o_ext = Outcome("ST_3DExtent", oracle="PostGIS ST_3DExtent")
+    o_parts = Outcome("ST_3DGeometryN(GEOM_3D)", oracle="PostGIS ST_AsBinary(ST_GeometryN), byte for byte")
+    o_wkt = Outcome("ST_3DGeomFromText", oracle="PostGIS ST_GeomFromText of the same text, as WKB")
+    o_srid = Outcome("CRS from EWKT and EWKB", oracle="PostGIS ST_AsEWKT / ST_AsEWKB of ST_SetSRID")
+    o_faces = Outcome("ST_3DFaces(SOLID_3D)",
+                      oracle="PostGIS ST_RemoveRepeatedPoints of each ST_GeometryN of the solid's surface, as WKB")
+    o_shell = Outcome("ST_3DExteriorShell", oracle="the PolyhedralSurface of those faces, for one-shell solids")
+    o_slope = Outcome("ST_3DFaceSlopes, ST_3DFaceAzimuths", oracle="independent: Newell normal per face")
+    for k, (x0, y0, z0, x1, y1, z1, parts, wkt_same, ewkt_crs, ewkb_srid, faces, nsolids, shell, slopes,
+            azimuths) in ours.items():
+        it = by_key[k]
+        p = theirs[k]
+        _tally(o_box, k, (x0, y0, z0, x1, y1, z1), tuple(p[:6]), (x0, y0, z0, x1, y1, z1) == tuple(p[:6]))
+        pg_parts = [bytes(b) for b in p[6]]
+        _tally(o_parts, k, len(parts), len(pg_parts), [bytes(b) for b in parts] == pg_parts)
+        _tally(o_wkt, k, wkt_same, True, wkt_same is True)
+        _tally(o_srid, k, (ewkt_crs, ewkb_srid), ("EPSG:7415", 28992), (ewkt_crs, ewkb_srid) == ("EPSG:7415", 28992))
+        if it.role == "solid":
+            # A solid's import drops a vertex repeated consecutively (DESIGN_DOC §2.1).
+            # PostGIS keeps four points in a ring however many repeat, so a ring
+            # with fewer than three distinct vertices is left out of the comparison.
+            pg_faces = [bytes(b) for b in p[11]]
+            short = {f for f, face in enumerate(it.faces) if any(len(set(ring)) < 3 for ring in face)}
+            if short:
+                why = "a ring with fewer than three distinct vertices"
+                o_faces.skipped[why] = o_faces.skipped.get(why, 0) + 1
+                o_shell.skipped[why] = o_shell.skipped.get(why, 0) + 1
+            else:
+                _tally(o_faces, k, len(faces), len(pg_faces), [bytes(b) for b in faces] == pg_faces)
+                if nsolids == 1 and len(it.shells) == 1:
+                    expected = struct.pack("<BII", 1, 1015, len(pg_faces)) + b"".join(pg_faces)
+                    _tally(o_shell, k, len(shell), len(expected), bytes(shell) == expected)
+        for f, face in enumerate(it.faces):
+            ref_slope, ref_az = oracle_slope_azimuth(face)
+            got_slope, got_az = slopes[f], azimuths[f]
+            same = ((ref_slope is None) == (got_slope is None) and (ref_az is None) == (got_az is None)
+                    and (ref_slope is None or abs(got_slope - ref_slope) <= 1e-9)
+                    and (ref_az is None or min(abs(got_az - ref_az), 360 - abs(got_az - ref_az)) <= 1e-9))
+            if ref_slope is not None and got_slope is not None:
+                o_slope.max_abs = max(o_slope.max_abs, abs(got_slope - ref_slope))
+            _tally(o_slope, f"{k}/{f}", (got_slope, got_az), (ref_slope, ref_az), same)
+    ext_ours = eng.duck_rows("""
+        SELECT d, e.min_x, e.min_y, e.min_z, e.max_x, e.max_y, e.max_z
+        FROM (SELECT d, ST_3DExtent(TRY(ST_Geom3DFromWKB(w))) AS e FROM element_items GROUP BY d)""")
+    ext_theirs = eng.pg_rows("""
+        SELECT d, ST_XMin(e), ST_YMin(e), ST_ZMin(e), ST_XMax(e), ST_YMax(e), ST_ZMax(e)
+        FROM (SELECT d, ST_3DExtent(ST_GeomFromWKB(w)) AS e FROM element_items GROUP BY d) t""")
+    for d, box in ext_ours.items():
+        _tally(o_ext, d, box, ext_theirs[d], tuple(box) == tuple(ext_theirs[d]))
+    o_ext.note = "per dataset; rows ST_Geom3DFromWKB refuses are left out of ours and kept in PostGIS's"
+    o_slope.note = (f"slope to 1e-9 degrees, azimuth to 1e-9 degrees around the circle; largest slope "
+                    f"difference {o_slope.max_abs:.3g}")
+    return [o_box, o_ext, o_parts, o_wkt, o_srid, o_faces, o_shell, o_slope]
+
+
+CHECKS = {"distance": check_distance, "solids": check_solids, "measures": check_measures,
+          "elements": check_elements}
 
 
 # --------------------------------------------------------------------------

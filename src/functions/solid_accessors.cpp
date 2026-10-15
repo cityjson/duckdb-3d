@@ -47,47 +47,6 @@ static void ST_3DNumFacesFun(DataChunk &args, ExpressionState &state, Vector &re
 }
 
 // ──────────────────────────────────────────────────────────────
-// Introspection: ST_3DBounds
-// ──────────────────────────────────────────────────────────────
-static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input = args.data[0];
-	auto count = args.size();
-
-	auto &entries = StructVector::GetEntries(result);
-	auto &min_x_vec = *entries[0];
-	auto &min_y_vec = *entries[1];
-	auto &min_z_vec = *entries[2];
-	auto &max_x_vec = *entries[3];
-	auto &max_y_vec = *entries[4];
-	auto &max_z_vec = *entries[5];
-
-	UnifiedVectorFormat input_data;
-	input.ToUnifiedFormat(count, input_data);
-
-	auto input_strings = UnifiedVectorFormat::GetData<string_t>(input_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input_data.sel->get_index(i);
-		if (!input_data.validity.RowIsValid(idx)) {
-			result_validity.SetInvalid(i);
-			continue;
-		}
-
-		auto &blob = input_strings[idx];
-		// Bounds live in the front header; no need to materialise the body.
-		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-
-		FlatVector::GetData<double>(min_x_vec)[i] = info.bbox.min_x;
-		FlatVector::GetData<double>(min_y_vec)[i] = info.bbox.min_y;
-		FlatVector::GetData<double>(min_z_vec)[i] = info.bbox.min_z;
-		FlatVector::GetData<double>(max_x_vec)[i] = info.bbox.max_x;
-		FlatVector::GetData<double>(max_y_vec)[i] = info.bbox.max_y;
-		FlatVector::GetData<double>(max_z_vec)[i] = info.bbox.max_z;
-	}
-}
-
-// ──────────────────────────────────────────────────────────────
 // Validation: ST_3DIsClosed, ST_3DIsManifold, ST_3DIsOriented
 // ──────────────────────────────────────────────────────────────
 // The validation summary is cached in the payload (trailing block), so these
@@ -288,37 +247,6 @@ static void ST_3DHasZFun(DataChunk &args, ExpressionState &state, Vector &result
 	});
 }
 
-static void ST_3DZMinFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
-		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
-		auto size = blob.GetSize();
-		switch (GetPayloadKind(data, size)) {
-		case PayloadKind::Solid:
-			// bbox is in the front header — no body parse needed.
-			return ReadSolidPayloadHeader(data, size).bbox.min_z;
-		case PayloadKind::Geom:
-			return ReadGeomPayloadHeader(data, size).bbox.min_z;
-		default:
-			throw InvalidInputException("ST_3DZMin: argument is not a SOLID_3D or GEOM_3D value");
-		}
-	});
-}
-
-static void ST_3DZMaxFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t blob) {
-		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
-		auto size = blob.GetSize();
-		switch (GetPayloadKind(data, size)) {
-		case PayloadKind::Solid:
-			return ReadSolidPayloadHeader(data, size).bbox.max_z;
-		case PayloadKind::Geom:
-			return ReadGeomPayloadHeader(data, size).bbox.max_z;
-		default:
-			throw InvalidInputException("ST_3DZMax: argument is not a SOLID_3D or GEOM_3D value");
-		}
-	});
-}
-
 // ST_3DFootprintArea accepts either a SOLID_3D (footprint of the solid) or a GEOM_3D
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
 static void ST_3DFootprintAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -373,29 +301,6 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	     "ST_3DNumFaces(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
 	     "3.0))",
 	     {"introspection"}});
-
-	// Introspection: bounds. Struct children name LogicalTypeId, not the
-	// LogicalType:: constants: pair's forwarding constructor would bind a
-	// reference to the constexpr member, which C++17 emits as an inline variable
-	// here and DuckDB (C++11) defines out of line, and the static link then sees
-	// two definitions.
-	child_list_t<LogicalType> bbox_children;
-	bbox_children.push_back({"min_x", LogicalTypeId::DOUBLE});
-	bbox_children.push_back({"min_y", LogicalTypeId::DOUBLE});
-	bbox_children.push_back({"min_z", LogicalTypeId::DOUBLE});
-	bbox_children.push_back({"max_x", LogicalTypeId::DOUBLE});
-	bbox_children.push_back({"max_y", LogicalTypeId::DOUBLE});
-	bbox_children.push_back({"max_z", LogicalTypeId::DOUBLE});
-	auto bbox_type = LogicalType::STRUCT(std::move(bbox_children));
-	ScalarFunctionSet bounds_set("st_3dbounds");
-	bounds_set.AddFunction(ScalarFunction({solid_3d_type}, bbox_type, ST_3DBoundsFun));
-	RegisterDocumented(loader, std::move(bounds_set),
-	                   {{"solid"},
-	                    "Returns the 3D bounding box of a SOLID_3D value as STRUCT(min_x, min_y, min_z, max_x, max_y, "
-	                    "max_z), read from the cached box.",
-	                    "ST_3DBounds(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
-	                    "0))'::GEOMETRY), 3.0))",
-	                    {"introspection"}});
 
 	// Validation functions
 	ScalarFunctionSet is_valid_set("st_3disvalid");
@@ -541,29 +446,6 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	                    "PostGIS compatibility; the payload is not read.",
 	                    "ST_3DHasZ(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
 	                    {"introspection"}});
-
-	// ST_3DZMin / ST_3DZMax: class-generic bbox accessors, accept SOLID_3D and
-	// GEOM_3D. Two overloads are needed because DuckDB treats named type aliases
-	// as distinct for function resolution.
-	ScalarFunctionSet zmin_set("st_3dzmin");
-	zmin_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
-	zmin_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMinFun));
-	RegisterDocumented(
-	    loader, std::move(zmin_set),
-	    {{"geom"},
-	     "Returns the minimum Z coordinate of a SOLID_3D or GEOM_3D value, read from its cached bounding box.",
-	     "ST_3DZMin(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
-	     {"introspection"}});
-
-	ScalarFunctionSet zmax_set("st_3dzmax");
-	zmax_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
-	zmax_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::DOUBLE, ST_3DZMaxFun));
-	RegisterDocumented(
-	    loader, std::move(zmax_set),
-	    {{"geom"},
-	     "Returns the maximum Z coordinate of a SOLID_3D or GEOM_3D value, read from its cached bounding box.",
-	     "ST_3DZMax(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))",
-	     {"introspection"}});
 }
 
 } // namespace duckdb

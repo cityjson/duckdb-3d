@@ -13,6 +13,7 @@
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_serialize.hpp"
 #include "kernel/geom_wkb_parser.hpp"
+#include "kernel/wkt_parser.hpp"
 #include "kernel/payload.hpp"
 #include "kernel/solid_model.hpp"
 
@@ -51,6 +52,17 @@ static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result, co
 
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	Geom3DFromWKBVector(args.data[0], args.size(), result, std::string());
+}
+
+// ST_3DGeomFromText(wkt VARCHAR) → GEOM_3D: the text becomes the WKB PostGIS
+// would write for it, which then takes ST_Geom3DFromWKB's path.
+static void ST_3DGeomFromTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t wkt) {
+		auto wkb = duckdb_3d::WktToWkb(wkt.GetData(), wkt.GetSize());
+		auto payload = SerializeGeomPayload(ParseGeomWKB(wkb.data(), wkb.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
 }
 
 // ST_Geom3DFromWKB(geom GEOMETRY) → GEOM_3D. A CityParquet footprint column
@@ -399,8 +411,19 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	    ScalarFunction("st_geom3dfromwkb", {LogicalType::ANY}, geom_3d_type, ST_Geom3DFromWKBFun, BindGeom3DFromWkbArg),
 	    {{"wkb"},
 	     "Builds a GEOM_3D from WKB or GEOMETRY: Point, LineString, Polygon, their Multi forms, or PolyhedralSurface, "
-	     "all with Z. Raises on anything else, GeometryCollection included.",
+	     "all with Z; a TIN or Triangle is read as the PolyhedralSurface or Polygon it is. Raises on anything else, "
+	     "GeometryCollection included.",
 	     "ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY)",
+	     {"import"}});
+
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dgeomfromtext", {LogicalType::VARCHAR}, geom_3d_type, ST_3DGeomFromTextFun),
+	    {{"wkt"},
+	     "Builds a GEOM_3D from 3D WKT: Point, LineString, Polygon, their Multi forms, PolyhedralSurface, and TIN and "
+	     "Triangle, read as the PolyhedralSurface and Polygon they are. An EWKT 'SRID=n;' prefix becomes the CRS "
+	     "'EPSG:n'. Raises on 2D or M coordinates and on any other class.",
+	     "ST_3DGeomFromText('POLYHEDRALSURFACE Z (((0 0 0, 0 1 0, 1 0 0, 0 0 0)), ((0 0 0, 0 0 1, 0 1 0, 0 0 0)), "
+	     "((0 0 0, 1 0 0, 0 0 1, 0 0 0)), ((1 0 0, 0 1 0, 0 0 1, 1 0 0)))')",
 	     {"import"}});
 
 	RegisterDocumented(

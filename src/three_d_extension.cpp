@@ -29,6 +29,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterDistanceFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterTransformFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterCrsFunctions(loader, solid_3d_type, geom_3d_type);
+	RegisterBoundsFunctions(loader, solid_3d_type, geom_3d_type);
+	RegisterFaceFunctions(loader, solid_3d_type, geom_3d_type);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

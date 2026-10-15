@@ -14,7 +14,7 @@ WHERE function_name LIKE 'st\_3d%' ESCAPE '\'
 query I
 SELECT count(DISTINCT function_name) FROM three_d_functions;
 ----
-58
+74
 
 # Every overload carries a description, an example, and a category.
 query I
@@ -26,7 +26,7 @@ WHERE description IS NULL OR len(examples) = 0 OR len(categories) = 0;
 # Every parameter has a real name, never the col0/col1 placeholder.
 query I
 SELECT count(*) FROM three_d_functions
-WHERE len(list_filter(parameters, p -> regexp_full_match(p, 'col[0-9]+'))) > 0;
+WHERE len(list_filter(parameters, lambda p: regexp_full_match(p, 'col[0-9]+'))) > 0;
 ----
 0
 

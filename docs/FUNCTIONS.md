@@ -21,11 +21,13 @@ please open an issue.
 - [Import / construction](#import--construction)
 - [Export / serialization](#export--serialization)
 - [Introspection / accessors](#introspection--accessors)
+- [Faces, shells and parts](#faces-shells-and-parts)
 - [Validation](#validation)
 - [Measurement](#measurement)
 - [Distance / relationships](#distance--relationships)
 - [CRS](#crs)
 - [Transform / construct](#transform--construct)
+- [SQL/MM profile](#sqlmm-profile)
 - [Function index](#function-index)
 - [Appendix: test fixtures](#appendix-test-fixtures)
 
@@ -198,6 +200,7 @@ logical type needs no `ST_AsWKB` in between — see
 | `ST_3DFromWKB` | `(wkb BLOB \| GEOMETRY, geometry_properties VARCHAR \| JSON \| STRUCT)` | `SOLID_3D` |
 | `ST_3DTryFromWKB` | same two overloads | `SOLID_3D` or `NULL` |
 | `ST_Geom3DFromWKB` | `(wkb BLOB \| GEOMETRY)` | `GEOM_3D` |
+| `ST_3DGeomFromText` | `(wkt VARCHAR)` | `GEOM_3D` |
 
 ### WKB or GEOMETRY
 
@@ -269,7 +272,8 @@ Without the sidecar a `PolyhedralSurface Z` imports as one solid with **one** sh
 
 ### `ST_Geom3DFromWKB`
 
-Builds a `GEOM_3D` from ISO WKB, PostGIS EWKB or `GEOMETRY` — the entry point for the
+Builds a `GEOM_3D` from ISO WKB, PostGIS EWKB or `GEOMETRY` (a TIN or Triangle is read as a
+PolyhedralSurface or Polygon) — the entry point for the
 distance, serialization, and general-accessor families. An EWKB SRID, or the CRS of a
 `GEOMETRY` argument's type, becomes the value's [CRS](#crs). It is named `ST_Geom3DFromWKB` rather than `ST_GeomFromWKB` to
 avoid clashing with DuckDB's built-in. **There is no `TRY` variant**; wrap it in `TRY(...)`.
@@ -289,6 +293,34 @@ SELECT ST_3DGeometryType(ST_Geom3DFromWKB(geometry)) AS gtype FROM ex;
 │ ST_PolyhedralSurface │
 └──────────────────────┘
 ```
+
+### `ST_3DGeomFromText`
+
+Builds a `GEOM_3D` from WKT or PostGIS EWKT, mainly for the classes DuckDB's own
+`ST_GeomFromText` cannot hold: `POLYHEDRALSURFACE Z`, `TIN Z` and `TRIANGLE Z`. The other
+classes `GEOM_3D` carries are read too: `POINT`, `LINESTRING`, `POLYGON` and their `MULTI`
+forms. Coordinates need a Z: the `Z` tag, or three untagged ordinates. A 2D coordinate,
+an `M` ordinate, or a class `GEOM_3D` does not hold is refused, with the offset in the text
+where reading stopped. An `SRID=n;` prefix becomes the value's [CRS](#crs) (`EPSG:n`).
+
+The text is turned into the WKB PostGIS would write for it and then read as
+[`ST_Geom3DFromWKB`](#st_geom3dfromwkb) reads WKB, so the two agree on every value.
+
+```sql
+SELECT ST_3DGeometryType(t) AS type, ST_3DNumGeometries(t) AS patches, ST_3DArea(t) AS area, ST_3DCRS(t) AS crs
+FROM (SELECT ST_3DGeomFromText('SRID=28992;TIN Z (((0 0 0, 2 0 0, 0 2 1, 0 0 0)), ((2 0 0, 2 2 1, 0 2 1, 2 0 0)))') AS t);
+```
+```
+┌──────────────────────┬─────────┬──────────────────┬────────────┐
+│         type         │ patches │       area       │    crs     │
+│       varchar        │  int32  │      double      │  varchar   │
+├──────────────────────┼─────────┼──────────────────┼────────────┤
+│ ST_PolyhedralSurface │       2 │ 4.47213595499958 │ EPSG:28992 │
+└──────────────────────┴─────────┴──────────────────┴────────────┘
+```
+
+A TIN is read as a PolyhedralSurface of triangles, and a Triangle as a Polygon: `GEOM_3D`
+has no TIN or Triangle class of its own, and every measure treats them as those classes.
 
 ## Export / serialization
 
@@ -325,11 +357,12 @@ SELECT ST_3DAsText(ST_3DCentroid(g)) AS centroid FROM ex;
 
 | Function | Signature | Returns | Accepts |
 | --- | --- | --- | --- |
-| `ST_3DBounds` | `(SOLID_3D)` | `STRUCT` (6 fields) | `SOLID_3D` |
+| `ST_3DBounds` | `(SOLID_3D \| GEOM_3D)` | `STRUCT` (6 fields) | both |
+| `ST_3DExtent` | aggregate `(SOLID_3D \| GEOM_3D)` | `STRUCT` (6 fields) | both |
 | `ST_3DNumSolids` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
 | `ST_3DNumShells` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
 | `ST_3DNumFaces` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
-| `ST_3DZMin` / `ST_3DZMax` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | both |
+| `ST_3DXMin` / `ST_3DXMax` / `ST_3DYMin` / `ST_3DYMax` / `ST_3DZMin` / `ST_3DZMax` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE` | both |
 | `ST_NDims` | `(SOLID_3D \| GEOM_3D)` | `INTEGER` | both — always `3` |
 | `ST_3DHasZ` | `(SOLID_3D \| GEOM_3D)` | `BOOLEAN` | both — always `true` |
 | `ST_CoordDim` | `(GEOM_3D)` | `INTEGER` | `GEOM_3D` — always `3` |
@@ -389,15 +422,153 @@ SELECT ST_3DBounds(solid) AS bounds FROM ex;
 ```
 
 Returns `STRUCT(min_x, min_y, min_z, max_x, max_y, max_z DOUBLE)` from the cached bounding
-box. Building height is the Z extent:
+box, for either type; `ST_3DXMin` … `ST_3DZMax` read one field of it. Building height is the
+Z extent:
 
 ```sql
 SELECT ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m FROM ex;   -- 10.15
 ```
 
+`ST_3DExtent` is the aggregate: the box of every box in a group, `NULL` values skipped and
+`NULL` for a group with none. Values in different CRSs are refused, as the functions of two
+values refuse them (see [CRS](#crs)).
+
+```sql
+SELECT ST_3DExtent(solid) AS extent FROM parts;
+```
+```
+{'min_x': 84501.553625, 'min_y': 445805.024, 'min_z': -3.7469973754882844,
+ 'max_x': 85675.092625, 'max_y': 446983.477, 'max_z': 95.04200262451172}
+```
+
 > `ST_NDims` and `ST_3DHasZ` are constants that never read the payload — they are API-shape
 > compatibility with PostGIS, not measurements. `ST_3DX`/`Y`/`Z` raise on anything that is
 > not a Point.
+
+---
+
+## Faces, shells and parts
+
+| Function | Signature | Returns |
+| --- | --- | --- |
+| `ST_3DFaces` | `(SOLID_3D)` | `STRUCT(face INTEGER, solid INTEGER, shell INTEGER, polygon GEOM_3D)[]` |
+| `ST_3DFaceN` | `(SOLID_3D, n BIGINT)` | `GEOM_3D` (Polygon) |
+| `ST_3DFaceAreas` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE[]` |
+| `ST_3DFaceNormals` | `(SOLID_3D \| GEOM_3D)` | `STRUCT(x, y, z DOUBLE)[]` |
+| `ST_3DFaceSlopes` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE[]` (degrees) |
+| `ST_3DFaceAzimuths` | `(SOLID_3D \| GEOM_3D)` | `DOUBLE[]` (degrees) |
+| `ST_3DExteriorShell` | `(SOLID_3D)` | `GEOM_3D` (PolyhedralSurface) |
+| `ST_3DNumInteriorShells` | `(SOLID_3D)` | `INTEGER` |
+| `ST_3DInteriorShellN` | `(SOLID_3D, n BIGINT)` | `GEOM_3D` (PolyhedralSurface) |
+| `ST_3DGeometryN` | `(SOLID_3D \| GEOM_3D, n BIGINT)` | same type as input |
+
+A solid's faces are numbered from 1 in storage order, the order `ST_3DAsWKB` writes them. A
+`GEOM_3D`'s faces are its polygons: the patches of a PolyhedralSurface, the members of a
+MultiPolygon, a Polygon itself; points and lines have none, and their lists are empty. Every
+index is 1-based, and an index out of range gives `NULL`, as PostGIS's `ST_GeometryN` does.
+Every geometry these return carries its input's CRS.
+
+- **`ST_3DFaces`** lists each face with its solid and its shell within that solid (1 is the
+  exterior, 2 onward the cavities), and the face as a `Polygon`. `UNNEST` it for one row per
+  face. A face the triangulation cannot tile (`ST_3DValidationReport` counts it degenerate) has
+  a `NULL` polygon, since a `GEOM_3D` cannot hold it; `ST_3DFaceN` gives `NULL` for it too.
+- **`ST_3DFaceAreas`** gives each face's area, holes left out. They sum to `ST_3DSurfaceArea`
+  for a solid and to `ST_3DArea` for a `GEOM_3D`. A face that cannot be tiled has a `NULL`
+  area.
+- **`ST_3DFaceNormals`** gives each face's unit normal, along its Newell vector, so it follows
+  the right-hand rule around the exterior ring: out of a valid solid, and into a cavity, which
+  is out of the material. A face without area has a `NULL` normal.
+- **`ST_3DFaceSlopes`** gives each face's tilt from horizontal, `atan2(√(nx² + ny²), |nz|)` in
+  degrees: 0 for a horizontal face, 90 for a vertical one, whichever way it faces.
+- **`ST_3DFaceAzimuths`** gives the compass direction a face's normal leans toward,
+  `atan2(nx, ny)` in degrees clockwise from +Y (grid north in a projected CRS) in `[0, 360)`.
+  It depends on the winding: a roof face of a valid solid faces the way its outward normal
+  leans. A horizontal face leans nowhere and gives `NULL`; its normal has exactly zero X and Y
+  when all its vertices share one Z, at any coordinate magnitude, because the Newell vector is
+  taken relative to the ring's first vertex.
+
+```sql
+SELECT unnest(range(1, len(a) + 1)) AS face, ROUND(unnest(a), 2) AS area,
+       ROUND(unnest(s), 1) AS slope, ROUND(unnest(z), 1) AS azimuth
+FROM (SELECT ST_3DFaceAreas(solid) AS a, ST_3DFaceSlopes(solid) AS s, ST_3DFaceAzimuths(solid) AS z FROM ex);
+```
+```
+┌───────┬────────┬────────┬─────────┐
+│ face  │  area  │ slope  │ azimuth │
+├───────┼────────┼────────┼─────────┤
+│     1 │  87.29 │    0.0 │    NULL │
+│     2 │  51.14 │   90.0 │   299.4 │
+│     3 │  47.19 │   90.0 │   119.6 │
+│     4 │  33.38 │   90.0 │   298.4 │
+│     5 │   96.0 │   90.0 │    29.2 │
+│     6 │ 109.69 │   90.0 │   209.7 │
+│     7 │   1.02 │   90.0 │   197.4 │
+│     8 │  38.85 │   90.0 │   119.9 │
+│     9 │  15.68 │   90.0 │    29.4 │
+│    10 │  87.29 │    0.5 │   310.3 │
+└───────┴────────┴────────┴─────────┘
+```
+
+The floor is exactly horizontal; the roof leans 0.5° toward the north-west. Over the whole
+tile, the roof area by the direction it faces, upward faces between 10° and 70° only:
+
+```sql
+SELECT CASE WHEN az < 45 OR az >= 315 THEN 'N' WHEN az < 135 THEN 'E' WHEN az < 225 THEN 'S' ELSE 'W' END AS facing,
+       ROUND(sum(area)) AS roof_m2
+FROM (SELECT unnest(ST_3DFaceAreas(solid)) AS area, unnest(ST_3DFaceSlopes(solid)) AS slope,
+             unnest(ST_3DFaceAzimuths(solid)) AS az,
+             unnest(list_transform(ST_3DFaceNormals(solid), lambda n: n.z)) AS nz
+      FROM parts)
+WHERE nz > 0 AND slope BETWEEN 10 AND 70
+GROUP BY facing ORDER BY facing;
+```
+```
+┌─────────┬─────────┐
+│ facing  │ roof_m2 │
+├─────────┼─────────┤
+│ E       │ 21785.0 │
+│ N       │ 24316.0 │
+│ S       │ 33747.0 │
+│ W       │ 25814.0 │
+└─────────┴─────────┘
+```
+
+```sql
+SELECT f.face, f.shell, ST_3DGeometryType(f.polygon) AS type, ROUND(ST_3DArea(f.polygon), 2) AS area
+FROM (SELECT unnest(ST_3DFaces(solid)) AS f FROM ex) LIMIT 3;
+```
+```
+┌───────┬───────┬────────────┬────────┐
+│ face  │ shell │    type    │  area  │
+├───────┼───────┼────────────┼────────┤
+│     1 │     1 │ ST_Polygon │  87.29 │
+│     2 │     1 │ ST_Polygon │  51.14 │
+│     3 │     1 │ ST_Polygon │  47.19 │
+└───────┴───────┴────────────┴────────┘
+```
+
+**Shells and parts.** `ST_3DExteriorShell` and `ST_3DInteriorShellN` return a shell as a
+`PolyhedralSurface`, one patch per face, wound as in the solid, so `ST_MakeSolid` of the
+exterior shell is the solid without its cavities. `ST_3DNumInteriorShells` counts the
+cavities, from the header. All three need a `SOLID_3D` holding one solid and give `NULL` for a
+collection of solids, as PostGIS's `ST_ExteriorRing` and `ST_NumInteriorRings` do for a
+MultiPolygon; `ST_3DGeometryN` picks one solid first. `ST_3DGeometryN` of a `SOLID_3D` is its
+n-th solid, triangulated and validated on its own; of a `GEOM_3D` it is the n-th member of a
+Multi geometry or patch of a PolyhedralSurface, and the value itself for `n = 1` of a single
+geometry.
+
+```sql
+SELECT ST_3DGeometryType(ST_3DExteriorShell(solid)) AS shell, ST_3DNumInteriorShells(solid) AS cavities,
+       ST_3DAsText(ST_3DGeometryN(g, 1)) = ST_3DAsText(ST_3DFaceN(solid, 1)) AS same_face
+FROM ex;
+```
+```
+┌──────────────────────┬──────────┬───────────┐
+│        shell         │ cavities │ same_face │
+├──────────────────────┼──────────┼───────────┤
+│ ST_PolyhedralSurface │        0 │ true      │
+└──────────────────────┴──────────┴───────────┘
+```
 
 ---
 
@@ -1010,17 +1181,47 @@ FROM ex;
 - **`ST_Force3D`** — currently an identity round-trip, since `GEOM_3D` already stores XYZ.
   Reserved for future 2D inputs.
 
+## SQL/MM profile
+
+The function names follow SQL/MM Part 3 and PostGIS's `ST_3D*` family. What this extension
+covers, and where it departs from either, is listed here so a query ported from PostGIS
+does not change meaning silently.
+
+**Covered.** Import from WKB, EWKB, `GEOMETRY` and WKT/EWKT; export as WKB, WKT and
+GeoJSON; the 3D accessors (type, dimension, coordinates, bounds, element counts, the
+`N`-th element, faces and shells); 3D length, area, perimeter, volume, centroid; 3D
+distance and its predicates; validity of solids; affine transforms and reprojection; a
+stored CRS.
+
+**Not covered.** The boolean operations (`ST_3DUnion`, `ST_3DIntersection`,
+`ST_3DDifference`) and the other names under [Not implemented](#function-index).
+`ST_3DFromText` and `ST_3DSetSRID` are not offered: a WKT solid has no standard spelling,
+and `ST_3DSetCRS` takes an `EPSG:n` code or any other CRS string where an SRID takes only
+a number.
+
+**Departures.**
+
+| Topic | This extension | PostGIS |
+| --- | --- | --- |
+| `ST_3DPerimeter` of a surface | Length of the boundary: edges used by one face only, so a closed shell gives 0 (SQL/MM) | Sum of every ring |
+| TIN, Triangle | Read as PolyhedralSurface, Polygon; written back as those | Kept as their own classes |
+| Slope, azimuth | `ST_3DFaceSlopes` and `ST_3DFaceAzimuths`, in degrees; azimuth clockwise from +Y, in [0, 360) | No per-face functions |
+| Shell accessors on a multi-solid | `ST_3DExteriorShell`, `ST_3DNumInteriorShells`, `ST_3DInteriorShellN` give `NULL` | No shell functions (PostGIS 3.4) |
+| Mixed CRSs | Binary functions and `ST_3DExtent` raise an error | Binary functions raise an error on mixed SRIDs |
+
 ---
 
 ## Function index
 
-58 public functions.
+74 public functions.
 
 | Category | Functions |
 | --- | --- |
-| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB` |
+| **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_3DGeomFromText` |
 | **Export** | `ST_3DAsWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
-| **Introspection** | `ST_3DBounds`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_3DZMin`, `ST_3DZMax`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
+| **Introspection** | `ST_3DBounds`, `ST_3DExtent` (aggregate), `ST_3DXMin`, `ST_3DXMax`, `ST_3DYMin`, `ST_3DYMax`, `ST_3DZMin`, `ST_3DZMax`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
+| **Faces** | `ST_3DFaces`, `ST_3DFaceN`, `ST_3DFaceAreas`, `ST_3DFaceNormals`, `ST_3DFaceSlopes`, `ST_3DFaceAzimuths` |
+| **Shells and parts** | `ST_3DExteriorShell`, `ST_3DNumInteriorShells`, `ST_3DInteriorShellN`, `ST_3DGeometryN` |
 | **Validation** | `ST_3DIsValid`, `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DDisjoint`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
@@ -1029,7 +1230,7 @@ FROM ex;
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
 registered: `ST_3DUnion` /
-`ST_3DIntersection` / `ST_3DDifference`, `ST_3DLongestLine`, `ST_3DExtent`, `ST_Affine`,
+`ST_3DIntersection` / `ST_3DDifference`, `ST_3DLongestLine`, `ST_3DFromText`, `ST_Affine`,
 `ST_SRID` / `ST_SetSRID` (see `ST_3DSRID` / `ST_3DSetCRS`), `ST_AsGML` / `ST_AsKML` / `ST_AsX3D`, `ST_HasM` / `ST_M`,
 `ST_Boundary`, `ST_PointOnSurface`, `ST_Tesselate`, `ST_StraightSkeleton`,
 `ST_ApproximateMedialAxis`. The boolean operations await a decision on a
