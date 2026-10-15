@@ -40,9 +40,10 @@ CREATE TEMP TABLE {ds} AS SELECT * FROM i.{ds};
 CREATE TEMP TABLE {ds}_s AS SELECT id, ST_3DTryFromWKB(wkb, props) AS s FROM {ds};
 CREATE TEMP TABLE {ds}_valid AS SELECT s FROM {ds}_s WHERE s IS NOT NULL AND (ST_3DValidationReport(s)).is_valid;
 CREATE TEMP TABLE {ds}_nondegen AS SELECT s FROM {ds}_s WHERE s IS NOT NULL AND (ST_3DValidationReport(s)).degenerate_face_count = 0;
-CREATE TEMP TABLE {ds}_g AS SELECT id, ST_Geom3DFromWKB(wkb) AS g,
+CREATE TEMP TABLE {ds}_g AS SELECT id, g,
     ((b).min_x + (b).max_x) / 2 AS cx, ((b).min_y + (b).max_y) / 2 AS cy
-    FROM (SELECT id, wkb, ST_3DBounds(ST_3DTryFromWKB(wkb, props)) AS b FROM {ds}) WHERE b IS NOT NULL;
+    FROM (SELECT id, TRY(ST_Geom3DFromWKB(wkb)) AS g, ST_3DBounds(ST_3DTryFromWKB(wkb, props)) AS b FROM {ds})
+    WHERE b IS NOT NULL AND g IS NOT NULL;
 CREATE TEMP TABLE {ds}_pairs AS
     SELECT a.g AS g1, b.g AS g2 FROM {ds}_g a JOIN {ds}_g b
       ON floor(a.cx / 100) = floor(b.cx / 100) AND floor(a.cy / 100) = floor(b.cy / 100) AND a.id < b.id
@@ -59,7 +60,8 @@ def bench_queries(ds):
         ("import_struct", f"SELECT {h('ST_3DTryFromWKB(wkb, props)')} FROM {ds};"),
         ("import_json", f"SELECT {h('ST_3DTryFromWKB(wkb, props_json)')} FROM {ds};"),
         ("import_plain", f"SELECT {h('ST_3DTryFromWKB(wkb)')} FROM {ds};"),
-        ("geom_import", f"SELECT {h('ST_Geom3DFromWKB(wkb)')} FROM {ds};"),
+        ("geom_import", f"SELECT {h('TRY(ST_Geom3DFromWKB(wkb))')} FROM {ds};"),
+        ("zmax", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DZMax(s) AS v FROM {ds}_valid);"),
         ("volume", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DVolume(s) AS v FROM {ds}_valid);"),
         ("area", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DArea(s) AS v FROM {ds}_nondegen);"),
         (
@@ -141,6 +143,7 @@ import json, os, sys, time
 import duckdb
 ext, steps = sys.argv[1], json.load(sys.stdin)
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+con.execute("SET enable_progress_bar = false")  # it writes to stdout, which carries the results
 con.execute(f"LOAD '{ext}'")
 out = []
 for step in steps:

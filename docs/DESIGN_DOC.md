@@ -282,17 +282,16 @@ are. Anything that arrives as a `BLOB` — Parquet, CSV, another tool's table �
 ### 5.2 Where the time goes: materialise once, keep WKB at rest
 
 A value is one self-contained payload per row, not Arrow or a columnar layout across rows,
-and that is deliberate: what costs time is building a value, not reading one. Measured on one
-core (kernel figures on the 3DBAG Delft LoD 2.2 tile, SQL figures on 75 413 valid Helsinki
-LoD 2 solids already in a table):
+and that is deliberate: what costs time is building a value, not reading one. Measured with
+`scripts/bench/bench.py` on one core, over the Helsinki LoD 2 tile (77 249 solids, 75 413 of
+them valid, already in a table):
 
-| Step | Per solid |
+| Step (`bench.py` query) | Per solid |
 | --- | --- |
-| Import: parse WKB, build, triangulate, validate (Delft LoD 2.2) | about 110 µs |
-| SQL: a header field (`ST_3DZMax`) over a `SOLID_3D` column | 0.24 µs |
-| Kernel: decode a payload into a model | 0.39 µs |
-| Kernel: volume of a decoded model | 0.41 µs |
-| SQL: `ST_3DVolume` over a `SOLID_3D` column | 0.91 µs |
+| Import: parse WKB, build, triangulate, validate (`import_struct`) | 56 µs |
+| A header field, `ST_3DZMax` over a `SOLID_3D` column (`zmax`) | 0.28 µs |
+| `ST_3DVolume` over a `SOLID_3D` column (`volume`) | 1.05 µs |
+| `ST_3DArea` over a `SOLID_3D` column (`area`) | 1.8 µs |
 
 Three consequences follow.
 
@@ -302,10 +301,10 @@ Three consequences follow.
 - **Keep WKB at rest.** In Parquet the payload is about 20 % larger than the WKB it came from
   and opaque to every other tool, and a payload read back from Parquet arrives as a `BLOB`
   and is rebuilt anyway (§5.1). Store WKB, as CityParquet does; build values per session.
-- **No zero-copy view yet.** Decoding is about 40 % of a volume query over a materialised
-  column, but the whole query is under a microsecond a solid, two orders of magnitude below
-  an import. A second, byte-level implementation of each measure would buy a fraction of
-  that microsecond; it waits for a workload where it matters
+- **No zero-copy view yet.** A measure over a materialised column costs one to two
+  microseconds a solid, thirty to fifty times less than an import, and decoding the payload
+  is only part of that. A second, byte-level implementation of each measure would buy a
+  fraction of a microsecond; it waits for a workload where it matters
   ([FUTURE_WORK.md §5](./FUTURE_WORK.md)).
 
 Joins between two sets are the other place time goes; §8.5 covers pruning within a pair, and

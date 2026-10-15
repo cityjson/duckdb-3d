@@ -86,8 +86,9 @@ reading is the contract and planarity stays a separate `ST_IsPlanar` question.
 
 ## 5. A Zero-Copy Payload View
 
-Measures on a materialised column decode each payload into a `SolidModel` first: 0.39 µs of
-the 0.91 µs a solid that `ST_3DVolume` takes (DESIGN_DOC §5.2). A read-only view over the
+Measures on a materialised column decode each payload into a `SolidModel` first, and
+`ST_3DVolume` takes about a microsecond a solid where a header field takes a quarter of that
+(DESIGN_DOC §5.2). A read-only view over the
 payload bytes would skip the copy for the measures that walk the arrays once (volume, surface
 area, footprint area). Done means a view type the measures accept alongside the model, a
 query where decoding is shown to dominate, and the same results bit for bit.

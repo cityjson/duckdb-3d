@@ -102,7 +102,7 @@ compose the two extensions by hand.
 ## Benchmark
 
 `scripts/bench/` times the SQL surface on real data — 3DBAG Delft (LoD 2.2) and Helsinki
-(LoD 2, ~77 000 solids): import with the STRUCT and JSON sidecars and without one, volume,
+(LoD 2, ~77 000 solids): import with the STRUCT and JSON sidecars and without one, a header field (`ST_3DZMax`), volume,
 surface and footprint area, the validation report, and distance, `ST_3DDWithin` and
 `ST_3DShortestLine` over 5000 neighbouring pairs per dataset.
 
@@ -114,7 +114,8 @@ scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
 
 To compare a build with a baseline whose shell you do not have, pass loadable extensions
 instead; they run in the Python `duckdb` module, which must be the DuckDB version they were
-built for:
+built for. Each file keeps the name `three_d.duckdb_extension`, since DuckDB derives the
+entry point from it:
 
 ```sh
 scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
