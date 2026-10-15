@@ -246,7 +246,7 @@ SELECT ST_3DTranslate(solid, 100, 50, 0) FROM parts LIMIT 1;
 ```
 
 Available transforms: `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX/Y/Z`, `ST_Force3D`,
-`ST_3DConvexHull` (2D XY hull), `ST_IsPlanar`.
+`ST_3DConvexHull` (3D hull), `ST_3DFootprintHull` (2D XY hull), `ST_IsPlanar`.
 
 Construction:
 

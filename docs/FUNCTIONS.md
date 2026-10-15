@@ -139,7 +139,7 @@ SELECT ST_3DVolume(solid) FROM parts
 WHERE NOT ST_3DValidationReport(solid).is_valid LIMIT 1;
 ```
 ```
-Invalid Error: ST_3DVolume: solid is not manifold
+Invalid Input Error: ST_3DVolume: solid is not manifold
 ```
 
 Use `ST_3DTryFromWKB` and guard on `ST_3DValidationReport(...).is_valid` when exploring real
@@ -459,6 +459,7 @@ SELECT ST_3DValidationReport(solid) AS report FROM ex;
 {'is_valid': true, 'is_closed': true, 'is_manifold': true, 'is_oriented': true,
  'solid_count': 1, 'shell_count': 1, 'face_count': 10, 'open_edge_count': 0,
  'non_manifold_edge_count': 0, 'degenerate_face_count': 0, 'orientation_error_count': 0,
+ 'non_manifold_vertex_count': 0, 'disconnected_shell_count': 0, 'self_intersection_count': 0,
  'code': VALID, 'message': Valid solid}
 ```
 
@@ -474,12 +475,13 @@ FROM parts;
 ┌───────┬───────┬──────────────┐
 │ parts │ valid │ non_manifold │
 ├───────┼───────┼──────────────┤
-│ 1116  │ 1098  │ 13           │
+│ 1116  │ 1098  │ 15           │
 └───────┴───────┴──────────────┘
 ```
 
-The checks **overlap** rather than partition: of those 18 invalid parts, 9 are not closed, 13
-are not manifold, 13 are not oriented, and 6 have degenerate faces. A single solid commonly
+The checks **overlap** rather than partition: of those 18 invalid parts, 9 are not closed, 15
+are not manifold (2 of them only at a pinched vertex), 13 are not oriented, 6 have degenerate
+faces and 3 have faces that cross. A single solid commonly
 fails several at once. That is why the report carries per-check counters rather than one flag
 — query the individual fields to find out what is actually wrong.
 
@@ -656,7 +658,8 @@ WHERE p.id <> 'NL.IMBAG.Pand.0503100000018426-0'
 | `ST_3DExtrude` | `(GEOM_3D polygon, height DOUBLE)` | `SOLID_3D` |
 | `ST_MakeSolid` | `(GEOM_3D)` | `SOLID_3D` |
 | `ST_3DCentroid` | `(GEOM_3D)` | `GEOM_3D` (Point) |
-| `ST_3DConvexHull` | `(GEOM_3D)` | `GEOM_3D` |
+| `ST_3DConvexHull` | `(SOLID_3D \| GEOM_3D)` | `GEOM_3D` |
+| `ST_3DFootprintHull` | `(GEOM_3D)` | `GEOM_3D` |
 | `ST_Force3D` | `(GEOM_3D)` | `GEOM_3D` |
 
 All transforms are **type-preserving** and operate per-vertex, keeping topology intact.
@@ -778,9 +781,9 @@ Extrudes a `Polygon Z` vertically into a closed prism. Raises if the input is no
 has fewer than 3 distinct exterior-ring vertices, or `height <= 0`.
 
 ```sql
-SELECT ST_3DNumFaces(ST_3DExtrude(ST_3DConvexHull(g), 10.0))            AS prism_faces,
-       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DConvexHull(g), 10.0)), 2)    AS prism_vol,
-       ROUND(ST_3DFootprintArea(ST_3DConvexHull(g)) * 10.0, 2)          AS footprint_x_height
+SELECT ST_3DNumFaces(ST_3DExtrude(ST_3DFootprintHull(g), 10.0))            AS prism_faces,
+       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DFootprintHull(g), 10.0)), 2)    AS prism_vol,
+       ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)) * 10.0, 2)          AS footprint_x_height
 FROM ex;
 ```
 ```
@@ -812,13 +815,54 @@ FROM ex;
 └──────────────┘
 ```
 
-### `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D`
+### `ST_3DConvexHull` and `ST_3DFootprintHull`
+
+`ST_3DConvexHull` is the 3D hull of every vertex: a closed `PolyhedralSurface Z` whose faces
+are convex and wound outward, so `ST_MakeSolid` accepts it. Coplanar faces of the hull are
+merged into one polygon, and every hull vertex is an input vertex. Exact predicates decide
+which side of a face a point lies on, so a point a rounding error above a face is kept and
+one on it is not. Input whose vertices are all coplanar gives a `Polygon Z`, all collinear a
+`LineString Z`, a single point a `Point Z`. Because the hull is exact, three input points
+that are collinear to within rounding but not exactly give a sliver face: on the Vienna
+model one hull face is 14 m round and 4e-11 m² in area, which validation counts as
+degenerate, so `ST_3DVolume(ST_MakeSolid(hull))` raises for that building.
+
+```sql
+SELECT ST_3DGeometryType(h)                    AS hull_type,
+       ST_3DNumFaces(ST_MakeSolid(h))          AS hull_faces,
+       ROUND(ST_3DVolume(ST_MakeSolid(h)), 2)  AS hull_vol,
+       ROUND(ST_3DVolume(solid), 2)            AS solid_vol
+FROM (SELECT solid, ST_3DConvexHull(solid) AS h FROM ex);
+```
+```
+┌──────────────────────┬────────────┬──────────┬───────────┐
+│      hull_type       │ hull_faces │ hull_vol │ solid_vol │
+├──────────────────────┼────────────┼──────────┼───────────┤
+│ ST_PolyhedralSurface │ 11         │ 909.68   │ 881.31    │
+└──────────────────────┴────────────┴──────────┴───────────┘
+```
+
+`ST_3DFootprintHull` is the 2D hull of the vertices' XY projection, returned as a `Polygon Z`
+at the input's **minimum Z** — the footprint `ST_3DExtrude` turns into an LoD1 block.
+Degenerate inputs return a `LineString Z` or `Point Z`.
+
+```sql
+SELECT ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)), 2) AS hull_area,
+       ROUND(ST_3DFootprintArea(g), 2)                     AS footprint_area
+FROM ex;
+```
+```
+┌───────────┬────────────────┐
+│ hull_area │ footprint_area │
+├───────────┼────────────────┤
+│ 90.11     │ 87.29          │
+└───────────┴────────────────┘
+```
+
+### `ST_3DCentroid`, `ST_Force3D`
 
 - **`ST_3DCentroid`** — area-weighted for surfaces and solids, length-weighted for lines,
   vertex average for points. Returns a `Point Z`.
-- **`ST_3DConvexHull`** — a **2D** hull over the XY projection of all vertices, returned at
-  the input's **minimum Z**. It is a footprint hull, not a true 3D hull (which would need a
-  CGAL/SFCGAL backend). Degenerate inputs return a `LineString Z` or `Point Z`.
 - **`ST_Force3D`** — currently an identity round-trip, since `GEOM_3D` already stores XYZ.
   Reserved for future 2D inputs.
 
@@ -826,7 +870,7 @@ FROM ex;
 
 ## Function index
 
-52 public functions.
+53 public functions.
 
 | Category | Functions |
 | --- | --- |
@@ -836,14 +880,14 @@ FROM ex;
 | **Validation** | `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |
 | **Measurement** | `ST_3DVolume`, `ST_3DSurfaceArea`, `ST_3DArea`, `ST_3DFootprintArea`, `ST_3DPerimeter`, `ST_3DLength` |
 | **Distance** | `ST_3DDistance`, `ST_3DMaxDistance`, `ST_3DDWithin`, `ST_3DDFullyWithin`, `ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine` |
-| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DPlaceImplicit`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_Force3D` |
+| **Transform / construct** | `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX`, `ST_3DRotateY`, `ST_3DRotateZ`, `ST_3DTransform`, `ST_3DPlaceImplicit`, `ST_3DExtrude`, `ST_MakeSolid`, `ST_3DCentroid`, `ST_3DConvexHull`, `ST_3DFootprintHull`, `ST_Force3D` |
 
 **Not implemented.** These PostGIS names appear in comparison tables but are **not**
 registered: `ST_3DIsValid` (validity is a field of `ST_3DValidationReport`), `ST_3DUnion` /
 `ST_3DIntersection` / `ST_3DDifference`, `ST_3DLongestLine`, `ST_3DExtent`, `ST_Affine`,
 `ST_SRID` / `ST_SetSRID`, `ST_AsGML` / `ST_AsKML` / `ST_AsX3D`, `ST_HasM` / `ST_M`,
 `ST_Boundary`, `ST_PointOnSurface`, `ST_Tesselate`, `ST_StraightSkeleton`,
-`ST_ApproximateMedialAxis`. The boolean and hull operations await a decision on a
+`ST_ApproximateMedialAxis`. The boolean operations await a decision on a
 CGAL/SFCGAL backend — see [DESIGN_DOC.md §11](./DESIGN_DOC.md#11-roadmap).
 
 ---

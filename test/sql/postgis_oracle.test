@@ -131,7 +131,7 @@ FROM golden WHERE feature_id = 'fixture:multi_cube_far';
 ok	true	true
 
 # ── Convex-hull area (2D-XY). The extension measures its own hull with
-# ST_3DFootprintArea(ST_3DConvexHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
+# ST_3DFootprintArea(ST_3DFootprintHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
 # because GEOS's ST_ConvexHull rejects a PolyhedralSurface. GEOS has no planarity
 # requirement, so this covers all geometry (no 'rejected' rows) — including the
 # degenerate hulls of the point/line fixtures, whose XY hull has zero area.
@@ -144,7 +144,7 @@ true
 
 query I
 SELECT count(*) = count(*) FILTER (
-  WHERE abs(ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
+  WHERE abs(ST_3DFootprintArea(ST_3DFootprintHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
         <= 1e-6 * abs(pg_hull_area) + 1e-6)
 FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
 ----
@@ -152,7 +152,7 @@ true
 
 # Pin: the unit tetra's XY hull is the triangle (0,0),(1,0),(0,1) → area 0.5.
 query I
-SELECT ROUND(ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
+SELECT ROUND(ST_3DFootprintArea(ST_3DFootprintHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
 FROM golden WHERE feature_id = 'fixture:tetra';
 ----
 0.5

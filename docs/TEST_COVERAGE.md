@@ -84,7 +84,7 @@ container. `test/data/postgis_oracle/README.md` documents every column.
 | --- | --- |
 | `ST_3DArea`, `ST_Volume(ST_MakeSolid(·))` | `ST_3DSurfaceArea` / `ST_3DArea`, `ST_3DVolume` |
 | `ST_IsClosed` | `ST_3DIsClosed` |
-| `ST_Area(ST_ConvexHull(ST_Points(·)))` | `ST_3DConvexHull` (via `ST_3DFootprintArea`) |
+| `ST_Area(ST_ConvexHull(ST_Points(·)))` | `ST_3DFootprintHull` (via `ST_3DFootprintArea`) |
 | `ST_Area(ST_Force2D(·))` | `ST_3DFootprintArea` (halved on two-sided classes) |
 | `ST_XMin`…`ST_ZMax` | `ST_3DBounds`, `ST_3DZMin`, `ST_3DZMax` |
 | `ST_NDims`, `ST_CoordDim`, `ST_GeometryType` | `ST_NDims`, `ST_CoordDim`, `ST_3DGeometryType` |

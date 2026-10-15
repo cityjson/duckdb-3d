@@ -97,7 +97,7 @@ A digest — the **[full reference with runnable examples is in docs/FUNCTIONS.m
 | `ST_3DAsText` / `ST_3DAsGeoJSON` / `ST_3DAsWKB` | Serialize to WKT, GeoJSON, or WKB. |
 
 Also available: shell/face counts, `ST_3DIsClosed` / `ST_3DIsManifold` / `ST_3DIsOriented`,
-`ST_3DCentroid`, `ST_3DConvexHull`, `ST_MakeSolid`, `ST_3DTranslate` / `ST_3DScale` /
+`ST_3DCentroid`, `ST_3DConvexHull`, `ST_3DFootprintHull`, `ST_MakeSolid`, `ST_3DTranslate` / `ST_3DScale` /
 `ST_3DRotateX/Y/Z`, `ST_3DClosestPoint`, `ST_3DShortestLine`, and more — see
 [docs/FUNCTIONS.md](docs/FUNCTIONS.md).
 

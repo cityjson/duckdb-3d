@@ -1,6 +1,6 @@
 # Manual testing notebook — every public function against real data
 
-A copy-pasteable SQL walkthrough that exercises **all 52 public `duckdb-3d` functions**
+A copy-pasteable SQL walkthrough that exercises **all 53 public `duckdb-3d` functions**
 against real 3D city models: local CityJSON, remote CityJSONSeq (3DBAG Delft and
 Helsinki) and on-disk **CityParquet** packages from both writers. Every cell below was executed
 and its printed output is the real output, not an illustration.
@@ -57,9 +57,9 @@ WHERE extension_name IN ('cityjson', 'spatial', 'three_d') ORDER BY 1;
 │ extension_name │ extension_version │   install_mode    │
 │    varchar     │      varchar      │      varchar      │
 ├────────────────┼───────────────────┼───────────────────┤
-│ cityjson       │ 6937c06           │ NOT_INSTALLED     │
-│ spatial        │ 28db190           │ REPOSITORY        │
-│ three_d        │ 72961f9           │ STATICALLY_LINKED │
+│ cityjson       │ 294a595           │ NOT_INSTALLED     │
+│ spatial        │ eb1e57c           │ NOT_INSTALLED     │
+│ three_d        │ 569f986           │ STATICALLY_LINKED │
 └────────────────┴───────────────────┴───────────────────┘
 ```
 
@@ -234,7 +234,7 @@ WHERE geometry_lod3_0 IS NOT NULL LIMIT 1;
 ```
 
 ```
-Invalid Error: Unsupported WKB geometry type for SOLID_3D import: type code 1006
+Invalid Input Error: Unsupported WKB geometry type for SOLID_3D import: type code 1006
 ```
 
 `1006` is `MultiPolygon Z` — `SOLID_3D` only ingests `PolyhedralSurface Z`. Surface-family
@@ -372,7 +372,7 @@ FROM parts;
 │ parts │ imported │ closed │ manifold │ oriented │ valid │
 │ int64 │  int64   │ int64  │  int64   │  int64   │ int64 │
 ├───────┼──────────┼────────┼──────────┼──────────┼───────┤
-│  1116 │     1116 │   1107 │     1103 │     1103 │  1098 │
+│  1116 │     1116 │   1107 │     1101 │     1103 │  1098 │
 └───────┴──────────┴────────┴──────────┴──────────┴───────┘
 ```
 
@@ -389,10 +389,10 @@ FROM parts WHERE NOT ST_3DValidationReport(solid).is_valid LIMIT 2;
 
 ```
     id = NL.IMBAG.Pand.0503100000031902-0
-report = {'is_valid': false, 'is_closed': true, 'is_manifold': false, 'is_oriented': false, 'solid_count': 1, 'shell_count': 1, 'face_count': 1316, 'open_edge_count': 0, 'non_manifold_edge_count': 1, 'degenerate_face_count': 1, 'orientation_error_count': 2, 'code': INVALID, 'message': 'Invalid solid: non-manifold edges, orientation inconsistent, degenerate faces'}
+report = {'is_valid': false, 'is_closed': true, 'is_manifold': false, 'is_oriented': false, 'solid_count': 1, 'shell_count': 1, 'face_count': 1316, 'open_edge_count': 0, 'non_manifold_edge_count': 1, 'degenerate_face_count': 1, 'orientation_error_count': 2, 'non_manifold_vertex_count': 0, 'disconnected_shell_count': 0, 'self_intersection_count': 0, 'code': INVALID, 'message': 'Invalid solid: non-manifold edges, orientation inconsistent, degenerate faces'}
 
     id = NL.IMBAG.Pand.0503100000032799-0
-report = {'is_valid': false, 'is_closed': false, 'is_manifold': true, 'is_oriented': true, 'solid_count': 1, 'shell_count': 1, 'face_count': 115, 'open_edge_count': 9, 'non_manifold_edge_count': 0, 'degenerate_face_count': 0, 'orientation_error_count': 0, 'code': INVALID, 'message': 'Invalid solid: not closed'}
+report = {'is_valid': false, 'is_closed': false, 'is_manifold': false, 'is_oriented': true, 'solid_count': 1, 'shell_count': 1, 'face_count': 115, 'open_edge_count': 9, 'non_manifold_edge_count': 0, 'degenerate_face_count': 0, 'orientation_error_count': 0, 'non_manifold_vertex_count': 1, 'disconnected_shell_count': 0, 'self_intersection_count': 3, 'code': INVALID, 'message': 'Invalid solid: not closed, non-manifold vertices, self-intersecting faces'}
 ```
 
 A 1316-face building undone by a *single* non-manifold edge is typical. The report gives
@@ -624,28 +624,31 @@ deliberately deferred.
 ## 16 — Construction: hull, extrude, make-solid, force-3D
 
 ```sql
-SELECT ST_3DGeometryType(ST_3DConvexHull(g))                        AS hull_type,
-       ST_3DNumGeometries(ST_3DConvexHull(g))                       AS hull_parts,
-       ROUND(ST_3DFootprintArea(ST_3DConvexHull(g)), 2)             AS hull_area,
-       ST_3DGeometryType(ST_Force3D(g))                             AS force3d_type,
-       ST_3DNumFaces(ST_3DExtrude(ST_3DConvexHull(g), 10.0))        AS prism_faces,
-       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DConvexHull(g), 10.0)), 2) AS prism_vol,
-       ROUND(ST_3DFootprintArea(ST_3DConvexHull(g)) * 10.0, 2)      AS fp_x_h,
-       ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_3DAsWKB(solid)))), 4) AS makesolid_vol
+SELECT ST_3DGeometryType(ST_3DFootprintHull(g))                        AS fp_hull_type,
+       ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)), 2)             AS fp_hull_area,
+       ST_3DGeometryType(ST_Force3D(g))                                AS force3d_type,
+       ST_3DNumFaces(ST_3DExtrude(ST_3DFootprintHull(g), 10.0))        AS prism_faces,
+       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DFootprintHull(g), 10.0)), 2) AS prism_vol,
+       ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)) * 10.0, 2)      AS fp_x_h,
+       ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_3DAsWKB(solid)))), 4) AS makesolid_vol,
+       ST_3DNumFaces(ST_MakeSolid(ST_3DConvexHull(solid)))             AS hull_faces,
+       ROUND(ST_3DVolume(ST_MakeSolid(ST_3DConvexHull(solid))), 4)     AS hull_vol
 FROM ex;
 ```
 
 ```
-┌────────────┬────────────┬───────────┬──────────────────────┬─────────────┬───────────┬────────┬───────────────┐
-│ hull_type  │ hull_parts │ hull_area │     force3d_type     │ prism_faces │ prism_vol │ fp_x_h │ makesolid_vol │
-│  varchar   │   int32    │  double   │       varchar        │    int64    │  double   │ double │    double     │
-├────────────┼────────────┼───────────┼──────────────────────┼─────────────┼───────────┼────────┼───────────────┤
-│ ST_Polygon │          1 │      7.21 │ ST_PolyhedralSurface │           6 │     72.13 │  72.13 │       19.5242 │
-└────────────┴────────────┴───────────┴──────────────────────┴─────────────┴───────────┴────────┴───────────────┘
+┌──────────────┬──────────────┬──────────────────────┬─────────────┬───────────┬────────┬───────────────┬────────────┬──────────┐
+│ fp_hull_type │ fp_hull_area │     force3d_type     │ prism_faces │ prism_vol │ fp_x_h │ makesolid_vol │ hull_faces │ hull_vol │
+│   varchar    │    double    │       varchar        │    int64    │  double   │ double │    double     │   int64    │  double  │
+├──────────────┼──────────────┼──────────────────────┼─────────────┼───────────┼────────┼───────────────┼────────────┼──────────┤
+│ ST_Polygon   │         7.21 │ ST_PolyhedralSurface │           6 │     72.13 │  72.13 │       19.5242 │          7 │  19.5254 │
+└──────────────┴──────────────┴──────────────────────┴─────────────┴───────────┴────────┴───────────────┴────────────┴──────────┘
 ```
 
-`prism_vol` equals `hull_area × 10` exactly. `makesolid_vol` equals the original
+`prism_vol` equals `fp_hull_area × 10` exactly. `makesolid_vol` equals the original
 `19.5242` from §14 — the `SOLID_3D → WKB → GEOM_3D → SOLID_3D` round trip is lossless.
+The 3D hull (`ST_3DConvexHull`) is a closed seven-face polyhedron that `ST_MakeSolid`
+accepts, and its volume is just above the solid's, as a hull's must be.
 `ST_Force3D` is currently an identity (`GEOM_3D` is already XYZ).
 
 ## 17 — Serialization
@@ -714,11 +717,11 @@ FROM helsolids;
 │ objects │ imported │ closed │ manifold │ oriented │ valid │
 │  int64  │  int64   │ int64  │  int64   │  int64   │ int64 │
 ├─────────┼──────────┼────────┼──────────┼──────────┼───────┤
-│   77249 │    77249 │  75541 │    77055 │    77046 │ 75469 │
+│   77249 │    77249 │  75574 │    76973 │    77046 │ 75413 │
 └─────────┴──────────┴────────┴──────────┴──────────┴───────┘
 ```
 
-97.7 % valid — the dominant failure mode here is *not closed* (1708 objects), unlike
+97.6 % valid — the dominant failure mode here is *not closed* (1675 objects), unlike
 Delft where non-manifoldness featured. Aggregate over the valid subset:
 
 ```sql
@@ -735,7 +738,7 @@ FROM (SELECT s FROM helsolids WHERE ST_3DValidationReport(s).is_valid);
 │ valid_objects │ total_volume_km3 │ total_footprint_km2 │ mean_height_m │ tallest_m │
 │     int64     │      double      │       double        │    double     │  double   │
 ├───────────────┼──────────────────┼─────────────────────┼───────────────┼───────────┤
-│         75469 │           0.1914 │              16.057 │         11.92 │     119.5 │
+│         75413 │           0.1906 │              16.008 │         11.91 │     119.5 │
 └───────────────┴──────────────────┴─────────────────────┴───────────────┴───────────┘
 ```
 
@@ -782,7 +785,7 @@ SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out');
 │       file       │ action  │ rows  │  bytes  │
 │     varchar      │ varchar │ int64 │  int64  │
 ├──────────────────┼─────────┼───────┼─────────┤
-│ building.parquet │ written │  2231 │ 3741462 │
+│ building.parquet │ written │  2231 │ 3755583 │
 │ metadata.json    │ written │     0 │    6762 │
 └──────────────────┴─────────┴───────┴─────────┘
 ```
@@ -900,8 +903,8 @@ GROUP BY writer ORDER BY writer;
 │     writer     │ parts │ closed │ manifold │ valid │
 │    varchar     │ int64 │ int64  │  int64   │ int64 │
 ├────────────────┼───────┼────────┼──────────┼───────┤
-│ cityjson       │  1116 │   1107 │     1103 │  1098 │
-│ cityparquet-rs │  1116 │   1107 │     1103 │  1098 │
+│ cityjson       │  1116 │   1107 │     1101 │  1098 │
+│ cityparquet-rs │  1116 │   1107 │     1101 │  1098 │
 └────────────────┴───────┴────────┴──────────┴───────┘
 ┌────────────────┬─────────────┬─────────────────┬──────────────────┬────────────────────┬────────┬────────┐
 │     writer     │ valid_parts │ total_volume_m3 │ total_surface_m2 │ total_footprint_m2 │  zmin  │  zmax  │
@@ -912,7 +915,7 @@ GROUP BY writer ORDER BY writer;
 └────────────────┴─────────────┴─────────────────┴──────────────────┴────────────────────┴────────┴────────┘
 ```
 
-Identical to the CityJSONSeq counts in §8 — `1116 / 1107 / 1103 / 1098` — for both writers.
+Identical to the CityJSONSeq counts in §8 — `1116 / 1107 / 1101 / 1098` — for both writers.
 Proven directly, solid by solid:
 
 ```sql
@@ -1012,8 +1015,8 @@ WHERE geometry_lod0_0 IS NOT NULL GROUP BY writer ORDER BY writer;
 │     writer     │   n   │ max_abs_diff  │
 │    varchar     │ int64 │    double     │
 ├────────────────┼───────┼───────────────┤
-│ cityjson       │  1115 │ 4.7214047e-05 │
-│ cityparquet-rs │  1115 │ 4.7214047e-05 │
+│ cityjson       │  1115 │ 6.6742601e-05 │
+│ cityparquet-rs │  1115 │ 6.6742601e-05 │
 └────────────────┴───────┴───────────────┘
 ```
 
@@ -1250,8 +1253,6 @@ three checks*) are referenced to a local origin for the same reason.
 - **Format vocabulary still reaches the kernel** (`metadata_parser.cpp` parses the
   `geometry_properties` JSON text and its `type` / `shells` keys). The neutral-grouping
   redesign is [FUTURE_WORK.md §1](./FUTURE_WORK.md).
-- **`ST_3DConvexHull` is a 2D XY hull** at minimum Z, not a true 3D hull — that needs the
-  deferred CGAL/SFCGAL backend (DESIGN_DOC.md, *Self-contained kernel* and *Roadmap*).
 
 ---
 
