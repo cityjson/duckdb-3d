@@ -290,7 +290,7 @@ Vertex3D Geom3DCentroid(const GeomModel &geom) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Convex hull (2D XY)
+// Footprint hull (2D XY)
 // ──────────────────────────────────────────────────────────────
 
 namespace {
@@ -302,7 +302,7 @@ double Cross2D(const Vertex3D &a, const Vertex3D &b, const Vertex3D &c) {
 
 } // namespace
 
-GeomModel Geom3DConvexHull(const GeomModel &geom) {
+GeomModel Geom3DFootprintHull(const GeomModel &geom) {
 	if (geom.vertices.empty()) {
 		GeomModel empty;
 		empty.type = GeomType::Point;

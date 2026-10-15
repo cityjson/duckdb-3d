@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 
 # Standalone C++ unit test executable for the three_d kernel
-project(three_d_unit_tests)
+project(three_d_unit_tests C CXX)
 
 # Same language level as the extension build (CMakeLists.txt).
 set(CMAKE_CXX_STANDARD 17)
@@ -34,7 +34,10 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/geom_analysis.cpp
     ${REPO_ROOT}/src/kernel/geom_serialize.cpp
     ${REPO_ROOT}/src/kernel/crs_transform.cpp
-    ${REPO_ROOT}/src/kernel/affine.cpp)
+    ${REPO_ROOT}/src/kernel/affine.cpp
+    ${REPO_ROOT}/src/kernel/predicates.cpp
+    ${REPO_ROOT}/src/kernel/convex_hull.cpp
+    ${REPO_ROOT}/third_party/predicates/predicates.c)
 
 # Test sources
 set(TEST_SOURCES
@@ -57,7 +60,9 @@ set(TEST_SOURCES
     test_wkb_export.cpp
     test_inner_shell.cpp
     test_triangulation.cpp
-    test_affine.cpp)
+    test_affine.cpp
+    test_predicates.cpp
+    test_convex_hull.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 

@@ -15,7 +15,7 @@ Vertex3D Geom3DCentroid(const GeomModel &geom);
 
 //! 2D convex hull over the XY projection of all vertices. Returns a Polygon Z
 //! (or LineString Z / Point Z for degenerate inputs) at the minimum Z of the input.
-GeomModel Geom3DConvexHull(const GeomModel &geom);
+GeomModel Geom3DFootprintHull(const GeomModel &geom);
 
 //! Area of the geometry's XY projection (footprint). Polygon/MultiPolygon/
 //! PolyhedralSurface only; exterior rings add and interior rings subtract.

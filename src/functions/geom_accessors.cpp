@@ -5,11 +5,14 @@
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
+#include "kernel/convex_hull.hpp"
 #include "kernel/geom_analysis.hpp"
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_serialize.hpp"
 #include "kernel/geom_wkb_parser.hpp"
+#include "kernel/payload.hpp"
+#include "kernel/solid_model.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -275,15 +278,35 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 	});
 }
 
-// ST_3DConvexHull(geom GEOM_3D) → GEOM_3D
-// 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
-static void ST_3DConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static string_t WriteGeom(Vector &result, const GeomModel &model) {
+	auto payload = SerializeGeomPayload(model);
+	return StringVector::AddStringOrBlob(result,
+	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+}
+
+// ST_3DConvexHull(geom GEOM_3D | SOLID_3D) → GEOM_3D
+// The 3D hull of every vertex (kernel/convex_hull.hpp).
+static void ST_3DConvexHullGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		auto hull = Geom3DConvexHull(model);
-		auto payload = SerializeGeomPayload(hull);
-		return StringVector::AddStringOrBlob(result,
-		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices));
+	});
+}
+
+static void ST_3DConvexHullSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t solid) {
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices));
+	});
+}
+
+// ST_3DFootprintHull(geom GEOM_3D) → GEOM_3D
+// 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
+static void ST_3DFootprintHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return WriteGeom(result, Geom3DFootprintHull(model));
 	});
 }
 
@@ -428,11 +451,23 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
 	     "Returns a GEOM_3D value with XYZ coordinates; GEOM_3D already stores XYZ, so this is an identity.",
 	     "ST_Force3D(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
 	     {"transform"}});
-	RegisterDocumented(loader, ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_3DConvexHullFun),
+	ScalarFunctionSet convex_hull_set("st_3dconvexhull");
+	convex_hull_set.AddFunction(ScalarFunction({geom_3d_type}, geom_3d_type, ST_3DConvexHullGeomFun));
+	convex_hull_set.AddFunction(ScalarFunction({solid_3d_type}, geom_3d_type, ST_3DConvexHullSolidFun));
+	RegisterDocumented(loader, convex_hull_set,
+	                   {{"geom"},
+	                    "Returns the 3D convex hull of every vertex of a GEOM_3D or SOLID_3D value: a closed "
+	                    "PolyhedralSurface Z of convex faces wound outward, so ST_MakeSolid accepts it; coplanar, "
+	                    "collinear or single-point input gives a Polygon Z, LineString Z or Point Z. Exact predicates "
+	                    "decide every orientation, and the hull's vertices are input vertices.",
+	                    "ST_3DConvexHull(ST_Geom3DFromWKB('MULTIPOINT Z (0 0 0, 1 0 0, 0 1 0, 0 0 1)'::GEOMETRY))",
+	                    {"transform"}});
+	RegisterDocumented(loader,
+	                   ScalarFunction("st_3dfootprinthull", {geom_3d_type}, geom_3d_type, ST_3DFootprintHullFun),
 	                   {{"geom"},
 	                    "Returns the 2D convex hull of a GEOM_3D value's XY projection as a Polygon Z at the input's "
 	                    "minimum Z; degenerate inputs give a LineString Z or Point Z.",
-	                    "ST_3DConvexHull(ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 3 4 12)'::GEOMETRY))",
+	                    "ST_3DFootprintHull(ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 3 4 12)'::GEOMETRY))",
 	                    {"transform"}});
 	// Solid-producing constructors: return the SOLID_3D alias (like st_3dfromwkb) so
 	// the typed measurement/introspection overloads compose directly on the result.

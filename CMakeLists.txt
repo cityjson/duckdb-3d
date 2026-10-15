@@ -46,7 +46,10 @@ set(EXTENSION_SOURCES
     src/kernel/geom_analysis.cpp
     src/kernel/geom_serialize.cpp
     src/kernel/crs_transform.cpp
-    src/kernel/affine.cpp)
+    src/kernel/affine.cpp
+    src/kernel/predicates.cpp
+    src/kernel/convex_hull.cpp
+    third_party/predicates/predicates.c)
 
 # PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain
 # the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.
