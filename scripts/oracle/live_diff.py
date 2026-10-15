@@ -1042,8 +1042,8 @@ def check_elements(eng: Engines, items: list[Item], args) -> list[Outcome]:
     ours = eng.duck_rows("""
         SELECT i.k, ST_3DXMin(g), ST_3DYMin(g), ST_3DZMin(g), ST_3DXMax(g), ST_3DYMax(g), ST_3DZMax(g),
                list_transform(range(1, ST_3DNumGeometries(g) + 1), lambda n: ST_3DAsBinary(ST_3DGeometryN(g, n))),
-               ST_3DGeomFromText(t.wkt)::BLOB = ST_Geom3DFromWKB(t.wkt_wkb)::BLOB,
-               ST_3DCRS(ST_3DGeomFromText(t.ewkt)), ST_3DSRID(ST_Geom3DFromWKB(t.ewkb)),
+               TRY(ST_3DGeomFromText(t.wkt))::BLOB = TRY(ST_Geom3DFromWKB(t.wkt_wkb))::BLOB,
+               ST_3DCRS(TRY(ST_3DGeomFromText(t.ewkt))), ST_3DSRID(TRY(ST_Geom3DFromWKB(t.ewkb))),
                CASE WHEN s IS NOT NULL THEN list_transform(ST_3DFaces(ST_3DFromWKB(w, s)), lambda f: ST_3DAsBinary(f.polygon)) END,
                CASE WHEN s IS NOT NULL THEN ST_3DNumSolids(ST_3DFromWKB(w, s)) END,
                CASE WHEN s IS NOT NULL THEN ST_3DAsBinary(ST_3DExteriorShell(ST_3DFromWKB(w, s))) END,
