@@ -615,7 +615,202 @@ def check_distance(eng: Engines, items: list[Item], args) -> list[Outcome]:
     return out
 
 
-CHECKS = {"distance": check_distance}
+def _ear_clip(face):
+    """Triangles tiling a face without holes, each wound as the face is, by ear
+    clipping in the projection that drops the Newell normal's largest axis; None
+    for a face with holes or one ear clipping cannot tile. Independent of
+    duckdb-3d's triangulator; on a non-planar face the two may pick different
+    diagonals."""
+    if len(face) != 1:
+        return None
+    ring = [v for i, v in enumerate(face[0]) if v != face[0][i - 1]]
+    if len(ring) < 3:
+        return None
+    n = _newell(ring)
+    drop = max(range(3), key=lambda i: abs(n[i]))
+    u, w = [i for i in range(3) if i != drop]
+    pts = [(v[u], v[w]) for v in ring]
+    area = sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1]
+               for i in range(len(pts)))
+    order = list(range(len(ring))) if area > 0 else list(range(len(ring)))[::-1]
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    tris = []
+    while len(order) > 3:
+        for k in range(len(order)):
+            i0, i1, i2 = order[k - 1], order[k], order[(k + 1) % len(order)]
+            a, b, c = pts[i0], pts[i1], pts[i2]
+            if cross(a, b, c) <= 0:
+                continue
+            if any(cross(a, b, pts[j]) >= 0 and cross(b, c, pts[j]) >= 0 and cross(c, a, pts[j]) >= 0
+                   for j in order if j not in (i0, i1, i2) and pts[j] not in (a, b, c)):
+                continue
+            tris.append((i0, i1, i2))
+            del order[k]
+            break
+        else:
+            return None
+    tris.append(tuple(order))
+    if area < 0:
+        tris = [t[::-1] for t in tris]
+    return [[ring[i] for i in t] for t in tris]
+
+
+def _triangle_surface(faces) -> bytes | None:
+    """A PolyhedralSurface Z of the faces' ear-clipped triangles, for SFCGAL."""
+    tris = []
+    for face in faces:
+        t = _ear_clip(face)
+        if t is None:
+            return None
+        tris.extend(t)
+    out = struct.pack("<BII", 1, 1015, len(tris))
+    for t in tris:
+        out += struct.pack("<BIII", 1, 1003, 1, 4)
+        for v in t + [t[0]]:
+            out += struct.pack("<ddd", *v)
+    return out
+
+
+def check_solids(eng: Engines, items: list[Item], args) -> list[Outcome]:
+    """The SOLID_3D overloads of the distance family, which measure the volume:
+    points against solids and solid pairs, against SFCGAL's exact 3D intersection
+    of the solid (ST_MakeSolid) for containment and PostGIS (or the independent
+    oracle, as in the distance check) for the distance to the surface."""
+    rng = random.Random(args.seed + 1)
+    solids = [it for it in items if it.role == "solid" and len(it.shells) == 1]
+    rng.shuffle(solids)
+    probe = solids[: args.points]
+    tri = {it.key: _triangle_surface(it.faces) for it in solids}
+    rows, meta = [], {}
+    for it in probe:
+        x0, y0, z0, x1, y1, z1 = it.bbox
+        pts = [(rng.uniform(x0, x1), rng.uniform(y0, y1), rng.uniform(z0, z1)) for _ in range(6)]
+        # Points straight below and above a vertex, and level with one: the
+        # vertical ray of the containment test passes exactly through vertices
+        # and along edges.
+        verts = [v for face in it.faces for ring in face for v in ring]
+        for v in rng.sample(verts, min(3, len(verts))):
+            pts.append((v[0], v[1], rng.uniform(z0, z1)))
+            pts.append((v[0], rng.uniform(y0, y1), v[2]))
+        for j, p in enumerate(pts):
+            k = f"{it.key}|pt{j}"
+            rows.append((k, it.wkb, json.dumps({"type": "Solid", "shells": [it.shells]}), point_wkb(*p), it.wkb,
+                         tri[it.key], point_wkb(*p)))
+            meta[k] = (it, None, p)
+    pairs = near_pairs(solids, 0.5, args.pairs // 4, rng)
+    for a, b in pairs:
+        k = f"{a.key}|{b.key}"
+        rows.append((k, a.wkb, json.dumps({"type": "Solid", "shells": [a.shells]}), b.wkb,
+                     json.dumps({"type": "Solid", "shells": [b.shells]}), tri[a.key], tri[b.key]))
+        meta[k] = (a, b, None)
+    eng.load("solid_pairs", [("k", "VARCHAR", "text"), ("a", "BLOB", "bytea"), ("sa", "VARCHAR", "text"),
+                             ("b", "BLOB", "bytea"), ("sb", "VARCHAR", "text"), ("ta", "BLOB", "bytea"),
+                             ("tb", "BLOB", "bytea")], rows)
+    duck_sql = """
+        SELECT k, (ST_3DValidationReport(s)).is_valid,
+               TRY(ST_3DIntersects(s, g)), TRY(ST_3DDistance(s, g)), TRY(ST_3DDWithin(s, g, 0.5))
+        FROM (SELECT k, ST_3DFromWKB(a, sa) AS s,
+                     CASE WHEN k LIKE '%|pt%' THEN ST_Geom3DFromWKB(b) END AS g FROM solid_pairs)
+        WHERE g IS NOT NULL
+        UNION ALL
+        SELECT k, (ST_3DValidationReport(s)).is_valid AND (ST_3DValidationReport(t)).is_valid,
+               TRY(ST_3DIntersects(s, t)), TRY(ST_3DDistance(s, t)), TRY(ST_3DDWithin(s, t, 0.5))
+        FROM (SELECT k, ST_3DFromWKB(a, sa) AS s, ST_3DFromWKB(b, sb) AS t FROM solid_pairs WHERE k NOT LIKE '%|pt%')"""
+    # SFCGAL accepts only exactly planar faces, which real roofs rarely are, so the
+    # solid it tests is made of each face's triangles, ear-clipped here (ta, tb).
+    # Where a face is not planar that surface differs from duckdb-3d's own
+    # triangulation by up to the face's deviation, which the comparison allows
+    # for. A solid SFCGAL refuses, or one with a face ear clipping cannot tile,
+    # gives NULL and the row is skipped.
+    with eng.pg.cursor() as cur:
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION oracle_intersects(s bytea, g bytea, g_solid boolean) RETURNS boolean AS $$
+            BEGIN
+              IF s IS NULL OR g IS NULL THEN RETURN NULL; END IF;
+              RETURN NOT ST_IsEmpty(ST_3DIntersection(ST_MakeSolid(ST_GeomFromWKB(s)),
+                CASE WHEN g_solid THEN ST_MakeSolid(ST_GeomFromWKB(g)) ELSE ST_GeomFromWKB(g) END));
+            EXCEPTION WHEN others THEN RETURN NULL;
+            END $$ LANGUAGE plpgsql""")
+    # One statement per row with a time limit: SFCGAL's 3D intersection of two
+    # solids builds Nef polyhedra and can take minutes on a detailed pair. A row
+    # it does not finish is skipped like a refused one.
+    ours = eng.duck_rows(duck_sql)
+    theirs = {}
+    with eng.pg.cursor() as cur:
+        cur.execute(f"SET statement_timeout = '{int(args.sfcgal_timeout * 1000)}'")
+        for n, k in enumerate(meta):
+            try:
+                cur.execute("""
+                    SELECT oracle_intersects(ta, tb, k NOT LIKE '%%|pt%%'),
+                           ST_3DDistance(ST_GeomFromWKB(a), ST_GeomFromWKB(b))
+                    FROM solid_pairs WHERE k = %s""", (k,))
+                theirs[k] = cur.fetchone()
+            except psycopg2.errors.QueryCanceled:
+                theirs[k] = (None, None)
+            if n % 500 == 0:
+                print(f"solids: {n}/{len(meta)} rows against SFCGAL", file=sys.stderr)
+        cur.execute("RESET statement_timeout")
+    refused = {k for k, v in theirs.items() if v[0] is None}
+    tol = args.distance_tol
+    invalid = {k for k, v in ours.items() if not v[0]}
+    raised_ok = sum(1 for k in invalid if ours[k][1] is None and ours[k][2] is None)
+    out = []
+    for kind, label in (("point", "points against solids"), ("pair", "solid pairs")):
+        o_int = Outcome(f"ST_3DIntersects(SOLID_3D, ...) [{label}]",
+                        oracle="SFCGAL ST_3DIntersection of ST_MakeSolid")
+        o_dist = Outcome(f"ST_3DDistance(SOLID_3D, ...) [{label}]",
+                         oracle="0 when SFCGAL intersects, else the surface distance (PostGIS or independent oracle)")
+        o_dw = Outcome(f"ST_3DDWithin(SOLID_3D, ..., 0.5) [{label}]", oracle="the reference distance <= 0.5")
+        for k, (a, b, p) in meta.items():
+            if (p is not None) != (kind == "point") or k in invalid:
+                continue
+            if k in refused:
+                o_int.skipped["SFCGAL refuses the solid or times out"] = o_int.skipped.get("SFCGAL refuses the solid or times out", 0) + 1
+                continue
+            cls, bound = _row_class(a, b)
+            inside, surface = theirs[k]
+            if cls != "exact":
+                ref_faces = [OracleFace(f) for f in a.faces]
+                if p is not None:
+                    surface = oracle_point_distance(p, ref_faces)
+                else:
+                    surface = oracle_distance(ref_faces, [OracleFace(f) for f in b.faces])
+            ref = 0.0 if inside else surface
+            mine_int, mine_d, mine_dw = ours[k][1:]
+            # Where the reference surface distance is within the row's tolerance
+            # of 0, the two triangulations of a non-planar face may decide
+            # containment differently; there a predicate may differ.
+            near = surface <= tol + bound
+            for o, mine, theirs_v in ((o_int, mine_int, inside), (o_dw, mine_dw, ref <= 0.5)):
+                o.compared += 1
+                if mine == theirs_v or near or (o is o_dw and abs(ref - 0.5) <= tol + bound):
+                    o.agree += 1
+                else:
+                    o.disagreements.append((k, (mine,), (theirs_v,)))
+            if surface is None:
+                o_dist.skipped["SFCGAL timed out"] = o_dist.skipped.get("SFCGAL timed out", 0) + 1
+                continue
+            o_dist.compared += 1
+            o_dist.max_abs = max(o_dist.max_abs, abs(mine_d - ref))
+            if abs(mine_d - ref) <= tol + bound + 1e-9 * abs(ref) or (near and mine_d <= tol + bound):
+                o_dist.agree += 1
+            else:
+                o_dist.disagreements.append((k, (mine_d,), (ref,)))
+        out.extend([o_int, o_dist, o_dw])
+    inside_points = sum(1 for k, (a, b, p) in meta.items()
+                        if p is not None and k not in invalid and k not in refused and theirs[k][0])
+    out[0].note = (f"{len(probe)} single-shell solids, {sum(1 for m in meta.values() if m[2] is not None)} points "
+                   f"(6 random in the box, 6 on vertical and horizontal lines through vertices), {inside_points} "
+                   f"of them inside or on the solid per SFCGAL; {len(pairs)} solid pairs with boxes within 0.5 m; "
+                   f"{len(invalid)} rows with an invalid solid skipped, {raised_ok} of them confirmed to raise "
+                   f"(TRY gives NULL)")
+    return out
+
+
+CHECKS = {"distance": check_distance, "solids": check_solids}
 
 
 # --------------------------------------------------------------------------
@@ -666,6 +861,7 @@ def main() -> None:
     ap.add_argument("--within", type=float, default=5.0, help="box gap for an object pair, in metres")
     ap.add_argument("--faces", type=int, default=20000, help="faces kept per dataset")
     ap.add_argument("--distance-tol", type=float, default=1e-6)
+    ap.add_argument("--sfcgal-timeout", type=float, default=20.0, help="seconds per SFCGAL row (solids check)")
     args = ap.parse_args()
 
     args.workdir.mkdir(parents=True, exist_ok=True)

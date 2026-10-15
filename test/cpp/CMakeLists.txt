@@ -37,6 +37,8 @@ set(KERNEL_SOURCES
     ${REPO_ROOT}/src/kernel/affine.cpp
     ${REPO_ROOT}/src/kernel/predicates.cpp
     ${REPO_ROOT}/src/kernel/convex_hull.cpp
+    ${REPO_ROOT}/src/kernel/geom_intersects.cpp
+    ${REPO_ROOT}/src/kernel/solid_relations.cpp
     ${REPO_ROOT}/third_party/predicates/predicates.c)
 
 # Test sources
@@ -62,7 +64,9 @@ set(TEST_SOURCES
     test_triangulation.cpp
     test_affine.cpp
     test_predicates.cpp
-    test_convex_hull.cpp)
+    test_convex_hull.cpp
+    test_geom_intersects.cpp
+    test_solid_relations.cpp)
 
 add_executable(three_d_unit_tests ${TEST_SOURCES} ${KERNEL_SOURCES})
 

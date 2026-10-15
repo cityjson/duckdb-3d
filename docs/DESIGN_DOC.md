@@ -112,7 +112,8 @@ coerced into something the kernel can chew on. Errors name the function and the 
 
 The current function set runs on a pure C++ geometry kernel with no CGAL or SFCGAL
 dependency. This keeps the extension small, portable, and cheap to build. Orientation tests
-that must be exact — the 3D convex hull's — use Shewchuk's adaptive predicates, vendored
+that must be exact — the 3D convex hull's, `ST_3DIntersects` and the point-in-solid test of
+the solid overloads — use Shewchuk's adaptive predicates, vendored
 under `third_party/predicates/`; they are exact on double input and cost a plain
 floating-point evaluation unless the answer is close to zero. Everything that needs exact
 constructions rather than exact signs — 3D booleans, skeletons, medial axes — is
@@ -532,8 +533,9 @@ The distance family decomposes each geometry into points, segments and triangles
 polygon contributes its cached triangles, holes excluded (§5.1), and a polygon with no
 area its boundary edges — and answers from the element pairs: `ST_3DDistance` is their
 minimum, `ST_3DClosestPoint` / `ST_3DShortestLine` report the first pair in sweep order
-that attains it (the point on the first geometry, then the point on the second), and
-`ST_3DDWithin` / `ST_3DIntersects` stop at the first pair within the threshold.
+that attains it (the point on the first geometry, then the point on the second),
+`ST_3DDWithin` stops at the first pair within the threshold, and `ST_3DIntersects` at the
+first pair that shares a point.
 
 A point's nearest point on a triangle comes from Ericson's region tests, except in the
 interior, where it is the projection onto the triangle's plane: Ericson's barycentric
@@ -554,6 +556,52 @@ value and its tie-breaking do not depend on the seed. Pinned against an unpruned
 On planar faces without holes the result is PostGIS's: on 3DBAG Delft object pairs, face
 pairs and points around faces, `ST_3DDistance` agrees with PostGIS's to 1.3e-10 m and the
 predicates agree on every row (§8.4).
+
+**`ST_3DIntersects` is exact.** Whether two elements share a point is decided by the signs of
+Shewchuk's adaptive `orient2d` / `orient3d` (§2.4) and comparisons of input coordinates,
+never by a distance: a point is on a segment when the three are collinear and it lies in the
+segment's box; two segments meet when they are coplanar and cross (or touch) in a projection
+that keeps their plane one-to-one, or, collinear, when an endpoint of one lies on the other;
+a point is in a triangle when it is coplanar and on the inner side of every edge in such a
+projection; a segment that crosses a triangle's plane meets the triangle when the line through
+it passes on the same side of (or along) each edge, and a coplanar one when an endpoint is
+inside or it crosses an edge; and two
+triangles meet exactly when an edge of one meets the other (the ends of their common segment,
+or the boundary of their common polygon, lie on edges). A triangle without area is its edges.
+Pruning on element boxes is exact as well, since a box is the minimum and maximum of input
+coordinates. So touching counts at any coordinate magnitude and a gap of one unit in the last
+place is a gap: the predicate is PostGIS's exact zero, not a tolerance. `ST_3DDWithin(a, b, 0)`
+stays a distance in doubles.
+
+### 8.6 Solids are volumes
+
+The `SOLID_3D` overloads of `ST_3DDistance`, `ST_3DDWithin` and `ST_3DIntersects` measure the
+volume the shells bound, cavities excluded. The answer is the surface's — the solid's cached
+triangles taken as elements — except that it is 0 (true) when a part of the other geometry
+lies inside the volume. When the two surfaces do not meet, each connected part of the other
+geometry lies wholly inside the volume or wholly outside it, so one point per part decides:
+every point of a point set, the first vertex of each line and of each polygon, and one vertex
+of each shell of a solid, since a valid solid's shells are edge-connected (§8.1). Two solids
+are tested both ways.
+
+Containment is an exact ray test. The vertical ray up from the point crosses some of the
+solid's triangles; each counts +1 when it faces up and −1 when it faces down, and the sum over
+one solid's shells is its winding number about the point: ±1 in the material, 0 outside and
+in a cavity, because an interior shell is wound opposite the exterior (§8.1), whichever way
+the exterior is wound. Whether the ray passes through a triangle is `orient2d` in the XY
+plane, with the point perturbed symbolically by (ε, ε²) when it lies exactly on an edge's
+line: the tie-break depends only on the directed edge and flips with it, so a ray through a
+vertex or along an edge counts each crossing once. A vertical triangle has no area under the
+ray and is skipped. Whether the triangle is above the point is `orient3d`. The test is exact
+for every point off the surface, and the callers settle the surface first: in
+`ST_3DIntersects` that test is exact too, so the predicate is exact; in `ST_3DDistance` and
+`ST_3DDWithin` a point within rounding of the surface already has a surface distance within
+rounding of 0.
+
+A volume exists only for a valid solid (`is_valid`, §8.1): a gap, a fold or a mis-wound shell
+leaves the winding number without meaning. The overloads therefore raise for an invalid solid,
+reading the cached verdict from the header, so the error does not depend on whether the pair
+is near enough to need the body.
 
 ---
 

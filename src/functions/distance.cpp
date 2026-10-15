@@ -4,7 +4,12 @@
 
 #include "kernel/core_types.hpp"
 #include "kernel/geom_distance.hpp"
+#include "kernel/geom_elements.hpp"
+#include "kernel/geom_intersects.hpp"
 #include "kernel/geom_model.hpp"
+#include "kernel/payload.hpp"
+#include "kernel/solid_relations.hpp"
+#include "kernel/triangulation.hpp"
 
 #include <cstdint>
 
@@ -12,10 +17,12 @@ namespace duckdb {
 
 // Kernel names this file uses unqualified. Using-declarations rather than a
 // using-directive, which clang-tidy's google-build-using-namespace rejects.
+using duckdb_3d::BBox3D;
 using duckdb_3d::DeserializeGeomPayload;
 using duckdb_3d::GeomModel;
 using duckdb_3d::GeomType;
 using duckdb_3d::ReadGeomPayloadHeader;
+using duckdb_3d::SolidModel;
 
 // ST_3DDistance(g1 GEOM_3D, g2 GEOM_3D) → DOUBLE
 static double Geom3DDistanceSQL(string_t g1, string_t g2) {
@@ -85,12 +92,144 @@ static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector
 }
 
 // ST_3DIntersects(g1 GEOM_3D, g2 GEOM_3D) → BOOLEAN
-// Two geometries intersect when their minimum 3D distance is zero (touching
-// counts as intersecting), tested within a small tolerance.
+// Exact: whether the two closed geometries share a point (touching counts).
 static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, bool>(
-	    args.data[0], args.data[1], result, args.size(),
-	    [&](string_t g1, string_t g2) { return Geom3DWithinSQL(g1, g2, duckdb_3d::kEpsIntersect); });
+	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
+		    auto d1 = reinterpret_cast<const uint8_t *>(g1.GetData());
+		    auto d2 = reinterpret_cast<const uint8_t *>(g2.GetData());
+		    if (!duckdb_3d::BoxesOverlap(ReadGeomPayloadHeader(d1, g1.GetSize()).bbox,
+		                                 ReadGeomPayloadHeader(d2, g2.GetSize()).bbox)) {
+			    return false;
+		    }
+		    return Geom3DIntersects(DeserializeGeomPayload(d1, g1.GetSize()), DeserializeGeomPayload(d2, g2.GetSize()));
+	    });
+}
+
+// ──────────────────────────────────────────────────────────────
+// SOLID_3D overloads: a solid is the volume its shells bound.
+// ──────────────────────────────────────────────────────────────
+
+//! A solid argument's box, after refusing an invalid solid: it bounds no volume.
+//! Read from the header, so a far-apart pair is settled without the body, and an
+//! invalid solid raises whether or not it is near.
+static BBox3D ValidSolidBox(string_t solid) {
+	auto info = duckdb_3d::ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+	if (!info.validation.is_valid) {
+		throw InvalidInputException("the solid is not valid (ST_3DValidationReport says why), so it bounds no volume");
+	}
+	return info.bbox;
+}
+
+static BBox3D GeomBox(string_t geom) {
+	return ReadGeomPayloadHeader(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize()).bbox;
+}
+
+//! Read a solid argument into `model`, reusing its arrays from row to row.
+static const SolidModel &ReadSolid(string_t solid, SolidModel &model) {
+	duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+	if (model.TriangleCount() == 0) {
+		duckdb_3d::TriangulateSolidModel(model);
+	}
+	return model;
+}
+
+static GeomModel ReadGeom(string_t geom) {
+	return DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+}
+
+//! Apply `op(solid, geom)` to a (SOLID_3D, GEOM_3D) or, with SOLID_FIRST false,
+//! a (GEOM_3D, SOLID_3D) pair: every relation here is symmetric.
+template <bool SOLID_FIRST, class RESULT, class OP>
+static void SolidGeomExecute(DataChunk &args, Vector &result, OP op) {
+	SolidModel model;
+	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result, args.size(),
+	                                                    [&](string_t a, string_t b) {
+		                                                    string_t solid = SOLID_FIRST ? a : b;
+		                                                    string_t geom = SOLID_FIRST ? b : a;
+		                                                    return op(solid, geom, model);
+	                                                    });
+}
+
+template <class RESULT, class OP>
+static void SolidSolidExecute(DataChunk &args, Vector &result, OP op) {
+	SolidModel m1, m2;
+	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result, args.size(),
+	                                                    [&](string_t a, string_t b) { return op(a, b, m1, m2); });
+}
+
+static double SolidGeomDistance(string_t solid, string_t geom, SolidModel &model) {
+	ValidSolidBox(solid);
+	return duckdb_3d::Solid3DDistance(ReadSolid(solid, model), ReadGeom(geom));
+}
+
+static bool SolidGeomIntersects(string_t solid, string_t geom, SolidModel &model) {
+	if (!duckdb_3d::BoxesOverlap(ValidSolidBox(solid), GeomBox(geom))) {
+		return false;
+	}
+	return duckdb_3d::Solid3DIntersects(ReadSolid(solid, model), ReadGeom(geom));
+}
+
+static bool SolidGeomWithin(string_t solid, string_t geom, double dist, SolidModel &model) {
+	if (duckdb_3d::BBoxDistance(ValidSolidBox(solid), GeomBox(geom)) > dist) {
+		return false;
+	}
+	return duckdb_3d::Solid3DWithin(ReadSolid(solid, model), ReadGeom(geom), dist);
+}
+
+template <bool SOLID_FIRST>
+static void ST_3DDistanceSolidGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidGeomExecute<SOLID_FIRST, double>(args, result, SolidGeomDistance);
+}
+
+template <bool SOLID_FIRST>
+static void ST_3DIntersectsSolidGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidGeomExecute<SOLID_FIRST, bool>(args, result, SolidGeomIntersects);
+}
+
+template <bool SOLID_FIRST>
+static void ST_3DDWithinSolidGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidModel model;
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
+	                                                           args.size(), [&](string_t a, string_t b, double dist) {
+		                                                           string_t solid = SOLID_FIRST ? a : b;
+		                                                           string_t geom = SOLID_FIRST ? b : a;
+		                                                           if (dist < 0.0) {
+			                                                           ValidSolidBox(solid);
+			                                                           return false;
+		                                                           }
+		                                                           return SolidGeomWithin(solid, geom, dist, model);
+	                                                           });
+}
+
+static void ST_3DDistanceSolidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidSolidExecute<double>(args, result, [](string_t a, string_t b, SolidModel &m1, SolidModel &m2) {
+		ValidSolidBox(a);
+		ValidSolidBox(b);
+		return duckdb_3d::Solid3DDistance(ReadSolid(a, m1), ReadSolid(b, m2));
+	});
+}
+
+static void ST_3DIntersectsSolidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidSolidExecute<bool>(args, result, [](string_t a, string_t b, SolidModel &m1, SolidModel &m2) {
+		if (!duckdb_3d::BoxesOverlap(ValidSolidBox(a), ValidSolidBox(b))) {
+			return false;
+		}
+		return duckdb_3d::Solid3DIntersects(ReadSolid(a, m1), ReadSolid(b, m2));
+	});
+}
+
+static void ST_3DDWithinSolidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	SolidModel m1, m2;
+	TernaryExecutor::Execute<string_t, string_t, double, bool>(
+	    args.data[0], args.data[1], args.data[2], result, args.size(), [&](string_t a, string_t b, double dist) {
+		    auto box_a = ValidSolidBox(a);
+		    auto box_b = ValidSolidBox(b);
+		    if (dist < 0.0 || duckdb_3d::BBoxDistance(box_a, box_b) > dist) {
+			    return false;
+		    }
+		    return duckdb_3d::Solid3DWithin(ReadSolid(a, m1), ReadSolid(b, m2), dist);
+	    });
 }
 
 // ST_3DClosestPoint(g1 GEOM_3D, g2 GEOM_3D) → GEOM_3D (Point)
@@ -129,20 +268,38 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 	    });
 }
 
-void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_3d_type) {
+void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
+                               const LogicalType &geom_3d_type) {
+	ScalarFunctionSet distance_set("st_3ddistance");
+	distance_set.AddFunction(ScalarFunction({geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun));
+	distance_set.AddFunction(
+	    ScalarFunction({solid_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceSolidGeomFun<true>));
+	distance_set.AddFunction(
+	    ScalarFunction({geom_3d_type, solid_3d_type}, LogicalType::DOUBLE, ST_3DDistanceSolidGeomFun<false>));
+	distance_set.AddFunction(
+	    ScalarFunction({solid_3d_type, solid_3d_type}, LogicalType::DOUBLE, ST_3DDistanceSolidSolidFun));
 	RegisterDocumented(
-	    loader, ScalarFunction("st_3ddistance", {geom_3d_type, geom_3d_type}, LogicalType::DOUBLE, ST_3DDistanceFun),
+	    loader, std::move(distance_set),
 	    {{"geom1", "geom2"},
-	     "Returns the minimum 3D Euclidean distance between two GEOM_3D values in input units.",
+	     "Returns the minimum 3D Euclidean distance between two values in input units. A SOLID_3D is the volume it "
+	     "bounds, so a geometry inside it is at distance 0; an invalid solid raises.",
 	     "ST_3DDistance(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY))",
 	     {"distance"}});
+	ScalarFunctionSet dwithin_set("st_3ddwithin");
+	dwithin_set.AddFunction(
+	    ScalarFunction({geom_3d_type, geom_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN, ST_3DDWithinFun));
+	dwithin_set.AddFunction(ScalarFunction({solid_3d_type, geom_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
+	                                       ST_3DDWithinSolidGeomFun<true>));
+	dwithin_set.AddFunction(ScalarFunction({geom_3d_type, solid_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
+	                                       ST_3DDWithinSolidGeomFun<false>));
+	dwithin_set.AddFunction(ScalarFunction({solid_3d_type, solid_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
+	                                       ST_3DDWithinSolidSolidFun));
 	RegisterDocumented(
-	    loader,
-	    ScalarFunction("st_3ddwithin", {geom_3d_type, geom_3d_type, LogicalType::DOUBLE}, LogicalType::BOOLEAN,
-	                   ST_3DDWithinFun),
+	    loader, std::move(dwithin_set),
 	    {{"geom1", "geom2", "distance"},
-	     "Returns whether two GEOM_3D values are within the given 3D distance of each other; prunes on bounding boxes, "
-	     "so it is cheaper than comparing ST_3DDistance. A negative distance returns false.",
+	     "Returns whether two values are within the given 3D distance of each other; prunes on bounding boxes, so it "
+	     "is cheaper than comparing ST_3DDistance. A SOLID_3D is the volume it bounds. A negative distance returns "
+	     "false.",
 	     "ST_3DDWithin(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 6 3)'::GEOMETRY), "
 	     "5.0)",
 	     {"distance"}});
@@ -163,11 +320,19 @@ void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_
 	                    "ST_3DDFullyWithin(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), ST_Geom3DFromWKB('POINT Z (4 "
 	                    "6 3)'::GEOMETRY), 10.0)",
 	                    {"distance"}});
+	ScalarFunctionSet intersects_set("st_3dintersects");
+	intersects_set.AddFunction(ScalarFunction({geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsFun));
+	intersects_set.AddFunction(
+	    ScalarFunction({solid_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsSolidGeomFun<true>));
+	intersects_set.AddFunction(
+	    ScalarFunction({geom_3d_type, solid_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsSolidGeomFun<false>));
+	intersects_set.AddFunction(
+	    ScalarFunction({solid_3d_type, solid_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsSolidSolidFun));
 	RegisterDocumented(
-	    loader,
-	    ScalarFunction("st_3dintersects", {geom_3d_type, geom_3d_type}, LogicalType::BOOLEAN, ST_3DIntersectsFun),
+	    loader, std::move(intersects_set),
 	    {{"geom1", "geom2"},
-	     "Returns whether two GEOM_3D values intersect in 3D; touching counts as intersecting.",
+	     "Returns whether two values share a point in 3D, decided exactly; touching counts. A SOLID_3D is the volume "
+	     "it bounds; an invalid solid raises.",
 	     "ST_3DIntersects(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), "
 	     "ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
 	     {"distance"}});

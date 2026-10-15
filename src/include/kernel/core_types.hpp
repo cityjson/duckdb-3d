@@ -11,8 +11,6 @@ constexpr double kEpsAbsolute = 1e-12;
 constexpr double kEpsRelative = 1e-9;
 //! Absolute tolerance below which a signed 2D polygon area is treated as zero.
 constexpr double kEpsArea = 1e-18;
-//! Distance below which two geometries count as touching (st_3dintersects).
-constexpr double kEpsIntersect = 1e-9;
 
 struct Vertex3D {
 	double x;

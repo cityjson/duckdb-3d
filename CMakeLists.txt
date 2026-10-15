@@ -49,6 +49,8 @@ set(EXTENSION_SOURCES
     src/kernel/affine.cpp
     src/kernel/predicates.cpp
     src/kernel/convex_hull.cpp
+    src/kernel/geom_intersects.cpp
+    src/kernel/solid_relations.cpp
     third_party/predicates/predicates.c)
 
 # PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain

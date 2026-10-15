@@ -111,6 +111,16 @@ SELECT
 ----
 true	false
 
+# ST_3DIntersects is exact: squares 1e-12 apart are within any tolerance of 1e-9
+# but do not touch, and a square sharing one corner with another touches it.
+query III
+SELECT ST_3DIntersects(a, b), ST_3DDWithin(a, b, 1e-9), ST_3DIntersects(a, c)
+FROM (SELECT ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 0))'::GEOMETRY) AS a,
+             ST_Geom3DFromWKB('POLYGON Z ((0 0 1e-12, 1 0 1e-12, 1 1 1e-12, 0 1 1e-12, 0 0 1e-12))'::GEOMETRY) AS b,
+             ST_Geom3DFromWKB('POLYGON Z ((1 1 0, 2 1 1, 2 2 1, 1 2 0, 1 1 0))'::GEOMETRY) AS c);
+----
+false	true	true
+
 # ST_3DIntersects: NULL propagation
 query I
 SELECT ST_3DIntersects(NULL::GEOM_3D,

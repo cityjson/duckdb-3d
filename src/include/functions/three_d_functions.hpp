@@ -142,7 +142,8 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
                                     const LogicalType &geom_3d_type);
 void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                    const LogicalType &geom_3d_type);
-void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &geom_3d_type);
+void RegisterDistanceFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
+                               const LogicalType &geom_3d_type);
 void RegisterPayloadCasts(ExtensionLoader &loader, const LogicalType &solid_3d_type, const LogicalType &geom_3d_type);
 void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &solid_3d_type,
                                 const LogicalType &geom_3d_type);

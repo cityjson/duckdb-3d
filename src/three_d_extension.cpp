@@ -26,7 +26,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterSolidIOFunctions(loader, solid_3d_type);
 	RegisterSolidAccessorFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterGeomAccessorFunctions(loader, solid_3d_type, geom_3d_type);
-	RegisterDistanceFunctions(loader, geom_3d_type);
+	RegisterDistanceFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterTransformFunctions(loader, solid_3d_type, geom_3d_type);
 }
 

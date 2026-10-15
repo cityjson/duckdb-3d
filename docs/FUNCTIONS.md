@@ -575,15 +575,17 @@ FROM ex;
 
 ## Distance / relationships
 
-All take **`GEOM_3D`** — build it with `ST_Geom3DFromWKB`.
+All take **`GEOM_3D`** — build it with `ST_Geom3DFromWKB`. `ST_3DDistance`, `ST_3DDWithin` and
+`ST_3DIntersects` also take a **`SOLID_3D`** on either side, as the volume it bounds (see
+[Solids are volumes](#solids-are-volumes)).
 
 | Function | Signature | Returns |
 | --- | --- | --- |
-| `ST_3DDistance` | `(GEOM_3D, GEOM_3D)` | `DOUBLE` |
+| `ST_3DDistance` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D)` | `DOUBLE` |
 | `ST_3DMaxDistance` | `(GEOM_3D, GEOM_3D)` | `DOUBLE` |
-| `ST_3DDWithin` | `(GEOM_3D, GEOM_3D, dist DOUBLE)` | `BOOLEAN` |
+| `ST_3DDWithin` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D, dist DOUBLE)` | `BOOLEAN` |
 | `ST_3DDFullyWithin` | `(GEOM_3D, GEOM_3D, dist DOUBLE)` | `BOOLEAN` |
-| `ST_3DIntersects` | `(GEOM_3D, GEOM_3D)` | `BOOLEAN` |
+| `ST_3DIntersects` | `(GEOM_3D \| SOLID_3D, GEOM_3D \| SOLID_3D)` | `BOOLEAN` |
 | `ST_3DClosestPoint` | `(GEOM_3D, GEOM_3D)` | `GEOM_3D` (Point) |
 | `ST_3DShortestLine` | `(GEOM_3D, GEOM_3D)` | `GEOM_3D` (LineString) |
 
@@ -626,8 +628,13 @@ FROM pair;
 cheaper than `ST_3DDistance(...) <= d` — prefer it for proximity filters. A **negative**
 threshold returns `false` rather than raising, for both `DWithin` variants.
 `ST_3DDFullyWithin` asks whether the *maximum* distance is within the threshold, i.e. whether
-one geometry lies entirely inside a buffer of the other. `ST_3DIntersects` treats touching
-geometries as intersecting.
+one geometry lies entirely inside a buffer of the other.
+
+`ST_3DIntersects` is **exact**: it decides whether the two closed geometries share a point
+with exact orientation predicates, not by comparing a distance with a tolerance. Touching
+counts at any coordinate magnitude, and a gap of one unit in the last place is a gap.
+`ST_3DDWithin(a, b, 0)` is a distance computed in doubles and can differ from it where the
+two geometries are within rounding of touching; use `ST_3DIntersects` for the predicate.
 
 A polygon is measured as the surface it encloses: a point in a concave face's notch or over
 a hole is at its distance from the face's edges, not 0. `ST_3DClosestPoint(a, b)` is the point
@@ -643,6 +650,47 @@ SELECT p.id FROM parts p, ref
 WHERE p.id <> 'NL.IMBAG.Pand.0503100000018426-0'
   AND ST_3DDWithin(p.g, ref.g, 5.0);
 ```
+
+### Solids are volumes
+
+With a `SOLID_3D` argument the three functions measure the volume its shells bound, cavities
+excluded: a geometry inside it is at distance 0 and intersects it, while its surface, as a
+`GEOM_3D`, is metres away. The reference building's surface centroid lies inside it:
+
+```sql
+SELECT ROUND(ST_3DDistance(solid, c), 3) AS to_volume,
+       ROUND(ST_3DDistance(g, c), 3)     AS to_surface
+FROM ex, (SELECT ST_3DCentroid(g) AS c FROM ex);
+```
+```
+┌───────────┬────────────┐
+│ to_volume │ to_surface │
+├───────────┼────────────┤
+│ 0.0       │ 4.111      │
+└───────────┴────────────┘
+```
+
+Two solids intersect when they share a point, so terraced houses sharing a wall do:
+
+```sql
+SELECT count(*) FILTER (WHERE ST_3DIntersects(p.solid, ex.solid)) AS touching,
+       count(*) FILTER (WHERE ST_3DDWithin(p.solid, ex.solid, 50)) AS within_50m
+FROM parts p, ex
+WHERE p.id <> ex.id AND ST_3DValidationReport(p.solid).is_valid;
+```
+```
+┌──────────┬────────────┐
+│ touching │ within_50m │
+├──────────┼────────────┤
+│ 2        │ 49         │
+└──────────┴────────────┘
+```
+
+A volume is defined only for a valid solid, so an invalid one **raises** (`TRY` gives
+`NULL`), even when the pair is far apart; filter with
+`ST_3DValidationReport(solid).is_valid`, as above. Containment is decided exactly, so
+`ST_3DIntersects` stays exact with solids. `ST_3DMaxDistance`, `ST_3DDFullyWithin`,
+`ST_3DClosestPoint` and `ST_3DShortestLine` take only `GEOM_3D`.
 
 ---
 
