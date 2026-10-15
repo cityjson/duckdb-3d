@@ -1,5 +1,6 @@
 #include "functions/three_d_functions.hpp"
 
+#include "duckdb/common/types/geometry.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace duckdb {
 
@@ -90,6 +92,63 @@ static void BBoxFieldFun(DataChunk &args, ExpressionState &state, Vector &result
 		                                                  }
 		                                                  return box.*FIELD;
 	                                                  });
+}
+
+// ST_3DEnvelope(x) → GEOMETRY: the box's footprint, the rectangle of its X and Y
+// ranges, as a core GEOMETRY; spatial's spatial join takes it as a candidate
+// filter. A box with no width on an axis gives a line, with none on either a
+// point, as PostGIS's ST_Envelope does.
+static void AppendU32(std::vector<uint8_t> &out, uint32_t v) {
+	for (int i = 0; i < 4; i++) {
+		out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+	}
+}
+
+static void AppendPoint(std::vector<uint8_t> &out, double x, double y) {
+	for (double v : {x, y}) {
+		uint64_t bits;
+		memcpy(&bits, &v, sizeof(bits));
+		for (int i = 0; i < 8; i++) {
+			out.push_back(static_cast<uint8_t>(bits >> (8 * i)));
+		}
+	}
+}
+
+static void ST_3DEnvelopeFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	std::vector<uint8_t> wkb;
+	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
+	    args.data[0], result, args.size(), [&](string_t payload, ValidityMask &mask, idx_t idx) {
+		    duckdb_3d::BBox3D box;
+		    if (!PayloadBBox(payload, "ST_3DEnvelope", box)) {
+			    mask.SetInvalid(idx);
+			    return string_t();
+		    }
+		    wkb.clear();
+		    wkb.push_back(1);
+		    const bool flat_x = box.min_x == box.max_x, flat_y = box.min_y == box.max_y;
+		    if (flat_x && flat_y) {
+			    AppendU32(wkb, 1);
+			    AppendPoint(wkb, box.min_x, box.min_y);
+		    } else if (flat_x || flat_y) {
+			    AppendU32(wkb, 2);
+			    AppendU32(wkb, 2);
+			    AppendPoint(wkb, box.min_x, box.min_y);
+			    AppendPoint(wkb, box.max_x, box.max_y);
+		    } else {
+			    AppendU32(wkb, 3);
+			    AppendU32(wkb, 1);
+			    AppendU32(wkb, 5);
+			    AppendPoint(wkb, box.min_x, box.min_y);
+			    AppendPoint(wkb, box.max_x, box.min_y);
+			    AppendPoint(wkb, box.max_x, box.max_y);
+			    AppendPoint(wkb, box.min_x, box.max_y);
+			    AppendPoint(wkb, box.min_x, box.min_y);
+		    }
+		    string_t geometry;
+		    Geometry::FromBinary(string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size()), geometry, result,
+		                         true);
+		    return geometry;
+	    });
 }
 
 // ST_3DExtent: the box of every box. The state keeps the first CRS it sees, so
@@ -232,6 +291,20 @@ void RegisterBoundsFunctions(ExtensionLoader &loader, const LogicalType &solid_3
 		                              "0))'::GEOMETRY), 3.0))",
 		                    {"introspection"}});
 	}
+
+	ScalarFunctionSet envelope_set("st_3denvelope");
+	envelope_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::GEOMETRY(), ST_3DEnvelopeFun));
+	envelope_set.AddFunction(ScalarFunction({geom_3d_type}, LogicalType::GEOMETRY(), ST_3DEnvelopeFun));
+	RegisterDocumented(loader, std::move(envelope_set),
+	                   {{"geom"},
+	                    "Returns the footprint of a SOLID_3D or GEOM_3D value's bounding box as a 2D GEOMETRY: the "
+	                    "rectangle of its X and Y ranges (a line or a point where a range has no width), NULL for an "
+	                    "empty value. Its 2D distance to another envelope never exceeds the two values' 3D distance, "
+	                    "so spatial's spatial join on ST_DWithin of the envelopes generates every candidate "
+	                    "ST_3DDWithin needs.",
+	                    "ST_3DEnvelope(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 "
+	                    "0))'::GEOMETRY), 3.0))",
+	                    {"introspection"}});
 
 	AggregateFunctionSet extent_set("st_3dextent");
 	for (auto &type : {solid_3d_type, geom_3d_type}) {

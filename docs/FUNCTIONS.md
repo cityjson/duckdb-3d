@@ -359,6 +359,7 @@ SELECT ST_3DAsText(ST_3DCentroid(g)) AS centroid FROM ex;
 | --- | --- | --- | --- |
 | `ST_3DBounds` | `(SOLID_3D \| GEOM_3D)` | `STRUCT` (6 fields) | both |
 | `ST_3DExtent` | aggregate `(SOLID_3D \| GEOM_3D)` | `STRUCT` (6 fields) | both |
+| `ST_3DEnvelope` | `(SOLID_3D \| GEOM_3D)` | `GEOMETRY` | both |
 | `ST_3DNumSolids` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
 | `ST_3DNumShells` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
 | `ST_3DNumFaces` | `(SOLID_3D)` | `BIGINT` | `SOLID_3D` |
@@ -439,6 +440,19 @@ SELECT ST_3DExtent(solid) AS extent FROM parts;
 ```
 {'min_x': 84501.553625, 'min_y': 445805.024, 'min_z': -3.7469973754882844,
  'max_x': 85675.092625, 'max_y': 446983.477, 'max_z': 95.04200262451172}
+```
+
+`ST_3DEnvelope` is the box's footprint as a core `GEOMETRY`: the rectangle of its X and Y
+ranges, a line or a point where a range has no width (as PostGIS's `ST_Envelope`), `NULL`
+for an empty value. It carries no CRS. It exists to hand `spatial`'s spatial join its
+candidates (see [Spatial joins](#spatial-joins)).
+
+```sql
+SELECT ST_3DEnvelope(solid) AS envelope FROM ex;
+```
+```
+POLYGON ((84988.326625 446832.685, 85002.061625 446832.685, 85002.061625 446844.662,
+          84988.326625 446844.662, 84988.326625 446832.685))
 ```
 
 > `ST_NDims` and `ST_3DHasZ` are constants that never read the payload — they are API-shape
@@ -855,6 +869,34 @@ WHERE p.id <> 'NL.IMBAG.Pand.0503100000018426-0'
   AND ST_3DDWithin(p.g, ref.g, 5.0);
 ```
 
+### Spatial joins
+
+`ST_3DDWithin` in a join condition is a nested loop over every pair: its box test is cheap,
+but a city has billions of pairs. With `spatial` loaded, join on `ST_DWithin` of the
+[envelopes](#st_3dbounds) instead, which DuckDB plans as a `SPATIAL_JOIN` over an R-tree,
+and refine the candidates with `ST_3DDWithin`. The envelopes' 2D distance never exceeds the
+values' 3D distance, so the candidates hold every pair the 3D test accepts. Every building
+pair in the tile within 5 m of each other:
+
+```sql
+LOAD spatial;
+SELECT count(*) AS pairs
+FROM parts a JOIN parts b ON ST_DWithin(ST_3DEnvelope(a.g), ST_3DEnvelope(b.g), 5.0)
+WHERE CASE WHEN a.id < b.id THEN ST_3DDWithin(a.g, b.g, 5.0) ELSE false END;
+```
+```
+┌───────┐
+│ pairs │
+├───────┤
+│ 1423  │
+└───────┘
+```
+
+Keep the join condition to the envelope predicate alone. DuckDB folds any other comparison
+of the two sides, such as `a.id < b.id` in the `WHERE` clause, into the join and then plans a
+merge or nested-loop join; inside the `CASE` it stays a filter on the candidates. `EXPLAIN`
+shows which join was chosen.
+
 ### Solids are volumes
 
 With a `SOLID_3D` argument the three functions measure the volume its shells bound, cavities
@@ -1222,13 +1264,13 @@ a number.
 
 ## Function index
 
-74 public functions.
+75 public functions.
 
 | Category | Functions |
 | --- | --- |
 | **Import** | `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_3DGeomFromText` |
 | **Export** | `ST_3DAsWKB`, `ST_3DAsText`, `ST_3DAsGeoJSON`, `ST_3DAsBinary` |
-| **Introspection** | `ST_3DBounds`, `ST_3DExtent` (aggregate), `ST_3DXMin`, `ST_3DXMax`, `ST_3DYMin`, `ST_3DYMax`, `ST_3DZMin`, `ST_3DZMax`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
+| **Introspection** | `ST_3DBounds`, `ST_3DExtent` (aggregate), `ST_3DEnvelope`, `ST_3DXMin`, `ST_3DXMax`, `ST_3DYMin`, `ST_3DYMax`, `ST_3DZMin`, `ST_3DZMax`, `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces`, `ST_NDims`, `ST_3DHasZ`, `ST_CoordDim`, `ST_3DGeometryType`, `ST_3DDimension`, `ST_3DNumGeometries`, `ST_3DX`, `ST_3DY`, `ST_3DZ`, `ST_IsPlanar` |
 | **Faces** | `ST_3DFaces`, `ST_3DFaceN`, `ST_3DFaceAreas`, `ST_3DFaceNormals`, `ST_3DFaceSlopes`, `ST_3DFaceAzimuths` |
 | **Shells and parts** | `ST_3DExteriorShell`, `ST_3DNumInteriorShells`, `ST_3DInteriorShellN`, `ST_3DGeometryN` |
 | **Validation** | `ST_3DIsValid`, `ST_3DIsClosed`, `ST_3DIsManifold`, `ST_3DIsOriented`, `ST_3DValidationReport` |

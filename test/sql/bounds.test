@@ -68,3 +68,24 @@ SELECT ST_3DBounds(ST_3DGeomFromText('POLYGON Z EMPTY')) IS NULL,
        (SELECT (ST_3DExtent(g)).max_z FROM (VALUES (ST_3DGeomFromText('POINT Z EMPTY')), (ST_3DGeomFromText('POINT Z (1 2 3)'))) v(g));
 ----
 true	true	true	3.0
+
+# ST_3DEnvelope is the box's footprint as a core GEOMETRY: a rectangle, or a
+# line or a point where the box has no width (as PostGIS's ST_Envelope), and
+# NULL for an empty value.
+query II
+SELECT ST_3DEnvelope(g)::VARCHAR, ST_3DEnvelope(s)::VARCHAR FROM b;
+----
+POLYGON ((1 -2, 4 -2, 4 5, 1 5, 1 -2))	POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))
+
+query III
+SELECT typeof(ST_3DEnvelope(s)),
+       ST_3DEnvelope(ST_Geom3DFromWKB('LINESTRING Z (1 2 3, 1 5 7)'::GEOMETRY))::VARCHAR,
+       ST_3DEnvelope(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))::VARCHAR
+FROM b;
+----
+GEOMETRY	LINESTRING (1 2, 1 5)	POINT (1 2)
+
+query I
+SELECT ST_3DEnvelope(ST_3DGeomFromText('POLYGON Z EMPTY')) IS NULL;
+----
+true
