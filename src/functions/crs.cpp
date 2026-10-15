@@ -43,8 +43,8 @@ bool SameCrs(const std::string &a, const std::string &b) {
 	if (crs_a.Equals(crs_b)) {
 		return true;
 	}
-	auto id_a = crs_a.GetIdentifier();
-	auto id_b = crs_b.GetIdentifier();
+	const auto &id_a = crs_a.GetIdentifier();
+	const auto &id_b = crs_b.GetIdentifier();
 	return !id_a.empty() && StringUtil::CIEquals(id_a, id_b);
 }
 

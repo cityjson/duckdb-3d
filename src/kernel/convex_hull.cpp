@@ -116,6 +116,7 @@ public:
 			}
 		}
 		std::vector<uint32_t> fresh;
+		fresh.reserve(tetra.size());
 		for (const auto &f : tetra) {
 			fresh.push_back(AddFace(f[0], f[1], f[2]));
 		}

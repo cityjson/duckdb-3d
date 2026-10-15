@@ -73,9 +73,10 @@ std::vector<FaceMeasure> SolidFaceMeasures(const SolidModel &model) {
 		const uint32_t t_end = cached ? model.face_triangle_offsets[f + 1] : 0;
 		double area = 0.0;
 		for (uint32_t t = t_begin; t < t_end; t++) {
-			area += TriangleArea(model.vertices[model.triangle_vertex_indices[t * 3]],
-			                     model.vertices[model.triangle_vertex_indices[t * 3 + 1]],
-			                     model.vertices[model.triangle_vertex_indices[t * 3 + 2]]);
+			const size_t k = static_cast<size_t>(t) * 3;
+			area += TriangleArea(model.vertices[model.triangle_vertex_indices[k]],
+			                     model.vertices[model.triangle_vertex_indices[k + 1]],
+			                     model.vertices[model.triangle_vertex_indices[k + 2]]);
 		}
 		SetMeasures(faces[f], area, t_end > t_begin, NewellRingAreaVector(model, model.face_ring_offsets[f]));
 	}
@@ -108,9 +109,10 @@ std::vector<FaceMeasure> GeomFaceMeasures(const GeomModel &geom) {
 		const uint32_t t_end = model.polygon_triangle_offsets[p + 1];
 		double area = 0.0;
 		for (uint32_t t = t_begin; t < t_end; t++) {
-			area += TriangleArea(model.vertices[model.triangle_indices[t * 3]],
-			                     model.vertices[model.triangle_indices[t * 3 + 1]],
-			                     model.vertices[model.triangle_indices[t * 3 + 2]]);
+			const size_t k = static_cast<size_t>(t) * 3;
+			area += TriangleArea(model.vertices[model.triangle_indices[k]],
+			                     model.vertices[model.triangle_indices[k + 1]],
+			                     model.vertices[model.triangle_indices[k + 2]]);
 		}
 		SetMeasures(faces[p], area, t_end > t_begin, exterior);
 	}

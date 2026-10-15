@@ -19,7 +19,7 @@ namespace duckdb {
 //! a bind that picks the callback itself wraps what it picks. Out of memory
 //! passes through untouched, so DuckDB reports it as such and TRY() does not
 //! hide it as NULL.
-inline scalar_function_t KernelErrorsAsInvalidInput(scalar_function_t function) {
+inline scalar_function_t KernelErrorsAsInvalidInput(const scalar_function_t &function) {
 	return [function](DataChunk &args, ExpressionState &state, Vector &result) {
 		try {
 			function(args, state, result);
@@ -65,7 +65,7 @@ std::string TransformSourceCrs(const std::string &stored, const std::string &sou
 
 //! Wrap a function of two values (its first two arguments) so that a row whose
 //! values are in different CRSs raises, named as `name`, before it computes.
-inline scalar_function_t WithSameCrs(scalar_function_t function, const char *name) {
+inline scalar_function_t WithSameCrs(const scalar_function_t &function, const char *name) {
 	return [function, name](DataChunk &args, ExpressionState &state, Vector &result) {
 		UnifiedVectorFormat a, b;
 		args.data[0].ToUnifiedFormat(args.size(), a);
@@ -103,8 +103,9 @@ std::string BoundCrs(ExpressionState &state);
 //! read more naturally but make an untyped `ST_3DFromWKB(NULL)` ambiguous —
 //! SQLNULL casts to either at the same cost — and that call has always bound.
 inline unique_ptr<FunctionData> BindWkbArgument(ScalarFunction &bound_function,
-                                                vector<unique_ptr<Expression>> &arguments, scalar_function_t blob_fn,
-                                                scalar_function_t geometry_fn) {
+                                                vector<unique_ptr<Expression>> &arguments,
+                                                const scalar_function_t &blob_fn,
+                                                const scalar_function_t &geometry_fn) {
 	auto &arg_type = arguments[0]->return_type;
 	if (arg_type.id() == LogicalTypeId::UNKNOWN) {
 		// A prepared-statement '?' parameter: defer to a later re-bind.
@@ -113,11 +114,11 @@ inline unique_ptr<FunctionData> BindWkbArgument(ScalarFunction &bound_function,
 	if (arg_type.id() == LogicalTypeId::GEOMETRY) {
 		// Keep the argument's own type, CRS parameter and all, so no cast is added.
 		bound_function.arguments[0] = arg_type;
-		bound_function.function = KernelErrorsAsInvalidInput(std::move(geometry_fn));
+		bound_function.function = KernelErrorsAsInvalidInput(geometry_fn);
 		return GeometryArgumentCrs(arg_type);
 	}
 	bound_function.arguments[0] = LogicalType::BLOB;
-	bound_function.function = KernelErrorsAsInvalidInput(std::move(blob_fn));
+	bound_function.function = KernelErrorsAsInvalidInput(blob_fn);
 	return nullptr;
 }
 

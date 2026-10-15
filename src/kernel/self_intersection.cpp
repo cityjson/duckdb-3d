@@ -2,11 +2,14 @@
 #include "kernel/geometry_math.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace duckdb_3d {
 
 namespace {
+
+constexpr double kInf = std::numeric_limits<double>::infinity();
 
 Vertex3D Sub(const Vertex3D &a, const Vertex3D &b) {
 	return {a.x - b.x, a.y - b.y, a.z - b.z};
@@ -98,8 +101,8 @@ bool Straddles(const double d[3], double tolerance) {
 //! The interval, along unit direction `dir`, of the segment where a triangle
 //! with signed plane distances `d` (both signs present) meets the plane.
 void CrossingInterval(const Triangle &t, const double d[3], const Vertex3D &dir, double &lo, double &hi) {
-	lo = INFINITY;
-	hi = -INFINITY;
+	lo = kInf;
+	hi = -kInf;
 	for (int i = 0; i < 3; i++) {
 		int j = (i + 1) % 3;
 		if ((d[i] > 0) == (d[j] > 0)) {
@@ -256,7 +259,7 @@ double PointSegmentDistance(const Vertex3D &p, const Vertex3D &a, const Vertex3D
 //! Distance from `p` to the boundary (every ring) of `face`, in solid-local
 //! coordinates.
 double BoundaryDistance(const SolidModel &model, uint32_t face, const Vertex3D &origin, const Vertex3D &p) {
-	double best = INFINITY;
+	double best = kInf;
 	for (uint32_t r = model.face_ring_offsets[face]; r < model.face_ring_offsets[face + 1]; r++) {
 		uint32_t begin = model.ring_vertex_offsets[r], end = model.ring_vertex_offsets[r + 1];
 		for (uint32_t i = begin; i < end; i++) {
@@ -295,7 +298,7 @@ uint32_t CountSelfIntersections(const SolidModel &model) {
 		}
 
 		triangles.clear();
-		double lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+		double lo[3] = {kInf, kInf, kInf}, hi[3] = {-kInf, -kInf, -kInf};
 		for (uint32_t f = face_start; f < face_end; f++) {
 			uint32_t t_start = model.face_triangle_offsets[f];
 			uint32_t t_end = model.face_triangle_offsets[f + 1];
