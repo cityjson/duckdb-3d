@@ -112,6 +112,15 @@ scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
     --duckdb build/release/duckdb,/path/to/baseline/duckdb --rounds 3
 ```
 
+To compare a build with a baseline whose shell you do not have, pass loadable extensions
+instead; they run in the Python `duckdb` module, which must be the DuckDB version they were
+built for:
+
+```sh
+scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
+    --extensions build/release/extension/three_d/three_d.duckdb_extension,/path/to/baseline/three_d.duckdb_extension
+```
+
 It runs single-threaded and reports, per query and per binary, the median wall and CPU time
 and a digest of the exact results, so a comparison of two builds also shows whether their
 answers are bit-identical. Keep the data and the baseline binaries outside the repository.
