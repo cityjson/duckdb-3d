@@ -231,18 +231,28 @@ static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
 		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
-		// Scale about the origin. Unlike a rigid motion, a degenerate (zero) factor
-		// collapses faces and a negative factor changes geometry, so the cached
-		// validation flags cannot simply carry over. Recompute validation from the
-		// scaled coordinates (this catches the collapsed/degenerate case); the bbox
-		// is recomputed too since negative factors can swap min/max.
+		// Scale about the origin. A uniform factor is a similarity: like a rigid
+		// motion it keeps every validation verdict, each of which is measured
+		// relative to the solid's own extent, and a negative factor reverses every
+		// face alike. That holds while every scaled coordinate keeps full
+		// precision (no overflow, no underflow into subnormals). Any other factor
+		// changes the solid's shape, and a zero one collapses faces, so validation
+		// runs again on the scaled coordinates. The bbox is recomputed either way:
+		// a negative factor swaps min and max.
+		bool similarity = sx == sy && sy == sz && std::isnormal(sx);
+		auto full_precision = [](double c) {
+			return c == 0.0 || std::isnormal(c);
+		};
 		for (auto &v : model.vertices) {
 			v.x *= sx;
 			v.y *= sy;
 			v.z *= sz;
+			similarity = similarity && full_precision(v.x) && full_precision(v.y) && full_precision(v.z);
 		}
 		model.ComputeBBox();
-		ValidateSolidModel(model);
+		if (!similarity) {
+			ValidateSolidModel(model);
+		}
 
 		auto payload = SerializePayload(model);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(

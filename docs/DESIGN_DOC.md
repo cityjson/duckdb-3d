@@ -288,10 +288,10 @@ them valid, already in a table):
 
 | Step (`bench.py` query) | Per solid |
 | --- | --- |
-| Import: parse WKB, build, triangulate, validate (`import_struct`) | 56 µs |
-| A header field, `ST_3DZMax` over a `SOLID_3D` column (`zmax`) | 0.28 µs |
-| `ST_3DVolume` over a `SOLID_3D` column (`volume`) | 1.05 µs |
-| `ST_3DArea` over a `SOLID_3D` column (`area`) | 1.8 µs |
+| Import: parse WKB, build, triangulate, validate (`import_struct`) | 55 µs |
+| A header field, `ST_3DZMax` over a `SOLID_3D` column (`zmax`) | 0.21 µs |
+| `ST_3DVolume` over a `SOLID_3D` column (`volume`) | 0.95 µs |
+| `ST_3DArea` over a `SOLID_3D` column (`area`) | 1.1 µs |
 
 Three consequences follow.
 
@@ -301,8 +301,8 @@ Three consequences follow.
 - **Keep WKB at rest.** In Parquet the payload is about 20 % larger than the WKB it came from
   and opaque to every other tool, and a payload read back from Parquet arrives as a `BLOB`
   and is rebuilt anyway (§5.1). Store WKB, as CityParquet does; build values per session.
-- **No zero-copy view yet.** A measure over a materialised column costs one to two
-  microseconds a solid, thirty to fifty times less than an import, and decoding the payload
+- **No zero-copy view yet.** A measure over a materialised column costs about a
+  microsecond a solid, some fifty times less than an import, and decoding the payload
   is only part of that. A second, byte-level implementation of each measure would buy a
   fraction of a microsecond; it waits for a workload where it matters
   ([FUTURE_WORK.md §5](./FUTURE_WORK.md)).
@@ -449,7 +449,8 @@ measured on the 1116 Delft LoD2.2 solids, rotating, translating, or scaling them
 by 0.001 changes no verdict. Scaling the axes unequally changes angles and planarity, so it
 may change a verdict on a face whose features are already at tolerance scale (10 of the
 1116 under a tenfold vertical stretch, each a fold or crossing at tolerance scale before the
-stretch).
+stretch). `ST_3DScale` follows from this: a uniform factor carries the verdicts over, as a
+rotation or translation does, and an unequal or zero factor runs validation again.
 
 A face's area counts as zero when its Newell area vector is smaller than `kEpsRelative`
 times the square of the ring's extent. The vector is computed about the ring's own first
