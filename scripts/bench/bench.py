@@ -75,6 +75,37 @@ def bench_queries(ds):
         ),
         ("dwithin_2m", f"SELECT count_if(v), {h('v')} FROM (SELECT ST_3DDWithin(g1, g2, 2.0) AS v FROM {ds}_pairs);"),
         ("shortestline", f"SELECT {h('ST_3DShortestLine(g1, g2)')} FROM {ds}_pairs;"),
+    ] + [
+        # The rest of the surface both builds share, one call a row.
+        (name, f"SELECT {h(expr)} FROM {table};")
+        for name, expr, table in [
+            ("solid_counts", "(ST_3DNumFaces(s), ST_3DNumShells(s), ST_3DNumSolids(s))", f"{ds}_s WHERE s IS NOT NULL"),
+            (
+                "solid_flags",
+                "(ST_3DIsClosed(s), ST_3DIsManifold(s), ST_3DIsOriented(s))",
+                f"{ds}_s WHERE s IS NOT NULL",
+            ),
+            ("solid_bounds", "ST_3DBounds(s)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("surface_area", "ST_3DSurfaceArea(s)", f"{ds}_nondegen"),
+            ("solid_perimeter", "ST_3DPerimeter(s)", f"{ds}_nondegen"),
+            ("solid_aswkb", "ST_3DAsWKB(s)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_translate", "ST_3DTranslate(s, 1, 2, 3)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_rotatez", "ST_3DRotateZ(s, 0.3)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_scale", "ST_3DScale(s, 2, 2, 2)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("geom_astext", "ST_3DAsText(g)", f"{ds}_g"),
+            ("geom_asbinary", "ST_3DAsBinary(g)", f"{ds}_g"),
+            ("geom_asgeojson", "ST_3DAsGeoJSON(g)", f"{ds}_g"),
+            ("geom_introspection", "(ST_3DGeometryType(g), ST_3DDimension(g), ST_3DNumGeometries(g))", f"{ds}_g"),
+            ("geom_zrange", "(ST_3DZMin(g), ST_3DZMax(g))", f"{ds}_g"),
+            ("geom_footprint", "ST_3DFootprintArea(g)", f"{ds}_g"),
+            ("geom_centroid", "ST_3DCentroid(g)", f"{ds}_g"),
+            ("geom_translate", "ST_3DTranslate(g, 1, 2, 3)", f"{ds}_g"),
+            ("geom_rotatex", "ST_3DRotateX(g, 0.3)", f"{ds}_g"),
+            ("intersects", "ST_3DIntersects(g1, g2)", f"{ds}_pairs"),
+            ("maxdistance", "ST_3DMaxDistance(g1, g2)", f"{ds}_pairs"),
+            ("dfullywithin_50m", "ST_3DDFullyWithin(g1, g2, 50.0)", f"{ds}_pairs"),
+            ("closestpoint", "ST_3DClosestPoint(g1, g2)", f"{ds}_pairs"),
+        ]
     ]
 
 

@@ -104,7 +104,10 @@ compose the two extensions by hand.
 `scripts/bench/` times the SQL surface on real data — 3DBAG Delft (LoD 2.2) and Helsinki
 (LoD 2, ~77 000 solids): import with the STRUCT and JSON sidecars and without one, a header field (`ST_3DZMax`), volume,
 surface and footprint area, the validation report, and distance, `ST_3DDWithin` and
-`ST_3DShortestLine` over 5000 neighbouring pairs per dataset.
+`ST_3DShortestLine` over 5000 neighbouring pairs per dataset; then every other function
+both a build and its baseline have, one call a row: counts, flags and bounds, perimeter,
+WKB, text and GeoJSON output, the transforms, `ST_3DIntersects`, `ST_3DMaxDistance`,
+`ST_3DDFullyWithin` and `ST_3DClosestPoint`.
 
 ```sh
 scripts/bench/prepare.sh /path/to/bench          # once: downloads ~680 MB, needs the local cityjson build
