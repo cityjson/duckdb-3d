@@ -177,6 +177,29 @@ double SignedArea2(const Point2D &a, const Point2D &b, const Point2D &c) {
 	return (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
 }
 
+//! True when the dropped vertices between chain.front() and chain.back() step
+//! from the one to the other in order, never beyond either end, so fanning
+//! from a point off the line through them folds no triangle.
+bool RunStepsAlongEdge(const std::vector<Point2D> &flat, const std::vector<uint32_t> &chain) {
+	const auto &p = flat[chain.front()];
+	const auto &q = flat[chain.back()];
+	double dx = q[0] - p[0], dy = q[1] - p[1];
+	double len2 = dx * dx + dy * dy;
+	if (!(len2 > 0)) {
+		return false;
+	}
+	double prev = 0;
+	for (size_t k = 1; k + 1 < chain.size(); k++) {
+		const auto &r = flat[chain[k]];
+		double t = ((r[0] - p[0]) * dx + (r[1] - p[1]) * dy) / len2;
+		if (t < prev || t > 1) {
+			return false;
+		}
+		prev = t;
+	}
+	return true;
+}
+
 //! Put back every ring vertex earcut left out of the triangles.
 //!
 //! earcut drops a vertex that is collinear with its neighbours in 2D, or that
@@ -186,15 +209,22 @@ double SignedArea2(const Point2D &a, const Point2D &b, const Point2D &c) {
 //! leaves a sliver gap between the two faces' triangles, so the triangulated
 //! surface is no longer closed and the signed-volume sum is off by the sliver.
 //!
-//! Each run of dropped vertices on a ring lies along the boundary edge (p, q)
-//! joining the kept vertices around it, and that edge belongs to exactly one
-//! triangle (p, q, c). Fanning that triangle from c through the run restores
-//! every vertex without changing the covered 2D area. `ring_offsets` are the
-//! rings' start positions in earcut's flattened index space, plus the end.
+//! Each run of dropped vertices on a ring lies on the line through the boundary
+//! edge (p, q) joining the kept vertices around it, and that edge belongs to
+//! exactly one triangle (p, q, c). When the run steps from p to q in order,
+//! fanning that triangle from c through the run restores every vertex without
+//! changing the covered 2D area. A run that leaves the segment or turns back on
+//! it (a spike: the ring runs out along the line and returns) would fan into
+//! triangles wound against the face, so the triangle stays as it is and the run
+//! is closed by a fan from one end of the edge over the run to the other: its
+//! triangles have no area in the plane, and they give the triangulation the
+//! ring's edges through the run. `ring_offsets` are the rings' start positions in earcut's
+//! flattened index space, plus the end; `scratch.flat` holds their 2D points.
 //! Returns false when a run's boundary edge is not in the triangulation, which
 //! means the triangles do not follow the ring and cannot be repaired here.
 bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<uint32_t> &ring_offsets,
                             TriangulationScratch &scratch) {
+	const auto &flat = scratch.flat;
 	uint32_t total = ring_offsets.back();
 	auto &used = scratch.used;
 	used.assign(total, false);
@@ -251,8 +281,7 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 				uint32_t a = indices[tri];
 				uint32_t c = indices[base + (tri - base + 2) % 3];
 				uint32_t b = indices[base + (tri - base + 1) % 3];
-				// Triangle (a, b, c) keeps its winding: replace it by the fan
-				// a -> run... -> b, each closed by c.
+				// The chain a -> run... -> b, in the winding of triangle (a, b, c).
 				auto &chain = scratch.chain;
 				chain.clear();
 				chain.push_back(a);
@@ -262,13 +291,23 @@ bool RestoreDroppedVertices(std::vector<uint32_t> &indices, const std::vector<ui
 					chain.insert(chain.end(), run.rbegin(), run.rend());
 				}
 				chain.push_back(b);
-				indices[base] = chain[0];
-				indices[base + 1] = chain[1];
-				indices[base + 2] = c;
-				for (size_t k = 1; k + 1 < chain.size(); k++) {
-					indices.push_back(chain[k]);
-					indices.push_back(chain[k + 1]);
-					indices.push_back(c);
+				if (RunStepsAlongEdge(flat, chain)) {
+					// Replace (a, b, c) by the fan a -> run... -> b, each closed by c.
+					indices[base] = chain[0];
+					indices[base + 1] = chain[1];
+					indices[base + 2] = c;
+					for (size_t k = 1; k + 1 < chain.size(); k++) {
+						indices.push_back(chain[k]);
+						indices.push_back(chain[k + 1]);
+						indices.push_back(c);
+					}
+				} else {
+					// Keep (a, b, c); close the run with the flat fan from a.
+					for (size_t k = 1; k + 1 < chain.size(); k++) {
+						indices.push_back(a);
+						indices.push_back(chain[k]);
+						indices.push_back(chain[k + 1]);
+					}
 				}
 				for (auto v : run) {
 					used[v] = true;
