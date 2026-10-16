@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace duckdb_3d {
@@ -38,7 +39,7 @@ struct GeomPayloadInfo {
 	GeomType type;
 	uint32_t vertex_count;
 	BBox3D bbox;
-	std::string crs;
+	std::string_view crs; //!< into the payload: the header is read per row, and a copy costs more than the rest
 };
 
 //! Read only the front header (type + bbox + vertex count) of a GEOM_3D payload,

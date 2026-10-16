@@ -91,8 +91,15 @@ void ValidateGeomModel(const GeomModel &model) {
 	}
 }
 
-//! Check the magic and the major version, leaving `r` after the version.
-void ReadPreamble(ByteReader &r, const char *who) {
+//! The magic and the version: the bytes before the type.
+constexpr size_t kPreambleSize = 4 + 2 * sizeof(uint16_t);
+
+//! Check the magic and the major version at the start of `data`; the caller's
+//! reader resumes at kPreambleSize. It reads with a reader of its own: handing
+//! the caller's to a call that is not inlined would keep its position in memory
+//! for every read that follows, and the header read runs once a row.
+void ReadPreamble(const uint8_t *data, size_t size, const char *who) {
+	ByteReader r(data, size, kTruncationMessage);
 	r.Require(4);
 	if (std::memcmp(r.data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
 		throw std::runtime_error(std::string(who) + ": bad magic (not a GEOM_3D value)");
@@ -158,7 +165,8 @@ std::vector<uint8_t> SerializeGeomPayload(const GeomModel &model) {
 
 GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size) {
 	ByteReader r(data, size, kTruncationMessage);
-	ReadPreamble(r, "ReadGeomPayloadHeader");
+	ReadPreamble(data, size, "ReadGeomPayloadHeader");
+	r.pos = kPreambleSize;
 
 	GeomPayloadInfo info;
 	info.type = static_cast<GeomType>(r.ReadU32());
@@ -169,13 +177,14 @@ GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size) {
 	info.bbox.max_y = r.ReadF64();
 	info.bbox.max_z = r.ReadF64();
 	info.vertex_count = r.ReadU32();
-	info.crs = r.ReadString("CRS byte");
+	info.crs = r.ReadStringView("CRS byte");
 	return info;
 }
 
 GeomModel DeserializeGeomPayload(const uint8_t *data, size_t size) {
 	ByteReader r(data, size, kTruncationMessage);
-	ReadPreamble(r, "DeserializeGeomPayload");
+	ReadPreamble(data, size, "DeserializeGeomPayload");
+	r.pos = kPreambleSize;
 
 	GeomModel model;
 	model.type = static_cast<GeomType>(r.ReadU32());

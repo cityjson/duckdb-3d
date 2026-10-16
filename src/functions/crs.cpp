@@ -21,9 +21,9 @@ std::string PayloadCrs(string_t payload) {
 	auto size = payload.GetSize();
 	switch (GetPayloadKind(data, size)) {
 	case PayloadKind::Solid:
-		return duckdb_3d::ReadSolidPayloadHeader(data, size).crs;
+		return std::string(duckdb_3d::ReadSolidPayloadHeader(data, size).crs);
 	case PayloadKind::Geom:
-		return duckdb_3d::ReadGeomPayloadHeader(data, size).crs;
+		return std::string(duckdb_3d::ReadGeomPayloadHeader(data, size).crs);
 	default:
 		throw InvalidInputException("argument is not a SOLID_3D or GEOM_3D value");
 	}

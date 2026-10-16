@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -62,7 +63,7 @@ struct SolidPayloadInfo {
 	uint32_t ring_count;
 	uint32_t triangle_count;
 	BBox3D bbox;
-	std::string crs;
+	std::string_view crs; //!< into the payload: the header is read per row, and a copy costs more than the rest
 	ValidationCache validation;
 };
 

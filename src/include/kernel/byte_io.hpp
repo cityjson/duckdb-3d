@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace duckdb_3d {
@@ -196,6 +197,14 @@ public:
 		uint32_t len = ReadU32();
 		RequireCount(len, 1, what);
 		std::string v(reinterpret_cast<const char *>(data + pos), len);
+		pos += len;
+		return v;
+	}
+	//! The same string as a view into the payload, valid while the payload is.
+	std::string_view ReadStringView(const char *what) {
+		uint32_t len = ReadU32();
+		RequireCount(len, 1, what);
+		std::string_view v(reinterpret_cast<const char *>(data + pos), len);
 		pos += len;
 		return v;
 	}

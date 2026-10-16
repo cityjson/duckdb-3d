@@ -12,8 +12,23 @@ constexpr const char *kTruncationMessage = "SOLID_3D payload truncated";
 //! The fixed trailing validation block: seven uint32 counts and a uint32 flag word.
 constexpr size_t kValidationBlockSize = 8 * sizeof(uint32_t);
 
-//! Check the magic and the major version, leaving `reader` after the version.
-void ReadPreamble(ByteReader &reader) {
+//! Out of line, so the preamble check stays small enough to inline into the
+//! header read, which runs once a row.
+[[noreturn]] void ThrowUnsupportedMajor(uint16_t major) {
+	throw std::runtime_error("SOLID_3D payload: unsupported major version " + std::to_string(major) +
+	                         " (this build reads version " + std::to_string(PAYLOAD_VERSION_MAJOR) +
+	                         "); rebuild the value from its WKB with ST_3DFromWKB");
+}
+
+//! The magic and the version: the bytes before the flags.
+constexpr size_t kPreambleSize = 4 + 2 * sizeof(uint16_t);
+
+//! Check the magic and the major version at the start of `data`; the caller's
+//! reader resumes at kPreambleSize. Like ReadValidation it reads with a reader
+//! of its own: handing the caller's to a call that is not inlined would keep
+//! its position in memory for every read that follows.
+void ReadPreamble(const uint8_t *data, size_t size) {
+	ByteReader reader(data, size, kTruncationMessage);
 	uint8_t magic[4];
 	reader.ReadBytes(magic, 4);
 	if (std::memcmp(magic, PAYLOAD_MAGIC, 4) != 0) {
@@ -22,9 +37,7 @@ void ReadPreamble(ByteReader &reader) {
 	uint16_t major = reader.ReadU16();
 	reader.ReadU16(); // minor: a minor bump only appends what older readers may ignore
 	if (major != PAYLOAD_VERSION_MAJOR) {
-		throw std::runtime_error("SOLID_3D payload: unsupported major version " + std::to_string(major) +
-		                         " (this build reads version " + std::to_string(PAYLOAD_VERSION_MAJOR) +
-		                         "); rebuild the value from its WKB with ST_3DFromWKB");
+		ThrowUnsupportedMajor(major);
 	}
 }
 
@@ -52,7 +65,12 @@ void WriteValidation(ByteWriter &writer, const ValidationCache &vc) {
 	writer.WriteU32(summary_flags);
 }
 
-ValidationCache ReadValidation(ByteReader &reader) {
+//! Decodes the trailing validation block at `block`, which holds
+//! kValidationBlockSize bytes. A reader of its own, not the caller's: the header
+//! read runs once a row, and advancing a reader through a reference stores and
+//! reloads its position for every field.
+ValidationCache ReadValidation(const uint8_t *block) {
+	ByteReader reader(block, kValidationBlockSize, kTruncationMessage);
 	ValidationCache vc;
 	vc.open_edge_count = reader.ReadU32();
 	vc.non_manifold_edge_count = reader.ReadU32();
@@ -191,7 +209,8 @@ std::vector<uint8_t> SerializePayload(const SolidModel &model) {
 
 SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size) {
 	ByteReader reader(data, size, kTruncationMessage);
-	ReadPreamble(reader);
+	ReadPreamble(data, size);
+	reader.pos = kPreambleSize;
 	reader.ReadU32(); // flags
 
 	SolidPayloadInfo info;
@@ -208,16 +227,14 @@ SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size) {
 	info.bbox.max_x = reader.ReadF64();
 	info.bbox.max_y = reader.ReadF64();
 	info.bbox.max_z = reader.ReadF64();
-	info.crs = reader.ReadString("CRS byte");
+	info.crs = reader.ReadStringView("CRS byte");
 
 	// The validation summary is the fixed trailing block. Read it from the tail
 	// so we never touch the variable-length body in between.
 	if (size < reader.pos + kValidationBlockSize) {
 		throw std::runtime_error(kTruncationMessage);
 	}
-	ByteReader tail(data, size, kTruncationMessage);
-	tail.pos = size - kValidationBlockSize;
-	info.validation = ReadValidation(tail);
+	info.validation = ReadValidation(data + size - kValidationBlockSize);
 	return info;
 }
 
@@ -229,7 +246,8 @@ SolidModel DeserializePayload(const uint8_t *data, size_t size) {
 
 void DeserializePayloadInto(const uint8_t *data, size_t size, SolidModel &model) {
 	ByteReader reader(data, size, kTruncationMessage);
-	ReadPreamble(reader);
+	ReadPreamble(data, size);
+	reader.pos = kPreambleSize;
 
 	uint32_t flags = reader.ReadU32();
 	(void)flags; // reserved
@@ -292,7 +310,9 @@ void DeserializePayloadInto(const uint8_t *data, size_t size, SolidModel &model)
 	reader.ReadU32Array(model.triangle_vertex_indices.data(), triangle_index_count);
 
 	// Validation cache
-	model.validation = ReadValidation(reader);
+	reader.Require(kValidationBlockSize);
+	model.validation = ReadValidation(reader.data + reader.pos);
+	reader.pos += kValidationBlockSize;
 
 	ValidatePayloadModel(model, vertex_count, solid_count, shell_count, face_count, ring_count, triangle_count);
 }
