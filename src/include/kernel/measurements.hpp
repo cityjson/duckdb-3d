@@ -10,9 +10,14 @@ namespace duckdb_3d {
 double ComputeSurfaceArea(const SolidModel &model);
 
 //! Compute total enclosed volume using signed tetrahedral contributions.
-//! Requires is_closed, is_manifold, is_oriented, and no degenerate faces.
+//! Requires is_closed, is_manifold, is_oriented, no degenerate faces and no
+//! self-intersecting faces (a disconnected shell still encloses its volume).
 //! Throws if preconditions are not met.
 double ComputeVolume(const SolidModel &model);
+
+//! The centroid of the enclosed volume (cavities excluded, multi-solids weighed
+//! by volume). Same preconditions as ComputeVolume; throws if they are not met.
+Vertex3D ComputeVolumeCentroid(const SolidModel &model);
 
 //! Compute the 2D footprint area: the area of the geometry's projection onto
 //! the XY plane. Computed as half the total absolute XY-projected face area,

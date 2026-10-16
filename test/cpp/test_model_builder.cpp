@@ -194,6 +194,30 @@ TEST_CASE("BuildSolidModel removes duplicate consecutive ring vertices", "[model
 	REQUIRE(ring_end - ring_start == 3);
 }
 
+TEST_CASE("BuildSolidModel drops a doubled closing vertex", "[model_builder]") {
+	// Den Haag writes rings as a, b, c, a, a: once WKB's closing vertex is
+	// stripped, the last vertex repeats the first, the ring's wrap-around pair.
+	WKBBuilder b;
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.WriteU32LE(1);
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolygonZ);
+	b.WriteU32LE(1);
+	b.WriteU32LE(5);
+	const double ring[5][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, 0}};
+	for (auto &v : ring) {
+		b.WriteF64LE(v[0]);
+		b.WriteF64LE(v[1]);
+		b.WriteF64LE(v[2]);
+	}
+
+	auto model = BuildSolidModel(ParseWKB(b.buffer.data(), b.buffer.size()));
+
+	REQUIRE(model.FaceCount() == 1);
+	REQUIRE(model.ring_vertex_offsets[1] - model.ring_vertex_offsets[0] == 3);
+}
+
 TEST_CASE("WKB round-trip: tetrahedron", "[wkb_export]") {
 	auto wkb_in = MakeTetrahedronWKB();
 	auto surfaces = ParseWKB(wkb_in.data(), wkb_in.size());

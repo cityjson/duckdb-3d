@@ -224,6 +224,13 @@ TEST_CASE("Triangulation: real faces where ear clipping stopped early triangulat
 	}
 }
 
+TEST_CASE("Triangulation: a vertex earcut drops at the tip of a spike is restored without folding", "[triangulation]") {
+	// (3,0,0) is collinear with its neighbours (0,0,0) and (2,0,0) but lies
+	// beyond them, not between: the ring runs out along the x axis and back.
+	// Restoring it must not lay a triangle over the face the wrong way round.
+	RequireTilesFace(FaceWithRings({{{0, 0, 0}, {3, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}}}), 4.0);
+}
+
 TEST_CASE("Triangulation: a face it cannot tile gets no triangles and is degenerate", "[triangulation]") {
 	// A self-intersecting ring: edges (0,0)-(4,4) and (4,0)-(0,2) cross at
 	// (4/3, 4/3). Its signed area is 4, its two lobes cover 16/3 + 4/3 = 20/3, so

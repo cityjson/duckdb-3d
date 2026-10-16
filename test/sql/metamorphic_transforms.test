@@ -119,6 +119,24 @@ SELECT bool_and(abs(ST_3DSurfaceArea(ST_3DRotateZ(s, 0.7)) - ST_3DSurfaceArea(s)
 ----
 true
 
+# A uniform scale carries the validation verdicts over rather than running
+# validation again; they are the verdicts validation reaches on the scaled
+# solid, valid or not, for a factor that grows, shrinks or reflects it. Two
+# one-axis-short scales give the same coordinates and run validation.
+statement ok
+CREATE TABLE _golden_any AS
+SELECT s FROM (SELECT TRY(ST_3DFromWKB(unhex(wkb_hex))) AS s FROM _golden_solid_wkb) WHERE s IS NOT NULL;
+
+query II
+SELECT count(*) >= 10, bool_and(ST_3DValidationReport(ST_3DScale(s, k, k, k))
+    = ST_3DValidationReport(ST_3DScale(ST_3DScale(s, k, k, 1), 1, 1, k)))
+FROM _golden_any, (VALUES (2.0), (0.001), (-1.0)) v(k);
+----
+true	true
+
+statement ok
+DROP TABLE _golden_any;
+
 statement ok
 DROP TABLE _golden;
 

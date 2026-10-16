@@ -131,7 +131,7 @@ FROM golden WHERE feature_id = 'fixture:multi_cube_far';
 ok	true	true
 
 # ── Convex-hull area (2D-XY). The extension measures its own hull with
-# ST_3DFootprintArea(ST_3DConvexHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
+# ST_3DFootprintArea(ST_3DFootprintHull(g)); PostGIS uses ST_Area(ST_ConvexHull(ST_Points(g)))
 # because GEOS's ST_ConvexHull rejects a PolyhedralSurface. GEOS has no planarity
 # requirement, so this covers all geometry (no 'rejected' rows) — including the
 # degenerate hulls of the point/line fixtures, whose XY hull has zero area.
@@ -144,7 +144,7 @@ true
 
 query I
 SELECT count(*) = count(*) FILTER (
-  WHERE abs(ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
+  WHERE abs(ST_3DFootprintArea(ST_3DFootprintHull(ST_Geom3DFromWKB(unhex(wkb_hex)))) - pg_hull_area)
         <= 1e-6 * abs(pg_hull_area) + 1e-6)
 FROM golden WHERE pg_geomtype <> 'ST_GeometryCollection';
 ----
@@ -152,7 +152,7 @@ true
 
 # Pin: the unit tetra's XY hull is the triangle (0,0),(1,0),(0,1) → area 0.5.
 query I
-SELECT ROUND(ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
+SELECT ROUND(ST_3DFootprintArea(ST_3DFootprintHull(ST_Geom3DFromWKB(unhex(wkb_hex)))), 4)
 FROM golden WHERE feature_id = 'fixture:tetra';
 ----
 0.5
@@ -317,11 +317,11 @@ DROP TABLE golden_pairs;
 # accessors exist on only one of the two, hence the role filters below.
 #
 # Where PostGIS is deliberately NOT the reference:
-#   * ST_3DDimension / ST_3DNumGeometries on a PolyhedralSurface — PostGIS reads
-#     a closed PolyhedralSurface as a solid (ST_Dimension = 3, and 2 for the open
-#     one) and ST_NumGeometries as its patch count; three_d reports the
-#     topological dimension of the surface (2) and treats the surface as one
-#     geometry. Different questions, so those two are oracled on the 'geom' rows.
+#   * ST_3DDimension on a PolyhedralSurface — PostGIS reads a closed
+#     PolyhedralSurface as a solid (ST_Dimension = 3, and 2 for the open one);
+#     three_d reports the topological dimension of the surface (2). A different
+#     question, so it is oracled on the 'geom' rows. ST_3DNumGeometries counts
+#     a PolyhedralSurface's patches, as PostGIS does, and is oracled on both.
 #   * ST_3DPerimeter — PostGIS's is the sum of every face's ring length; three_d's
 #     is the length of the *boundary* edges only (0 for a closed solid). Not the
 #     same measurement; see docs/TEST_COVERAGE.md.
@@ -375,6 +375,13 @@ query I
 SELECT bool_and(ST_3DDimension(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_dimension)
    AND bool_and(ST_3DNumGeometries(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_numgeom)
 FROM golden WHERE geom_role = 'geom';
+----
+true
+
+# A PolyhedralSurface has one geometry per patch.
+query I
+SELECT count(*) > 0 AND bool_and(ST_3DNumGeometries(ST_Geom3DFromWKB(unhex(wkb_hex))) = pg_numgeom)
+FROM golden WHERE pg_geomtype = 'ST_PolyhedralSurface';
 ----
 true
 

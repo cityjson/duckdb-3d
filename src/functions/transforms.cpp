@@ -231,18 +231,28 @@ static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &
 		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 
 		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
-		// Scale about the origin. Unlike a rigid motion, a degenerate (zero) factor
-		// collapses faces and a negative factor changes geometry, so the cached
-		// validation flags cannot simply carry over. Recompute validation from the
-		// scaled coordinates (this catches the collapsed/degenerate case); the bbox
-		// is recomputed too since negative factors can swap min/max.
+		// Scale about the origin. A uniform factor is a similarity: like a rigid
+		// motion it keeps every validation verdict, each of which is measured
+		// relative to the solid's own extent, and a negative factor reverses every
+		// face alike. That holds while every scaled coordinate keeps full
+		// precision (no overflow, no underflow into subnormals). Any other factor
+		// changes the solid's shape, and a zero one collapses faces, so validation
+		// runs again on the scaled coordinates. The bbox is recomputed either way:
+		// a negative factor swaps min and max.
+		bool similarity = sx == sy && sy == sz && std::isnormal(sx);
+		auto full_precision = [](double c) {
+			return c == 0.0 || std::isnormal(c);
+		};
 		for (auto &v : model.vertices) {
 			v.x *= sx;
 			v.y *= sy;
 			v.z *= sz;
+			similarity = similarity && full_precision(v.x) && full_precision(v.y) && full_precision(v.z);
 		}
 		model.ComputeBBox();
-		ValidateSolidModel(model);
+		if (!similarity) {
+			ValidateSolidModel(model);
+		}
 
 		auto payload = SerializePayload(model);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
@@ -367,11 +377,14 @@ static void ST_3DRotateZGeomFun(DataChunk &args, ExpressionState &state, Vector 
 
 //! Reproject one payload BLOB using an already-built transform. Recomputes the
 //! bbox; re-validates solids because reprojection can invert winding.
-static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t size, const duckdb_3d::CrsTransform &tf) {
+//! The result is labelled with `target`.
+static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t size, const duckdb_3d::CrsTransform &tf,
+                                                 const std::string &target) {
 	switch (GetPayloadKind(data, size)) {
 	case PayloadKind::Solid: {
 		auto model = DeserializePayload(data, size);
 		tf.ReprojectXY(model.vertices);
+		model.crs = target;
 		model.ComputeBBox();
 		ValidateSolidModel(model);
 		return SerializePayload(model);
@@ -379,6 +392,7 @@ static std::vector<uint8_t> ReprojectPayloadBlob(const uint8_t *data, size_t siz
 	case PayloadKind::Geom: {
 		auto model = DeserializeGeomPayload(data, size);
 		tf.ReprojectXY(model.vertices);
+		model.crs = target;
 		model.ComputeBBox();
 		return SerializeGeomPayload(model);
 	}
@@ -405,8 +419,9 @@ TransformInitLocalState(ExpressionState &state, const BoundFunctionExpression &e
 }
 
 //! Shared chunk loop. `get_crs(i)` returns the {source, target} CRS strings for
-//! row i. One CrsTransform is built per distinct pair and reused across rows —
-//! and, via the local state, across every chunk this executor sees.
+//! row i, the source empty when the value's own CRS is the source. One
+//! CrsTransform is built per distinct pair and reused across rows — and, via the
+//! local state, across every chunk this executor sees.
 template <class GetCrs>
 static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &result, GetCrs get_crs) {
 	auto count = args.size();
@@ -430,6 +445,8 @@ static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &resu
 			continue;
 		}
 
+		auto &blob = geom_strings[geom_idx];
+		source = TransformSourceCrs(PayloadCrs(blob), source);
 		std::string key = source;
 		key.push_back('\x1f');
 		key += target;
@@ -438,9 +455,8 @@ static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &resu
 			it = cache.emplace(key, std::make_unique<CrsTransform>(source, target)).first;
 		}
 
-		auto &blob = geom_strings[geom_idx];
-		auto payload =
-		    ReprojectPayloadBlob(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(), *it->second);
+		auto payload = ReprojectPayloadBlob(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(),
+		                                    *it->second, target);
 		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
 		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	}
@@ -489,6 +505,38 @@ static void ST_3DTransformIntFun(DataChunk &args, ExpressionState &state, Vector
 			return false;
 		}
 		source = EpsgToAuthString(src_vals[si]);
+		target = EpsgToAuthString(tgt_vals[ti]);
+		return true;
+	});
+}
+
+// ST_3DTransform(geom, target_crs VARCHAR): from the value's own CRS
+static void ST_3DTransformToStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnifiedVectorFormat tgt_data;
+	args.data[1].ToUnifiedFormat(args.size(), tgt_data);
+	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto ti = tgt_data.sel->get_index(i);
+		if (!tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
+		target = tgt_strings[ti].GetString();
+		return true;
+	});
+}
+
+// ST_3DTransform(geom, target_srid INTEGER): from the value's own CRS
+static void ST_3DTransformToIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnifiedVectorFormat tgt_data;
+	args.data[1].ToUnifiedFormat(args.size(), tgt_data);
+	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
+		auto ti = tgt_data.sel->get_index(i);
+		if (!tgt_data.validity.RowIsValid(ti)) {
+			valid = false;
+			return false;
+		}
 		target = EpsgToAuthString(tgt_vals[ti]);
 		return true;
 	});
@@ -561,6 +609,9 @@ static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vecto
 		}
 		auto placement =
 		    PlacementFor(args.data[1], point_data, point_idx, args.data[2], matrix_data, matrix_data.sel->get_index(i));
+		// The placed geometry is in the reference point's CRS; the relative one's
+		// coordinates are local.
+		auto crs = PayloadCrs(UnifiedVectorFormat::GetData<string_t>(point_data)[point_idx]);
 		auto &blob = geom_strings[geom_idx];
 		std::vector<uint8_t> payload;
 		if constexpr (SOLID) {
@@ -573,6 +624,7 @@ static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vecto
 			}
 			auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 			duckdb_3d::ApplyAffine(placement, model.vertices);
+			model.crs = crs;
 			// The triangulation's indices still tile each face under a non-singular
 			// affine map; a mirroring matrix reverses handedness, so re-validate.
 			model.ComputeBBox();
@@ -581,6 +633,7 @@ static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vecto
 		} else {
 			auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 			duckdb_3d::ApplyAffine(placement, model.vertices);
+			model.crs = crs;
 			model.ComputeBBox();
 			payload = SerializeGeomPayload(model);
 		}
@@ -598,9 +651,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	// Transform functions
 	ScalarFunctionSet translate_set("st_3dtranslate");
 	translate_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_3DTranslateSolidFun));
-	translate_set.AddFunction(
 	    ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, solid_3d_type,
 	                   ST_3DTranslateSolidFun));
 	translate_set.AddFunction(
@@ -612,9 +662,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    "ST_3DTranslate(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 10.0, 0.0, -1.0)",
 	                    {"transform"}});
 	ScalarFunctionSet scale_set("st_3dscale");
-	scale_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   LogicalType::BLOB, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                     solid_3d_type, ST_3DScaleSolidFun));
 	scale_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
@@ -626,8 +673,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	     "ST_3DScale(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), 2.0, 2.0, 2.0)",
 	     {"transform"}});
 	ScalarFunctionSet rotatex_set("st_3drotatex");
-	rotatex_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateXSolidFun));
 	rotatex_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateXGeomFun));
 	RegisterDocumented(loader, std::move(rotatex_set),
@@ -638,8 +683,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    {"transform"}});
 
 	ScalarFunctionSet rotatey_set("st_3drotatey");
-	rotatey_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateYSolidFun));
 	rotatey_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateYGeomFun));
 	RegisterDocumented(loader, std::move(rotatey_set),
@@ -650,8 +693,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                    {"transform"}});
 
 	ScalarFunctionSet rotatez_set("st_3drotatez");
-	rotatez_set.AddFunction(
-	    ScalarFunction({LogicalType::BLOB, LogicalType::DOUBLE}, LogicalType::BLOB, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({solid_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DRotateZSolidFun));
 	rotatez_set.AddFunction(ScalarFunction({geom_3d_type, LogicalType::DOUBLE}, geom_3d_type, ST_3DRotateZGeomFun));
 	RegisterDocumented(loader, std::move(rotatez_set),
@@ -670,10 +711,6 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 		fun.SetInitStateCallback(TransformInitLocalState);
 		transform_set.AddFunction(std::move(fun));
 	};
-	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::INTEGER, LogicalType::INTEGER}, LogicalType::BLOB,
-	                             ST_3DTransformIntFun));
-	add_transform(ScalarFunction({LogicalType::BLOB, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
-	                             ST_3DTransformStrFun));
 	add_transform(ScalarFunction({solid_3d_type, LogicalType::INTEGER, LogicalType::INTEGER}, solid_3d_type,
 	                             ST_3DTransformIntFun));
 	add_transform(
@@ -682,12 +719,25 @@ void RegisterTransformFunctions(ExtensionLoader &loader, const LogicalType &soli
 	                             ST_3DTransformStrFun));
 	add_transform(
 	    ScalarFunction({geom_3d_type, LogicalType::VARCHAR, LogicalType::VARCHAR}, geom_3d_type, ST_3DTransformStrFun));
-	RegisterDocumented(loader, std::move(transform_set),
-	                   {{"geom", "source_crs", "target_crs"},
-	                    "Reprojects a SOLID_3D or GEOM_3D value between CRSs given as EPSG integers or CRS strings; X "
-	                    "and Y are reprojected and Z passes through unchanged. Solids are re-validated afterwards.",
-	                    "ST_3DTransform(ST_Geom3DFromWKB('POINT Z (85000 446800 5)'::GEOMETRY), 28992, 4326)",
-	                    {"transform"}});
+	add_transform(ScalarFunction({solid_3d_type, LogicalType::INTEGER}, solid_3d_type, ST_3DTransformToIntFun));
+	add_transform(ScalarFunction({geom_3d_type, LogicalType::INTEGER}, geom_3d_type, ST_3DTransformToIntFun));
+	add_transform(ScalarFunction({solid_3d_type, LogicalType::VARCHAR}, solid_3d_type, ST_3DTransformToStrFun));
+	add_transform(ScalarFunction({geom_3d_type, LogicalType::VARCHAR}, geom_3d_type, ST_3DTransformToStrFun));
+	RegisterDocumented(
+	    loader, std::move(transform_set),
+	    vector<FunctionDocs> {
+	        {{"geom", "target_crs"},
+	         "Reprojects a SOLID_3D or GEOM_3D value from its own CRS (ST_3DCRS; raises when it has none) to a CRS "
+	         "given as an EPSG integer or a CRS string; X and Y are reprojected, Z passes through unchanged, and the "
+	         "result is in the target CRS. Solids are re-validated afterwards.",
+	         "ST_3DTransform(ST_3DSetCRS(ST_Geom3DFromWKB('POINT Z (85000 446800 5)'::GEOMETRY), 'EPSG:28992'), 4326)",
+	         {"transform"}},
+	        {{"geom", "source_crs", "target_crs"},
+	         "Reprojects a SOLID_3D or GEOM_3D value between CRSs given as EPSG integers or CRS strings; a value that "
+	         "has its own CRS must be in the source. X and Y are reprojected, Z passes through unchanged, and the "
+	         "result is in the target CRS. Solids are re-validated afterwards.",
+	         "ST_3DTransform(ST_Geom3DFromWKB('POINT Z (85000 446800 5)'::GEOMETRY), 28992, 4326)",
+	         {"transform"}}});
 	// ST_3DPlaceImplicit: an implicit geometry's relative geometry placed by its
 	// transformation matrix and reference point. NULL matrix = identity, hence
 	// SPECIAL_HANDLING.

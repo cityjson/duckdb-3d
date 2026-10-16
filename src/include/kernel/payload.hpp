@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -11,8 +12,9 @@ namespace duckdb_3d {
 //! Magic bytes for SOLID_3D binary format: "D3DS"
 constexpr uint8_t PAYLOAD_MAGIC[4] = {'D', '3', 'D', 'S'};
 
-//! v1 format version
-constexpr uint16_t PAYLOAD_VERSION_MAJOR = 1;
+//! Format version. Version 2 added the CRS and the vertex-manifold,
+//! connectivity and self-intersection counters; version 1 payloads are refused.
+constexpr uint16_t PAYLOAD_VERSION_MAJOR = 2;
 constexpr uint16_t PAYLOAD_VERSION_MINOR = 0;
 
 //! Binary payload header (fixed size)
@@ -30,6 +32,7 @@ struct PayloadHeader {
 	// bbox: 6 x f64
 	double bbox_min_x, bbox_min_y, bbox_min_z;
 	double bbox_max_x, bbox_max_y, bbox_max_z;
+	// then: u32 CRS byte length and the CRS string (empty when unknown)
 };
 
 //! The exact byte size SerializePayload produces for `model`.
@@ -60,6 +63,7 @@ struct SolidPayloadInfo {
 	uint32_t ring_count;
 	uint32_t triangle_count;
 	BBox3D bbox;
+	std::string_view crs; //!< into the payload: the header is read per row, and a copy costs more than the rest
 	ValidationCache validation;
 };
 
@@ -67,5 +71,9 @@ struct SolidPayloadInfo {
 //! SOLID_3D payload, without deserialising the body. Throws on invalid magic or
 //! unsupported major version. Use for count/bounds/validation-cache accessors.
 SolidPayloadInfo ReadSolidPayloadHeader(const uint8_t *data, size_t size);
+
+//! The SOLID_3D payload with its CRS replaced by `crs` (empty clears it); the
+//! body is copied, not decoded. Throws what ReadSolidPayloadHeader throws.
+std::vector<uint8_t> WithSolidPayloadCrs(const uint8_t *data, size_t size, const std::string &crs);
 
 } // namespace duckdb_3d

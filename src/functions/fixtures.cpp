@@ -243,6 +243,22 @@ static void ST_AsWKBMultiCubeSepFun(DataChunk &args, ExpressionState &state, Vec
 	});
 }
 
+// Test helper: two outward cubes [0,2]^3 and [o,o+2]^3 as ONE PolyhedralSurface
+// Z, so they import as one shell. o = 0.5 overlaps them (self-intersecting),
+// o = 2 makes them share one vertex, o = 5 keeps them apart: all three are
+// disconnected shells.
+static void ST_AsWKBTwoCubesFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<double, string_t>(args.data[0], result, args.size(), [&](double offset) {
+		std::vector<uint8_t> buf;
+		WkbU8(buf, 1);
+		WkbU32(buf, 1015); // PolyhedralSurfaceZ
+		WkbU32(buf, 12);
+		WkbCubeFaces(buf, 0.0, 2.0, /*reversed=*/false);
+		WkbCubeFaces(buf, offset, offset + 2.0, /*reversed=*/false);
+		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
+	});
+}
+
 // Test helper: build a Point Z WKB from x, y, z.
 static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<double, double, double, string_t>(
@@ -499,6 +515,8 @@ void RegisterFixtureFunctions(ExtensionLoader &loader) {
 	multicube_set.AddFunction(ScalarFunction({}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
 	multicube_set.AddFunction(ScalarFunction({LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBMultiCubeSepFun));
 	loader.RegisterFunction(multicube_set);
+	loader.RegisterFunction(
+	    ScalarFunction("st_aswkbtwocubes", {LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBTwoCubesFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_AsWKBPointZFun));

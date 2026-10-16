@@ -1,0 +1,86 @@
+# name: test/sql/payload_casts.test
+# description: stored payloads become SOLID_3D and GEOM_3D only through the casts, which rebuild their caches
+# group: [sql]
+
+require three_d
+
+require parquet
+
+require-env THREE_D_TEST_FIXTURES
+
+# A payload written to Parquet reads back as a plain BLOB. No function takes a
+# BLOB: the cached triangulation, box and validation verdict in it are not
+# trusted until the cast has re-derived them.
+statement ok
+COPY (SELECT ST_3DFromWKB(ST_AsWKBTwoCubes(0.5)) AS overlapping,
+             ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS tetra,
+             ST_Geom3DFromWKB(ST_AsWKBPolygonZ()) AS polygon)
+TO '__TEST_DIR__/payloads.parquet';
+
+query III
+SELECT typeof(overlapping), typeof(tetra), typeof(polygon) FROM '__TEST_DIR__/payloads.parquet';
+----
+BLOB	BLOB	BLOB
+
+statement error
+SELECT ST_3DVolume(tetra) FROM '__TEST_DIR__/payloads.parquet';
+----
+No function matches
+
+query IIII
+SELECT ST_3DVolume(tetra::SOLID_3D) > 0, ST_3DAsWKB(tetra::SOLID_3D) = ST_AsWKBPolyhedralTetra(),
+       ST_3DFootprintArea(polygon::GEOM_3D), typeof(polygon::GEOM_3D)
+FROM '__TEST_DIR__/payloads.parquet';
+----
+true	true	12.0	GEOM_3D
+
+# A forged verdict does not survive the cast: the overlapping cubes' trailer is
+# rewritten to all counters zero and every flag set (the last 32 bytes).
+query III
+SELECT ST_3DIsClosed(b::SOLID_3D), (ST_3DValidationReport(b::SOLID_3D)).is_valid,
+       (ST_3DValidationReport(b::SOLID_3D)).self_intersection_count > 0
+FROM (SELECT unhex(substring(hex(overlapping), 1, 2 * (octet_length(overlapping) - 32)) || repeat('00', 28) ||
+             '0F000000') AS b
+      FROM '__TEST_DIR__/payloads.parquet');
+----
+true	false	true
+
+# The cast refuses what is not a payload of its type; TRY_CAST gives NULL.
+statement error
+SELECT polygon::SOLID_3D FROM '__TEST_DIR__/payloads.parquet';
+----
+not a SOLID_3D payload
+
+statement error
+SELECT ST_AsWKBPolyhedralTetra()::SOLID_3D;
+----
+build one from WKB with ST_3DFromWKB
+
+query II
+SELECT TRY_CAST(polygon AS SOLID_3D) IS NULL, TRY_CAST(tetra AS GEOM_3D) IS NULL FROM '__TEST_DIR__/payloads.parquet';
+----
+true	true
+
+# TRY_CAST from VARCHAR decides row by row: a string that is no BLOB, one that
+# is no payload and a payload in DuckDB's escaped form, in one chunk.
+statement ok
+CREATE TABLE strs AS SELECT * FROM (VALUES (1, 'hello'), (2, '\xZZ'),
+    (3, ST_3DFromWKB(ST_AsWKBPolyhedralTetra())::BLOB::VARCHAR)) t(i, s);
+
+query III
+SELECT i, TRY_CAST(s AS SOLID_3D) IS NULL, ST_3DIsClosed(TRY_CAST(s AS SOLID_3D)) FROM strs ORDER BY i;
+----
+1	true	NULL
+2	true	NULL
+3	false	true
+
+# Casting back to BLOB is free and keeps the bytes.
+query I
+SELECT ST_3DFromWKB(ST_AsWKBPolyhedralTetra())::BLOB::SOLID_3D::BLOB = ST_3DFromWKB(ST_AsWKBPolyhedralTetra())::BLOB;
+----
+true
+
+query I
+SELECT NULL::BLOB::SOLID_3D IS NULL;
+----
+true

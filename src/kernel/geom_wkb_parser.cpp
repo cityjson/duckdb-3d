@@ -2,18 +2,29 @@
 #include "kernel/geometry_math.hpp"
 #include "kernel/byte_io.hpp"
 
+#include <cmath>
 #include <stdexcept>
 
 namespace duckdb_3d {
 
 namespace {
 
-Vertex3D ReadPointZ(WkbCursor &cur) {
+//! Read one XYZ coordinate, refusing a non-finite ordinate: a NaN or infinite
+//! vertex has no place in a box, a distance or an index. The one exception is
+//! a point whose three ordinates are all NaN, which is how WKB writes POINT
+//! EMPTY (`empty_allowed` for a Point Z body, alone or in a MultiPoint).
+Vertex3D ReadPointZ(WkbCursor &cur, bool empty_allowed = false) {
 	Vertex3D v;
 	v.x = cur.ReadF64();
 	v.y = cur.ReadF64();
 	v.z = cur.ReadF64();
-	return v;
+	if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)) {
+		return v;
+	}
+	if (empty_allowed && std::isnan(v.x) && std::isnan(v.y) && std::isnan(v.z)) {
+		return v;
+	}
+	throw std::runtime_error("ParseGeomWKB: coordinate is not finite");
 }
 
 void ReadLineStringZ(WkbCursor &cur, GeomModel &model) {
@@ -53,8 +64,9 @@ void ReadPolygonZ(WkbCursor &cur, GeomModel &model) {
 
 //! Read a sequence of child Polygon Z values (each with its own WKB header),
 //! recording a part boundary into `part_offsets` after every polygon. Shared by
-//! MultiPolygon Z and PolyhedralSurface Z.
-void ReadPolygonPartsZ(WkbCursor &cur, GeomModel &model) {
+//! MultiPolygon Z, PolyhedralSurface Z and TIN Z, whose children are Triangle Z:
+//! a triangle is a polygon of one four-point ring.
+void ReadPolygonPartsZ(WkbCursor &cur, GeomModel &model, uint32_t child_code = 1003) {
 	uint32_t polygon_count = cur.ReadU32();
 	model.ring_offsets.push_back(0);
 	model.part_offsets.reserve(polygon_count + 1);
@@ -62,9 +74,10 @@ void ReadPolygonPartsZ(WkbCursor &cur, GeomModel &model) {
 	bool outer_swap = cur.swap_bytes;
 	for (uint32_t i = 0; i < polygon_count; i++) {
 		cur.ReadByteOrder(); // each child Polygon carries its own byte-order flag
-		uint32_t child_type = cur.ReadU32();
-		if (child_type != 1003) {
-			throw std::runtime_error("ParseGeomWKB: expected Polygon Z child");
+		uint32_t child_type = cur.ReadTypeCode();
+		if (child_type != child_code) {
+			throw std::runtime_error(child_code == 1003 ? "ParseGeomWKB: expected Polygon Z child"
+			                                            : "ParseGeomWKB: expected Triangle Z child");
 		}
 		ReadPolygonZ(cur, model);
 		cur.swap_bytes = outer_swap;
@@ -79,13 +92,13 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	WkbCursor cur(data, size, "ParseGeomWKB: unexpected end of WKB");
 
 	cur.ReadByteOrder();
-	uint32_t wkb_type = cur.ReadU32();
+	uint32_t wkb_type = cur.ReadTypeCode();
 
 	GeomModel model;
 	switch (wkb_type) {
 	case 1001: { // Point Z
 		model.type = GeomType::Point;
-		model.vertices.push_back(ReadPointZ(cur));
+		model.vertices.push_back(ReadPointZ(cur, true));
 		break;
 	}
 	case 1002: { // LineString Z
@@ -93,7 +106,8 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		ReadLineStringZ(cur, model);
 		break;
 	}
-	case 1003: { // Polygon Z
+	case 1003:   // Polygon Z
+	case 1017: { // Triangle Z: a polygon of one ring
 		model.type = GeomType::Polygon;
 		ReadPolygonZ(cur, model);
 		break;
@@ -106,11 +120,11 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		bool outer_swap = cur.swap_bytes;
 		for (uint32_t i = 0; i < point_count; i++) {
 			cur.ReadByteOrder();
-			uint32_t child_type = cur.ReadU32();
+			uint32_t child_type = cur.ReadTypeCode();
 			if (child_type != 1001) {
 				throw std::runtime_error("ParseGeomWKB: MultiPoint Z child is not Point Z");
 			}
-			model.vertices.push_back(ReadPointZ(cur));
+			model.vertices.push_back(ReadPointZ(cur, true));
 			cur.swap_bytes = outer_swap;
 			model.part_offsets.push_back(static_cast<uint32_t>(model.vertices.size()));
 		}
@@ -124,7 +138,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		bool outer_swap = cur.swap_bytes;
 		for (uint32_t i = 0; i < line_count; i++) {
 			cur.ReadByteOrder();
-			uint32_t child_type = cur.ReadU32();
+			uint32_t child_type = cur.ReadTypeCode();
 			if (child_type != 1002) {
 				throw std::runtime_error("ParseGeomWKB: MultiLineString Z child is not LineString Z");
 			}
@@ -144,10 +158,16 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 		ReadPolygonPartsZ(cur, model);
 		break;
 	}
+	case 1016: { // TIN Z: a PolyhedralSurface whose patches are triangles
+		model.type = GeomType::PolyhedralSurface;
+		ReadPolygonPartsZ(cur, model, 1017);
+		break;
+	}
 	default:
 		throw std::runtime_error("ParseGeomWKB: unsupported geometry class");
 	}
 
+	model.crs = cur.SridCrs();
 	model.ComputeBBox();
 	return model;
 }

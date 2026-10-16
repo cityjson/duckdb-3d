@@ -63,7 +63,7 @@ test filters on the matching status column rather than assuming one:
 
 `pg_hull_area` feeds `ST_Points` to GEOS's `ST_ConvexHull` because GEOS rejects a
 `PolyhedralSurface` directly; this hulls the vertex set, matching the extension's
-`ST_3DFootprintArea(ST_3DConvexHull(g))`. GEOS has no planarity requirement, so
+`ST_3DFootprintArea(ST_3DFootprintHull(g))`. GEOS has no planarity requirement, so
 it is always present (no status column).
 
 `pg_proj_area` is compared against `ST_3DFootprintArea` with a factor of two on
