@@ -65,20 +65,27 @@ bool IsSurface(GeomType type) {
 
 } // namespace
 
+double SolidFaceTriangleArea(const SolidModel &model, uint32_t face) {
+	if (model.face_triangle_offsets.size() != model.FaceCount() + 1) {
+		return 0.0;
+	}
+	double area = 0.0;
+	for (uint32_t t = model.face_triangle_offsets[face]; t < model.face_triangle_offsets[face + 1]; t++) {
+		const size_t k = static_cast<size_t>(t) * 3;
+		area += TriangleArea(model.vertices[model.triangle_vertex_indices[k]],
+		                     model.vertices[model.triangle_vertex_indices[k + 1]],
+		                     model.vertices[model.triangle_vertex_indices[k + 2]]);
+	}
+	return area;
+}
+
 std::vector<FaceMeasure> SolidFaceMeasures(const SolidModel &model) {
 	std::vector<FaceMeasure> faces(model.FaceCount());
 	const bool cached = model.face_triangle_offsets.size() == faces.size() + 1;
 	for (uint32_t f = 0; f < faces.size(); f++) {
-		const uint32_t t_begin = cached ? model.face_triangle_offsets[f] : 0;
-		const uint32_t t_end = cached ? model.face_triangle_offsets[f + 1] : 0;
-		double area = 0.0;
-		for (uint32_t t = t_begin; t < t_end; t++) {
-			const size_t k = static_cast<size_t>(t) * 3;
-			area += TriangleArea(model.vertices[model.triangle_vertex_indices[k]],
-			                     model.vertices[model.triangle_vertex_indices[k + 1]],
-			                     model.vertices[model.triangle_vertex_indices[k + 2]]);
-		}
-		SetMeasures(faces[f], area, t_end > t_begin, NewellRingAreaVector(model, model.face_ring_offsets[f]));
+		const bool has_triangles = cached && model.face_triangle_offsets[f + 1] > model.face_triangle_offsets[f];
+		SetMeasures(faces[f], SolidFaceTriangleArea(model, f), has_triangles,
+		            NewellRingAreaVector(model, model.face_ring_offsets[f]));
 	}
 	return faces;
 }

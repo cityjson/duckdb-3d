@@ -55,8 +55,8 @@ double ComputeSurfaceArea(const SolidModel &model) {
 	// that is the surface the volume and distance functions see, and a hole is
 	// left out whichever way it is wound.
 	double total_area = 0.0;
-	for (const auto &face : SolidFaceMeasures(model)) {
-		total_area += face.area;
+	for (uint32_t f = 0; f < model.FaceCount(); f++) {
+		total_area += SolidFaceTriangleArea(model, f);
 	}
 	return total_area;
 }
@@ -65,24 +65,24 @@ namespace {
 
 //! The checks that make the signed tetrahedra sum to a volume; `function` names
 //! the caller in the error.
-void RequireEnclosedVolume(const SolidModel &model, const std::string &function) {
+void RequireEnclosedVolume(const SolidModel &model, const char *function) {
 	if (!model.validation.is_closed) {
-		throw std::runtime_error(function + ": solid is not closed");
+		throw std::runtime_error(std::string(function) + ": solid is not closed");
 	}
 	if (!model.validation.is_manifold) {
-		throw std::runtime_error(function + ": solid is not manifold");
+		throw std::runtime_error(std::string(function) + ": solid is not manifold");
 	}
 	if (!model.validation.is_oriented) {
-		throw std::runtime_error(function + ": solid has inconsistent orientation");
+		throw std::runtime_error(std::string(function) + ": solid has inconsistent orientation");
 	}
 	if (model.validation.degenerate_face_count > 0) {
-		throw std::runtime_error(function + ": solid contains degenerate faces");
+		throw std::runtime_error(std::string(function) + ": solid contains degenerate faces");
 	}
 	if (model.validation.self_intersection_count > 0) {
-		throw std::runtime_error(function + ": solid has self-intersecting faces");
+		throw std::runtime_error(std::string(function) + ": solid has self-intersecting faces");
 	}
 	if (model.TriangleCount() == 0) {
-		throw std::runtime_error(function + ": solid has no triangulation cache");
+		throw std::runtime_error(std::string(function) + ": solid has no triangulation cache");
 	}
 }
 

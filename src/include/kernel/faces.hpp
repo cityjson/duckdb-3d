@@ -14,9 +14,8 @@ struct FaceMeasure {
 	//! False when the triangulation could not tile the face (a ring that crosses
 	//! itself, a hole outside the exterior): it has no area to report.
 	bool has_area = true;
-	//! For a solid's face half the length of its Newell vector, the term
-	//! ComputeSurfaceArea sums; for a polygon the area of its triangles, the term
-	//! Geom3DArea sums. 0 for a face without area.
+	//! The area of the face's triangles, the term ComputeSurfaceArea sums for a
+	//! solid and Geom3DArea for a surface. 0 for a face without area.
 	double area = 0.0;
 	//! False for a face without area, or one that could not be tiled.
 	bool has_normal = false;
@@ -27,6 +26,10 @@ struct FaceMeasure {
 
 //! One entry per face of the solid, in storage order.
 std::vector<FaceMeasure> SolidFaceMeasures(const SolidModel &model);
+
+//! The summed area of face `face`'s cached triangles, the area SolidFaceMeasures
+//! reports for it; 0 for a face without triangles or a model without the cache.
+double SolidFaceTriangleArea(const SolidModel &model, uint32_t face);
 
 //! One entry per polygon of a Polygon, MultiPolygon or PolyhedralSurface;
 //! empty for the other classes. A model without its triangulation cache is
