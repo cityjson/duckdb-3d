@@ -42,3 +42,14 @@ SELECT DISTINCT parameters FROM three_d_functions WHERE function_name = 'st_3dtr
 ----
 [geom, target_crs]
 [geom, source_crs, target_crs]
+
+# The reported names are the names a caller passes arguments by, in any order.
+query T
+SELECT ST_3DAsText(ST_3DTranslate(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), dz := 1.0, dx := 10.0, dy := 0.0));
+----
+POINT Z (11 2 4)
+
+query T
+SELECT ST_3DAsText(ST_3DTranslate(geom := ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), dx := 0.0, dy := 0.0, dz := 0.0));
+----
+POINT Z (1 2 3)

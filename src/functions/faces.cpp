@@ -1,5 +1,8 @@
 #include "functions/three_d_functions.hpp"
 
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
@@ -19,79 +22,69 @@ namespace duckdb {
 
 //! Face `face` of a solid as a GEOM_3D payload, or false when the face admits
 //! no tiling and so cannot be a GEOM_3D polygon.
-static bool WriteFace(Vector &result, const duckdb_3d::SolidModel &model, uint32_t face, string_t &out) {
-	std::vector<uint8_t> payload;
+static bool FacePayload(const duckdb_3d::SolidModel &model, uint32_t face, std::vector<uint8_t> &payload) {
 	try {
 		payload = duckdb_3d::SerializeGeomPayload(duckdb_3d::SolidFacePolygon(model, face));
 	} catch (std::invalid_argument &) {
 		return false;
 	}
-	out =
-	    StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	return true;
+}
+
+static string_t AsString(const std::vector<uint8_t> &payload) {
+	return string_t(reinterpret_cast<const char *>(payload.data()), payload.size());
 }
 
 static void ST_3DFacesFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
-	UnifiedVectorFormat input;
-	args.data[0].ToUnifiedFormat(count, input);
-	auto values = UnifiedVectorFormat::GetData<string_t>(input);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
-	auto &child = ListVector::GetEntry(result);
-	auto &fields = StructVector::GetEntries(child);
+	auto writer =
+	    FlatVector::Writer<VectorListType<VectorStructType<int32_t, int32_t, int32_t, string_t>>>(result, count);
 	duckdb_3d::SolidModel model;
-	idx_t offset = 0;
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input.sel->get_index(i);
-		if (!input.validity.RowIsValid(idx)) {
-			FlatVector::SetNull(result, i, true);
-			list_entries[i] = {offset, 0};
+	std::vector<uint8_t> payload;
+	for (auto entry : args.data[0].Values<string_t>()) {
+		if (!entry.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
-		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(values[idx].GetData()),
-		                                  values[idx].GetSize(), model);
-		const idx_t faces = model.FaceCount();
-		ListVector::Reserve(result, offset + faces);
-		auto face_data = FlatVector::GetData<int32_t>(*fields[0]);
-		auto solid_data = FlatVector::GetData<int32_t>(*fields[1]);
-		auto shell_data = FlatVector::GetData<int32_t>(*fields[2]);
-		auto polygon_data = FlatVector::GetData<string_t>(*fields[3]);
+		auto &blob = entry.GetValue();
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(), model);
+		auto faces = writer.WriteList(model.FaceCount());
+		auto &face_writer = faces.child_writer;
+		// Faces are stored shell by shell, solid by solid, so this visits them in
+		// storage order.
 		for (uint32_t solid = 0; solid < model.SolidCount(); solid++) {
 			const uint32_t first_shell = model.solid_shell_offsets[solid];
 			for (uint32_t shell = first_shell; shell < model.solid_shell_offsets[solid + 1]; shell++) {
 				for (uint32_t f = model.shell_face_offsets[shell]; f < model.shell_face_offsets[shell + 1]; f++) {
-					const idx_t row = offset + f;
-					face_data[row] = static_cast<int32_t>(f + 1);
-					solid_data[row] = static_cast<int32_t>(solid + 1);
-					shell_data[row] = static_cast<int32_t>(shell - first_shell + 1);
-					if (!WriteFace(*fields[3], model, f, polygon_data[row])) {
-						FlatVector::SetNull(*fields[3], row, true);
-					}
+					const bool tiled = FacePayload(model, f, payload);
+					face_writer.WriteValue([&](auto &face, auto &solid_number, auto &shell_number, auto &polygon) {
+						face.WriteValue(static_cast<int32_t>(f + 1));
+						solid_number.WriteValue(static_cast<int32_t>(solid + 1));
+						shell_number.WriteValue(static_cast<int32_t>(shell - first_shell + 1));
+						if (tiled) {
+							polygon.WriteValue(AsString(payload));
+						} else {
+							polygon.WriteNull();
+						}
+					});
 				}
 			}
 		}
-		list_entries[i] = {offset, faces};
-		offset += faces;
-	}
-	ListVector::SetListSize(result, offset);
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
 static void ST_3DFaceNFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	BinaryExecutor::ExecuteWithNulls<string_t, int64_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t solid, int64_t n, ValidityMask &mask, idx_t idx) {
+	std::vector<uint8_t> payload;
+	BinaryExecutor::Execute<string_t, int64_t, string_t>(
+	    args.data[0], args.data[1], result, [&](string_t solid, int64_t n) -> optional<string_t> {
 		    duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(),
 		                                      model);
-		    string_t out;
 		    if (n < 1 || n > static_cast<int64_t>(model.FaceCount()) ||
-		        !WriteFace(result, model, static_cast<uint32_t>(n - 1), out)) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+		        !FacePayload(model, static_cast<uint32_t>(n - 1), payload)) {
+			    return {};
 		    }
-		    return out;
+		    return StringVector::AddStringOrBlob(result, AsString(payload));
 	    });
 }
 
@@ -110,71 +103,68 @@ static std::vector<duckdb_3d::FaceMeasure> FaceMeasures(string_t payload, duckdb
 	}
 }
 
-//! Run `emit(face, child_vector, row)` for every face of every row, writing a
-//! list per row; `emit` returns false to make that element NULL.
-template <class EMIT>
+//! Write a list per row with one element per face: `emit(face, element_writer)`
+//! writes the element, a value or NULL.
+template <class ELEMENT, class EMIT>
 static void PerFace(DataChunk &args, Vector &result, EMIT emit) {
-	auto count = args.size();
-	UnifiedVectorFormat input;
-	args.data[0].ToUnifiedFormat(count, input);
-	auto values = UnifiedVectorFormat::GetData<string_t>(input);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
-	auto &child = ListVector::GetEntry(result);
+	auto writer = FlatVector::Writer<VectorListType<ELEMENT>>(result, args.size());
 	duckdb_3d::SolidModel solid;
-	idx_t offset = 0;
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input.sel->get_index(i);
-		if (!input.validity.RowIsValid(idx)) {
-			FlatVector::SetNull(result, i, true);
-			list_entries[i] = {offset, 0};
+	for (auto entry : args.data[0].Values<string_t>()) {
+		if (!entry.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
-		auto faces = FaceMeasures(values[idx], solid);
-		ListVector::Reserve(result, offset + faces.size());
-		for (idx_t f = 0; f < faces.size(); f++) {
-			if (!emit(faces[f], child, offset + f)) {
-				FlatVector::SetNull(child, offset + f, true);
-			}
+		auto faces = FaceMeasures(entry.GetValue(), solid);
+		auto list = writer.WriteList(faces.size());
+		for (auto &face : faces) {
+			emit(face, list.child_writer);
 		}
-		list_entries[i] = {offset, faces.size()};
-		offset += faces.size();
-	}
-	ListVector::SetListSize(result, offset);
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
 static void ST_3DFaceAreasFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PerFace(args, result, [](const duckdb_3d::FaceMeasure &face, Vector &child, idx_t row) {
-		FlatVector::GetData<double>(child)[row] = face.area;
-		return face.has_area;
+	PerFace<double>(args, result, [](const duckdb_3d::FaceMeasure &face, VectorWriter<double> &area) {
+		if (face.has_area) {
+			area.WriteValue(face.area);
+		} else {
+			area.WriteNull();
+		}
 	});
 }
 
 static void ST_3DFaceNormalsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PerFace(args, result, [](const duckdb_3d::FaceMeasure &face, Vector &child, idx_t row) {
-		auto &xyz = StructVector::GetEntries(child);
-		FlatVector::GetData<double>(*xyz[0])[row] = face.normal.x;
-		FlatVector::GetData<double>(*xyz[1])[row] = face.normal.y;
-		FlatVector::GetData<double>(*xyz[2])[row] = face.normal.z;
-		return face.has_normal;
+	using Normal = VectorStructType<double, double, double>;
+	PerFace<Normal>(args, result, [](const duckdb_3d::FaceMeasure &face, VectorWriter<Normal> &normal) {
+		if (!face.has_normal) {
+			normal.WriteNull();
+			return;
+		}
+		normal.WriteValue([&](auto &x, auto &y, auto &z) {
+			x.WriteValue(face.normal.x);
+			y.WriteValue(face.normal.y);
+			z.WriteValue(face.normal.z);
+		});
 	});
 }
 
 static void ST_3DFaceSlopesFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PerFace(args, result, [](const duckdb_3d::FaceMeasure &face, Vector &child, idx_t row) {
-		if (!face.has_normal) {
-			return false;
+	PerFace<double>(args, result, [](const duckdb_3d::FaceMeasure &face, VectorWriter<double> &slope) {
+		if (face.has_normal) {
+			slope.WriteValue(duckdb_3d::FaceSlopeDegrees(face.normal));
+		} else {
+			slope.WriteNull();
 		}
-		FlatVector::GetData<double>(child)[row] = duckdb_3d::FaceSlopeDegrees(face.normal);
-		return true;
 	});
 }
 
 static void ST_3DFaceAzimuthsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PerFace(args, result, [](const duckdb_3d::FaceMeasure &face, Vector &child, idx_t row) {
-		return face.has_normal && duckdb_3d::FaceAzimuthDegrees(face.normal, FlatVector::GetData<double>(child)[row]);
+	PerFace<double>(args, result, [](const duckdb_3d::FaceMeasure &face, VectorWriter<double> &azimuth) {
+		double degrees = 0;
+		if (face.has_normal && duckdb_3d::FaceAzimuthDegrees(face.normal, degrees)) {
+			azimuth.WriteValue(degrees);
+		} else {
+			azimuth.WriteNull();
+		}
 	});
 }
 
@@ -187,89 +177,76 @@ static void ST_3DFaceAzimuthsFun(DataChunk &args, ExpressionState &state, Vector
 // ST_3DGeometryN picks one first.
 
 static string_t WriteGeomModel(Vector &result, const duckdb_3d::GeomModel &model) {
-	auto payload = duckdb_3d::SerializeGeomPayload(model);
-	return StringVector::AddStringOrBlob(result,
-	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	return StringVector::AddStringOrBlob(result, AsString(duckdb_3d::SerializeGeomPayload(model)));
 }
 
 //! A shell as a GEOM_3D surface, or NULL when one of its faces admits no tiling
 //! and so cannot be a GEOM_3D polygon, as ST_3DFaces gives that face.
-static string_t WriteShell(Vector &result, const duckdb_3d::SolidModel &model, uint32_t shell, ValidityMask &mask,
-                           idx_t idx) {
+static optional<string_t> WriteShell(Vector &result, const duckdb_3d::SolidModel &model, uint32_t shell) {
 	try {
 		return WriteGeomModel(result, duckdb_3d::SolidShellSurface(model, shell));
 	} catch (std::invalid_argument &) {
-		mask.SetInvalid(idx);
-		return string_t();
+		return {};
 	}
 }
 
 static void ST_3DExteriorShellFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    args.data[0], result, args.size(), [&](string_t solid, ValidityMask &mask, idx_t idx) {
-		    duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(),
-		                                      model);
-		    if (model.SolidCount() != 1) {
-			    mask.SetInvalid(idx);
-			    return string_t();
-		    }
-		    return WriteShell(result, model, 0, mask, idx);
-	    });
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, [&](string_t solid) -> optional<string_t> {
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+		if (model.SolidCount() != 1) {
+			return {};
+		}
+		return WriteShell(result, model, 0);
+	});
 }
 
 static void ST_3DNumInteriorShellsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::ExecuteWithNulls<string_t, int32_t>(
-	    args.data[0], result, args.size(), [&](string_t solid, ValidityMask &mask, idx_t idx) {
-		    auto info =
-		        duckdb_3d::ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
-		    if (info.solid_count != 1) {
-			    mask.SetInvalid(idx);
-			    return int32_t(0);
-		    }
-		    return static_cast<int32_t>(info.shell_count - 1);
-	    });
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, [&](string_t solid) -> optional<int32_t> {
+		auto info =
+		    duckdb_3d::ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
+		if (info.solid_count != 1) {
+			return {};
+		}
+		return static_cast<int32_t>(info.shell_count - 1);
+	});
 }
 
 static void ST_3DInteriorShellNFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	BinaryExecutor::ExecuteWithNulls<string_t, int64_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t solid, int64_t n, ValidityMask &mask, idx_t idx) {
+	BinaryExecutor::Execute<string_t, int64_t, string_t>(
+	    args.data[0], args.data[1], result, [&](string_t solid, int64_t n) -> optional<string_t> {
 		    duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(),
 		                                      model);
 		    if (model.SolidCount() != 1 || n < 1 || n >= static_cast<int64_t>(model.ShellCount())) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
-		    return WriteShell(result, model, static_cast<uint32_t>(n), mask, idx);
+		    return WriteShell(result, model, static_cast<uint32_t>(n));
 	    });
 }
 
 static void ST_3DGeometryNSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	BinaryExecutor::ExecuteWithNulls<string_t, int64_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t solid, int64_t n, ValidityMask &mask, idx_t idx) {
+	BinaryExecutor::Execute<string_t, int64_t, string_t>(
+	    args.data[0], args.data[1], result, [&](string_t solid, int64_t n) -> optional<string_t> {
 		    duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(),
 		                                      model);
 		    if (n < 1 || n > static_cast<int64_t>(model.SolidCount())) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
 		    auto payload = duckdb_3d::SerializePayload(duckdb_3d::SolidPart(model, static_cast<uint32_t>(n - 1)));
-		    return StringVector::AddStringOrBlob(
-		        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		    return StringVector::AddStringOrBlob(result, AsString(payload));
 	    });
 }
 
 static void ST_3DGeometryNGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::ExecuteWithNulls<string_t, int64_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, int64_t n, ValidityMask &mask, idx_t idx) {
+	BinaryExecutor::Execute<string_t, int64_t, string_t>(
+	    args.data[0], args.data[1], result, [&](string_t geom, int64_t n) -> optional<string_t> {
 		    auto model =
 		        duckdb_3d::DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		    duckdb_3d::GeomModel element;
 		    if (n < 1 || n > UINT32_MAX || !duckdb_3d::GeomElement(model, static_cast<uint32_t>(n - 1), element)) {
-			    mask.SetInvalid(idx);
-			    return string_t();
+			    return {};
 		    }
 		    return WriteGeomModel(result, element);
 	    });

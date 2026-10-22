@@ -25,7 +25,7 @@ query II
 EXPLAIN SELECT count(*) FROM s a JOIN s b ON ST_DWithin(ST_3DEnvelope(a.solid), ST_3DEnvelope(b.solid), 4.5)
 WHERE CASE WHEN a.i < b.i THEN ST_3DDWithin(a.solid, b.solid, 4.5) ELSE false END;
 ----
-physical_plan	<REGEX>:.*SPATIAL_JOIN.*
+physical_plan	<REGEX>:.*Spatial Join.*
 
 query II
 SELECT count(*), list(a.i || '-' || b.i ORDER BY a.i, b.i) FROM s a JOIN s b

@@ -236,7 +236,7 @@ static void ST_AsWKBMultiCubeFun(DataChunk &args, ExpressionState &state, Vector
 }
 
 static void ST_AsWKBMultiCubeSepFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<double, string_t>(args.data[0], result, args.size(), [&](double separation) {
+	UnaryExecutor::Execute<double, string_t>(args.data[0], result, [&](double separation) {
 		auto wkb = BuildMultiCubeWKB(separation);
 		auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
 		return StringVector::AddStringOrBlob(result, blob_str);
@@ -248,7 +248,7 @@ static void ST_AsWKBMultiCubeSepFun(DataChunk &args, ExpressionState &state, Vec
 // o = 2 makes them share one vertex, o = 5 keeps them apart: all three are
 // disconnected shells.
 static void ST_AsWKBTwoCubesFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<double, string_t>(args.data[0], result, args.size(), [&](double offset) {
+	UnaryExecutor::Execute<double, string_t>(args.data[0], result, [&](double offset) {
 		std::vector<uint8_t> buf;
 		WkbU8(buf, 1);
 		WkbU32(buf, 1015); // PolyhedralSurfaceZ
@@ -262,7 +262,7 @@ static void ST_AsWKBTwoCubesFun(DataChunk &args, ExpressionState &state, Vector 
 // Test helper: build a Point Z WKB from x, y, z.
 static void ST_AsWKBPointZFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<double, double, double, string_t>(
-	    args.data[0], args.data[1], args.data[2], result, args.size(), [&](double x, double y, double z) {
+	    args.data[0], args.data[1], args.data[2], result, [&](double x, double y, double z) {
 		    std::vector<uint8_t> buf;
 		    buf.push_back(1);     // little-endian
 		    uint32_t type = 1001; // Point Z
