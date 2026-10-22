@@ -1,0 +1,158 @@
+#include "catch.hpp"
+#include "kernel/geom_wkb_parser.hpp"
+#include "kernel/wkt_parser.hpp"
+
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace duckdb_3d;
+
+namespace {
+
+// PostGIS 3.4 ST_AsBinary(geom, 'NDR') of each WKT: the bytes ST_3DGeomFromText must match.
+const std::vector<std::pair<const char *, const char *>> kPostgisWkb = {
+    {"POINT Z (1 2 3)", "01e9030000000000000000f03f00000000000000400000000000000840"},
+    {"LINESTRING Z (0 0 0, 1 1 1, 2 0 -1.5)",
+     "01ea03000003000000000000000000000000000000000000000000000000000000000000000000f03f000000000000f03f000000000000f03"
+     "f00000000000000400000000000000000000000000000f8bf"},
+    {"POLYGON Z ((0 0 0, 4 0 0, 4 4 0, 0 4 0, 0 0 0), (1 1 0, 1 2 0, 2 2 0, 1 1 0))",
+     "01eb0300000200000005000000000000000000000000000000000000000000000000000000000000000000104000000000000000000000000"
+     "00000000000000000000010400000000000001040000000000000000000000000000000000000000000001040000000000000000000000000"
+     "000000000000000000000000000000000000000004000000000000000000f03f000000000000f03f0000000000000000000000000000f03f0"
+     "0000000000000400000000000000000000000000000004000000000000000400000000000000000000000000000f03f000000000000f03f00"
+     "00000000000000"},
+    {"MULTIPOINT Z ((1 2 3), (4 5 6))", "01ec0300000200000001e9030000000000000000f03f0000000000000040000000000000084001"
+                                        "e9030000000000000000104000000000000014400000000000001840"},
+    {"MULTILINESTRING Z ((0 0 0, 1 1 1), (2 2 2, 3 3 3))",
+     "01ed0300000200000001ea03000002000000000000000000000000000000000000000000000000000000000000000000f03f000000000000f"
+     "03f000000000000f03f01ea030000020000000000000000000040000000000000004000000000000000400000000000000840000000000000"
+     "08400000000000000840"},
+    {"MULTIPOLYGON Z (((0 0 0, 1 0 0, 1 1 0, 0 0 0)), ((5 5 5, 6 5 5, 6 6 5, 5 5 5)))",
+     "01ee0300000200000001eb0300000100000004000000000000000000000000000000000000000000000000000000000000000000f03f00000"
+     "000000000000000000000000000000000000000f03f000000000000f03f000000000000000000000000000000000000000000000000000000"
+     "000000000001eb030000010000000400000000000000000014400000000000001440000000000000144000000000000018400000000000001"
+     "44000000000000014400000000000001840000000000000184000000000000014400000000000001440000000000000144000000000000014"
+     "40"},
+    {"POLYHEDRALSURFACE Z (((0 0 0, 0 1 0, 1 0 0, 0 0 0)), ((0 0 0, 0 0 1, 0 1 0, 0 0 0)), ((0 0 0, 1 0 0, 0 0 1, 0 0 "
+     "0)), ((1 0 0, 0 1 0, 0 0 1, 1 0 0)))",
+     "01f70300000400000001eb0300000100000004000000000000000000000000000000000000000000000000000000000000000000000000000"
+     "0000000f03f0000000000000000000000000000f03f0000000000000000000000000000000000000000000000000000000000000000000000"
+     "000000000001eb030000010000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+     "000000000000000f03f0000000000000000000000000000f03f00000000000000000000000000000000000000000000000000000000000000"
+     "0001eb0300000100000004000000000000000000000000000000000000000000000000000000000000000000f03f000000000000000000000"
+     "0000000000000000000000000000000000000000000000000000000f03f00000000000000000000000000000000000000000000000001eb03"
+     "00000100000004000000000000000000f03f000000000000000000000000000000000000000000000000000000000000f03f0000000000000"
+     "00000000000000000000000000000000000000000000000f03f000000000000f03f00000000000000000000000000000000"},
+    {"TIN Z (((0 0 0, 1 0 0, 0 1 0, 0 0 0)), ((1 0 0, 1 1 0, 0 1 0, 1 0 0)))",
+     "01f80300000200000001f90300000100000004000000000000000000000000000000000000000000000000000000000000000000f03f00000"
+     "0000000000000000000000000000000000000000000000000000000f03f000000000000000000000000000000000000000000000000000000"
+     "000000000001f90300000100000004000000000000000000f03f00000000000000000000000000000000000000000000f03f000000000000f"
+     "03f00000000000000000000000000000000000000000000f03f0000000000000000000000000000f03f000000000000000000000000000000"
+     "00"},
+    {"TRIANGLE Z ((0 0 0, 1 0 0, 0 1 1, 0 0 0))",
+     "01f90300000100000004000000000000000000000000000000000000000000000000000000000000000000f03f00000000000000000000000"
+     "0000000000000000000000000000000000000f03f000000000000f03f000000000000000000000000000000000000000000000000"},
+    {"POINT(1e3 -2.5E-2 .5)", "01e90300000000000000408f409a999999999999bf000000000000e03f"},
+    {"MULTIPOINT Z (1 2 3, 4 5 6)", "01ec0300000200000001e9030000000000000000f03f0000000000000040000000000000084001e903"
+                                    "0000000000000000104000000000000014400000000000001840"},
+    {"MULTIPOINT Z EMPTY", "01ec03000000000000"},
+    {"polyhedralsurface z(((0 0 0,0 1 0,1 0 0,0 0 0)))",
+     "01f70300000100000001eb0300000100000004000000000000000000000000000000000000000000000000000000000000000000000000000"
+     "0000000f03f0000000000000000000000000000f03f0000000000000000000000000000000000000000000000000000000000000000000000"
+     "0000000000"},
+};
+
+std::vector<uint8_t> FromHex(const std::string &hex) {
+	std::vector<uint8_t> out;
+	for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+		out.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+	}
+	return out;
+}
+
+std::vector<uint8_t> Wkb(const std::string &wkt) {
+	return WktToWkb(wkt.data(), wkt.size());
+}
+
+} // namespace
+
+TEST_CASE("WKT: every supported class gives PostGIS's WKB", "[wkt]") {
+	for (auto &entry : kPostgisWkb) {
+		INFO(entry.first);
+		REQUIRE(Wkb(entry.first) == FromHex(entry.second));
+	}
+}
+
+TEST_CASE("WKT: an SRID prefix becomes an EWKB SRID", "[wkt]") {
+	// PostGIS ST_AsEWKB('SRID=28992;POINT Z (85000 446800 5)', 'NDR').
+	REQUIRE(Wkb("SRID=28992;POINT Z (85000 446800 5)") ==
+	        FromHex("01010000a0407100000000000080c0f4400000000040451b410000000000001440"));
+	auto model = ParseGeomWKB(Wkb("srid=7415; POINT Z (1 2 3)").data(), Wkb("srid=7415; POINT Z (1 2 3)").size());
+	REQUIRE(model.crs == "EPSG:7415");
+}
+
+TEST_CASE("WKT: whitespace is free between tokens", "[wkt]") {
+	REQUIRE(Wkb("  POINT Z(1 2 3)  ") == Wkb("POINT Z (1 2 3)"));
+	REQUIRE(Wkb("LINESTRING\tZ\n( 0 0 0 ,1 1 1 , 2 0 -1.5 )") == Wkb("LINESTRING Z (0 0 0, 1 1 1, 2 0 -1.5)"));
+}
+
+TEST_CASE("WKT: a Z tag may be written onto the class name", "[wkt]") {
+	REQUIRE(Wkb("POINTZ(1 2 3)") == Wkb("POINT Z (1 2 3)"));
+	REQUIRE(Wkb("tinz (((0 0 0, 1 0 0, 0 1 0, 0 0 0)))") == Wkb("TIN Z (((0 0 0, 1 0 0, 0 1 0, 0 0 0)))"));
+	REQUIRE_THROWS_AS(Wkb("POINTM(1 2 3)"), std::invalid_argument);
+	REQUIRE_THROWS_AS(Wkb("POINTZM(1 2 3 4)"), std::invalid_argument);
+}
+
+TEST_CASE("WKT: what GEOM_3D cannot hold is refused", "[wkt]") {
+	const char *refused[] = {
+	    "POINT (1 2)",                                                             // no Z
+	    "POINT Z (1 2)",                                                           // Z tag, two ordinates
+	    "POINT ZM (1 2 3 4)",                                                      // M
+	    "POINT M (1 2 3)",                                                         // M
+	    "POINT (1 2 3 4)",                                                         // four ordinates
+	    "GEOMETRYCOLLECTION Z (POINT Z (1 2 3))",                                  // no collections in GEOM_3D
+	    "CIRCULARSTRING Z (0 0 0, 1 1 0, 2 0 0)",                                  // curves
+	    "POINT Z (1 2 3",                                                          // unclosed
+	    "POINT Z (1 2 3) x",                                                       // trailing text
+	    "POINT Z (1 2 three)",                                                     // not a number
+	    "LINESTRING Z (0 0 0, 1 1)",                                               // a short coordinate
+	    "LINESTRING Z (0 0 0, 1 1 1 0 0 0)",                                       // a missing comma
+	    "LINESTRING (0 0 0, 1 1)",                                                 // dimensions mixed
+	    "SRID=abc;POINT Z (1 2 3)",                                                // a bad SRID
+	    "POINT EMPTY",                                                             // no Z, as every untagged form needs
+	    "POLYGON EMPTY",                                                           // likewise
+	    "TRIANGLE Z ((0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 0))",                        // a triangle has four points
+	    "TRIANGLE Z ((0 0 0, 1 0 0, 1 1 0, 0 0 0), (0 0 0, 1 0 0, 1 1 0, 0 0 0))", // and one ring
+	    "TIN Z (((0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 0)))",                           // so does each of a TIN's
+	    "",
+	};
+	for (auto text : refused) {
+		INFO(text);
+		REQUIRE_THROWS_AS(Wkb(text), std::invalid_argument);
+	}
+}
+
+TEST_CASE("WKT: errors name where the text went wrong", "[wkt]") {
+	try {
+		Wkb("POINT Z (1 2 x)");
+		FAIL("no exception");
+	} catch (std::invalid_argument &e) {
+		REQUIRE(std::string(e.what()).find("13") != std::string::npos);
+	}
+}
+
+TEST_CASE("WKB: a TIN is read as the PolyhedralSurface of its triangles", "[wkt]") {
+	auto tin = Wkb("TIN Z (((0 0 0, 1 0 0, 0 1 0, 0 0 0)), ((1 0 0, 1 1 0, 0 1 0, 1 0 0)))");
+	auto model = ParseGeomWKB(tin.data(), tin.size());
+	REQUIRE(model.type == GeomType::PolyhedralSurface);
+	REQUIRE(model.PolygonCount() == 2);
+	REQUIRE(model.vertices.size() == 6);
+
+	auto triangle = Wkb("TRIANGLE Z ((0 0 0, 1 0 0, 0 1 1, 0 0 0))");
+	model = ParseGeomWKB(triangle.data(), triangle.size());
+	REQUIRE(model.type == GeomType::Polygon);
+	REQUIRE(model.vertices.size() == 3);
+}

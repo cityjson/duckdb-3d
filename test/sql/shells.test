@@ -1,0 +1,82 @@
+# name: test/sql/shells.test
+# description: ST_3DExteriorShell, ST_3DNumInteriorShells, ST_3DInteriorShellN and ST_3DGeometryN
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# The hollow cube [0,4]^3 with the cavity [1,3]^3: two shells of six faces, areas
+# 96 and 24. The multi-cube: two solids [0,2]^3 and [5,7]^3.
+statement ok
+CREATE TABLE t AS SELECT
+    ST_3DSetCRS(ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}'), 'EPSG:28992') AS hollow,
+    ST_3DFromWKB(ST_AsWKBMultiCube()) AS multi;
+
+query IIIIII
+SELECT ST_3DGeometryType(e), ST_3DNumGeometries(e), ST_3DArea(e), ST_3DCRS(e),
+       ST_3DNumInteriorShells(hollow), ST_3DArea(ST_3DInteriorShellN(hollow, 1))
+FROM (SELECT hollow, ST_3DExteriorShell(hollow) AS e FROM t);
+----
+ST_PolyhedralSurface	6	96.0	EPSG:28992	1	24.0
+
+# The shells are the solid's own faces: the exterior shell is a closed surface
+# that becomes the cube without its cavity.
+query II
+SELECT ST_3DVolume(ST_MakeSolid(ST_3DExteriorShell(hollow))), ST_3DPerimeter(ST_3DExteriorShell(hollow)) FROM t;
+----
+64.0	0.0
+
+query III
+SELECT ST_3DInteriorShellN(hollow, 0) IS NULL, ST_3DInteriorShellN(hollow, 2) IS NULL,
+       ST_3DNumInteriorShells(ST_3DGeometryN(multi, 1))
+FROM t;
+----
+true	true	0
+
+# A collection of solids has no single exterior shell, as PostGIS's
+# ST_ExteriorRing has none for a MultiPolygon.
+query III
+SELECT ST_3DExteriorShell(multi) IS NULL, ST_3DNumInteriorShells(multi) IS NULL, ST_3DInteriorShellN(multi, 1) IS NULL
+FROM t;
+----
+true	true	true
+
+# ST_3DGeometryN of a SOLID_3D is its n-th solid, validated on its own.
+query IIIIII
+SELECT ST_3DNumSolids(a), ST_3DVolume(a), ST_3DXMin(a), ST_3DXMin(b), ST_3DIsValid(b), ST_3DGeometryN(multi, 3) IS NULL
+FROM (SELECT multi, ST_3DGeometryN(multi, 1) AS a, ST_3DGeometryN(multi, 2) AS b FROM t);
+----
+1	8.0	0.0	5.0	true	true
+
+query II
+SELECT ST_3DVolume(ST_3DGeometryN(hollow, 1)), ST_3DCRS(ST_3DGeometryN(hollow, 1)) FROM t;
+----
+56.0	EPSG:28992
+
+# ST_3DGeometryN of a GEOM_3D, as PostGIS's ST_GeometryN: the n-th part of a
+# collection or patch of a surface, the value itself for n = 1 of a single
+# geometry, and NULL out of range.
+query IIII
+SELECT ST_3DAsText(ST_3DGeometryN(mp, 2)), ST_3DAsText(ST_3DGeometryN(ml, 1)), ST_3DAsText(ST_3DGeometryN(p, 1)),
+       ST_3DGeometryN(p, 2) IS NULL
+FROM (SELECT ST_Geom3DFromWKB('MULTIPOINT Z (1 2 3, 4 5 6)'::GEOMETRY) AS mp,
+             ST_Geom3DFromWKB('MULTILINESTRING Z ((0 0 0, 1 1 1), (2 2 2, 3 3 3))'::GEOMETRY) AS ml,
+             ST_Geom3DFromWKB('POINT Z (7 8 9)'::GEOMETRY) AS p);
+----
+POINT Z (4 5 6)	LINESTRING Z (0 0 0, 1 1 1)	POINT Z (7 8 9)	true
+
+query III
+SELECT ST_3DGeometryType(ST_3DGeometryN(e, 6)), ST_3DArea(ST_3DGeometryN(e, 6)), ST_3DGeometryN(e, 0) IS NULL
+FROM (SELECT ST_3DExteriorShell(hollow) AS e FROM t);
+----
+ST_Polygon	16.0	true
+
+# A shell holding a face that admits no tiling, a bow-tie here, is no GEOM_3D
+# surface: its shell is NULL, as the face's polygon in ST_3DFaces is.
+query IIII
+SELECT ST_3DExteriorShell(s) IS NULL, (ST_3DFaces(s)[2]).polygon IS NULL, (ST_3DFaces(s)[1]).polygon IS NULL,
+       ST_3DGeometryN(s, 1) IS NULL
+FROM (SELECT ST_3DFromWKB(from_hex('01f70300000200000001eb0300000100000005000000000000000000000000000000000000000000000000000000000000000000f03f00000000000000000000000000000000000000000000f03f000000000000f03f00000000000000000000000000000000000000000000f03f000000000000000000000000000000000000000000000000000000000000000001eb0300000100000005000000000000000000000000000000000000000000000000000000000000000000004000000000000000400000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000')) AS s);
+----
+true	true	false	false

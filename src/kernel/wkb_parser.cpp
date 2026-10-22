@@ -14,7 +14,7 @@ public:
 	WKBReader(const uint8_t *data, size_t size) : WkbCursor(data, size, "WKB data truncated") {
 	}
 	WKBGeometryType ReadGeometryType() {
-		return static_cast<WKBGeometryType>(ReadU32());
+		return static_cast<WKBGeometryType>(ReadTypeCode());
 	}
 };
 
@@ -98,6 +98,9 @@ std::vector<ParsedPolyhedralSurface> ParseWKB(const uint8_t *data, size_t size) 
 	} else {
 		throw std::runtime_error("Unsupported WKB geometry type for SOLID_3D import: type code " +
 		                         std::to_string(static_cast<uint32_t>(geom_type)));
+	}
+	for (auto &surface : results) {
+		surface.crs = reader.SridCrs();
 	}
 
 	return results;

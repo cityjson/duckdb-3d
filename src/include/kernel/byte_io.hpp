@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace duckdb_3d {
@@ -65,6 +66,12 @@ public:
 		}
 		WriteBytes(b, sizeof(b));
 	}
+	//! A u32 byte length followed by the string's bytes.
+	void WriteString(const std::string &v) {
+		WriteU32(static_cast<uint32_t>(v.size()));
+		WriteBytes(v.data(), v.size());
+	}
+
 	void WriteU32Array(const uint32_t *data, size_t count) {
 		if (kLittleEndianHost) {
 			WriteBytes(data, count * sizeof(uint32_t));
@@ -184,6 +191,24 @@ public:
 	}
 	//! Reads `count` values, or throws the truncation error before reading any
 	//! when they do not all fit.
+	//! A string written by ByteWriter::WriteString; its declared length is bounded
+	//! by the bytes that remain before anything is allocated.
+	std::string ReadString(const char *what) {
+		uint32_t len = ReadU32();
+		RequireCount(len, 1, what);
+		std::string v(reinterpret_cast<const char *>(data + pos), len);
+		pos += len;
+		return v;
+	}
+	//! The same string as a view into the payload, valid while the payload is.
+	std::string_view ReadStringView(const char *what) {
+		uint32_t len = ReadU32();
+		RequireCount(len, 1, what);
+		std::string_view v(reinterpret_cast<const char *>(data + pos), len);
+		pos += len;
+		return v;
+	}
+
 	void ReadU32Array(uint32_t *dst, size_t count) {
 		if (kLittleEndianHost) {
 			RequireElements(count, sizeof(uint32_t));
@@ -232,8 +257,36 @@ public:
 
 	bool swap_bytes = false;
 
+	//! The SRID an EWKB value declared (0 when none did).
+	uint32_t srid = 0;
+
 	void ReadByteOrder() {
 		swap_bytes = (ReadByte() == 0);
+	}
+	//! A geometry's ISO type code. An EWKB code (PostGIS's dialect) is translated:
+	//! its Z and M flags become ISO's +1000 and +2000, and a flagged SRID is read
+	//! into `srid`; a child may repeat the SRID but not change it.
+	uint32_t ReadTypeCode() {
+		constexpr uint32_t kZ = 0x80000000u, kM = 0x40000000u, kSrid = 0x20000000u;
+		uint32_t code = ReadU32();
+		if ((code & (kZ | kM | kSrid)) == 0) {
+			return code;
+		}
+		if ((code & kSrid) != 0) {
+			uint32_t declared = ReadU32();
+			if (srid != 0 && declared != 0 && declared != srid) {
+				throw std::runtime_error("EWKB: a child geometry's SRID " + std::to_string(declared) +
+				                         " differs from its parent's " + std::to_string(srid));
+			}
+			if (declared != 0) {
+				srid = declared;
+			}
+		}
+		return (code & 0x0FFFFFFFu) + ((code & kZ) != 0 ? 1000 : 0) + ((code & kM) != 0 ? 2000 : 0);
+	}
+	//! The CRS an EWKB SRID names, "EPSG:n", or empty.
+	std::string SridCrs() const {
+		return srid == 0 ? std::string() : "EPSG:" + std::to_string(srid);
 	}
 	uint32_t ReadU32() {
 		uint32_t v = ByteReader::ReadU32();
@@ -257,6 +310,21 @@ public:
 		return v;
 	}
 };
+
+//! A payload's bytes with the CRS slot at `offset` (a u32 length of
+//! `old_length`, then the string) replaced by `crs`; every other byte is copied.
+//! Both payloads keep their CRS right after their fixed header fields and hold
+//! no absolute offsets, so the splice leaves them well formed.
+inline std::vector<uint8_t> ReplaceCrsSlot(const uint8_t *data, size_t size, size_t offset, size_t old_length,
+                                           const std::string &crs) {
+	size_t rest = offset + sizeof(uint32_t) + old_length;
+	ByteWriter writer;
+	writer.Reserve(size - old_length + crs.size());
+	writer.WriteBytes(data, offset);
+	writer.WriteString(crs);
+	writer.WriteBytes(data + rest, size - rest);
+	return writer.buffer;
+}
 
 //! Validate a boundary-offset array: non-empty, starting at 0, monotonic, ending
 //! at `expected_last`. `prefix` names the payload family ("SOLID_3D payload"),

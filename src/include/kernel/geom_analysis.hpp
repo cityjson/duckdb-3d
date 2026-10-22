@@ -15,11 +15,22 @@ Vertex3D Geom3DCentroid(const GeomModel &geom);
 
 //! 2D convex hull over the XY projection of all vertices. Returns a Polygon Z
 //! (or LineString Z / Point Z for degenerate inputs) at the minimum Z of the input.
-GeomModel Geom3DConvexHull(const GeomModel &geom);
+GeomModel Geom3DFootprintHull(const GeomModel &geom);
 
 //! Area of the geometry's XY projection (footprint). Polygon/MultiPolygon/
 //! PolyhedralSurface only; exterior rings add and interior rings subtract.
 //! Non-areal geometries (points, lines) and vertical faces project to 0.
 double Geom3DFootprintArea(const GeomModel &geom);
+
+//! Total 3D area of a geometry's polygons, holes excluded: the summed area of
+//! the triangles that tile them (computed when the model carries no cache). 0 for
+//! points and lines.
+double Geom3DArea(const GeomModel &geom);
+
+//! 3D length of a geometry's boundary, as SQL/MM defines a perimeter: every ring
+//! of a Polygon or MultiPolygon, interior rings included; for a PolyhedralSurface
+//! the edges exactly one patch uses, so a closed surface gives 0 (PostGIS sums
+//! every ring instead). 0 for points and lines.
+double Geom3DPerimeter(const GeomModel &geom);
 
 } // namespace duckdb_3d

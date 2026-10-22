@@ -19,6 +19,9 @@ double DistSegmentSegment(const Vertex3D &p1, const Vertex3D &q1, const Vertex3D
 //! Distance between point `p` and triangle (a,b,c).
 double DistPointTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c);
 
+//! The point of triangle (a,b,c) nearest `p`.
+Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c);
+
 //! Distance between segment [p,q] and triangle (a,b,c). 0 if they intersect.
 double DistSegmentTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a, const Vertex3D &b,
                            const Vertex3D &c);

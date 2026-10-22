@@ -34,6 +34,8 @@ struct ParsedPolyhedralSurface {
 	//! For each ring, the vertex indices (start index into vertices, count)
 	//! Stored as [start, count] pairs flattened
 	std::vector<uint32_t> ring_vertex_counts;
+	//! "EPSG:n" for an EWKB value carrying SRID n (not 0), else empty
+	std::string crs;
 };
 
 //! Parse WKB bytes into a list of ParsedPolyhedralSurface.

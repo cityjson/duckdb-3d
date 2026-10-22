@@ -102,14 +102,27 @@ compose the two extensions by hand.
 ## Benchmark
 
 `scripts/bench/` times the SQL surface on real data — 3DBAG Delft (LoD 2.2) and Helsinki
-(LoD 2, ~77 000 solids): import with the STRUCT and JSON sidecars and without one, volume,
+(LoD 2, ~77 000 solids): import with the STRUCT and JSON sidecars and without one, a header field (`ST_3DZMax`), volume,
 surface and footprint area, the validation report, and distance, `ST_3DDWithin` and
-`ST_3DShortestLine` over 5000 neighbouring pairs per dataset.
+`ST_3DShortestLine` over 5000 neighbouring pairs per dataset; then every other function
+both a build and its baseline have, one call a row: counts, flags and bounds, perimeter,
+WKB, text and GeoJSON output, the transforms, `ST_3DIntersects`, `ST_3DMaxDistance`,
+`ST_3DDFullyWithin` and `ST_3DClosestPoint`.
 
 ```sh
 scripts/bench/prepare.sh /path/to/bench          # once: downloads ~680 MB, needs the local cityjson build
 scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
     --duckdb build/release/duckdb,/path/to/baseline/duckdb --rounds 3
+```
+
+To compare a build with a baseline whose shell you do not have, pass loadable extensions
+instead; they run in the Python `duckdb` module, which must be the DuckDB version they were
+built for. Each file keeps the name `three_d.duckdb_extension`, since DuckDB derives the
+entry point from it:
+
+```sh
+scripts/bench/bench.py --inputs /path/to/bench/inputs.duckdb \
+    --extensions build/release/extension/three_d/three_d.duckdb_extension,/path/to/baseline/three_d.duckdb_extension
 ```
 
 It runs single-threaded and reports, per query and per binary, the median wall and CPU time

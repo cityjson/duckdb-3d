@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "kernel/geom_analysis.hpp"
+#include <cmath>
 
 using namespace duckdb_3d;
 
@@ -123,25 +124,25 @@ TEST_CASE("Geom3DCentroid: right triangle", "[geom_analysis]") {
 	REQUIRE(c.z == Approx(0.0));
 }
 
-TEST_CASE("Geom3DConvexHull: square with interior point", "[geom_analysis]") {
+TEST_CASE("Geom3DFootprintHull: square with interior point", "[geom_analysis]") {
 	GeomModel m;
 	m.type = GeomType::MultiPoint;
 	m.vertices = {{0, 0, 5}, {2, 0, 5}, {2, 2, 5}, {0, 2, 5}, {1, 1, 5}};
 	m.part_offsets = {0, 1, 2, 3, 4, 5};
 	m.ComputeBBox();
-	auto hull = Geom3DConvexHull(m);
+	auto hull = Geom3DFootprintHull(m);
 	REQUIRE(hull.type == GeomType::Polygon);
 	REQUIRE(hull.vertices.size() == 4);
 	REQUIRE(hull.ring_offsets == std::vector<uint32_t> {0, 4});
 }
 
-TEST_CASE("Geom3DConvexHull: collinear points become a linestring", "[geom_analysis]") {
+TEST_CASE("Geom3DFootprintHull: collinear points become a linestring", "[geom_analysis]") {
 	GeomModel m;
 	m.type = GeomType::MultiPoint;
 	m.vertices = {{0, 0, 1}, {1, 0, 2}, {2, 0, 3}, {3, 0, 4}};
 	m.part_offsets = {0, 1, 2, 3, 4};
 	m.ComputeBBox();
-	auto hull = Geom3DConvexHull(m);
+	auto hull = Geom3DFootprintHull(m);
 	REQUIRE(hull.type == GeomType::LineString);
 	REQUIRE(hull.vertices.size() == 2);
 	REQUIRE(hull.vertices.front().x == Approx(0.0));
@@ -149,12 +150,12 @@ TEST_CASE("Geom3DConvexHull: collinear points become a linestring", "[geom_analy
 	REQUIRE(hull.vertices.front().z == Approx(1.0)); // min Z
 }
 
-TEST_CASE("Geom3DConvexHull: single point", "[geom_analysis]") {
+TEST_CASE("Geom3DFootprintHull: single point", "[geom_analysis]") {
 	GeomModel m;
 	m.type = GeomType::Point;
 	m.vertices = {{5, 5, 7}};
 	m.ComputeBBox();
-	auto hull = Geom3DConvexHull(m);
+	auto hull = Geom3DFootprintHull(m);
 	REQUIRE(hull.type == GeomType::Point);
 	REQUIRE(hull.vertices.size() == 1);
 	REQUIRE(hull.vertices[0].x == Approx(5.0));
@@ -248,4 +249,73 @@ TEST_CASE("Geom3DFootprintArea: non-areal geometries are zero", "[geom_analysis]
 	line.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 3, 0}};
 	line.ComputeBBox();
 	REQUIRE(Geom3DFootprintArea(line) == Approx(0.0));
+}
+
+namespace {
+
+//! The square [0, 10]^2 in z = 0 with the hole [3, 7]^2.
+GeomModel SquareWithHole() {
+	GeomModel m;
+	m.type = GeomType::Polygon;
+	m.vertices = {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}, {0, 10, 0}, {3, 3, 0}, {3, 7, 0}, {7, 7, 0}, {7, 3, 0}};
+	m.ring_offsets = {0, 4, 8};
+	m.ComputeBBox();
+	return m;
+}
+
+//! Two faces of the cube [0, 1]^3, the bottom and the front, as a PolyhedralSurface.
+GeomModel TwoFaces() {
+	GeomModel m;
+	m.type = GeomType::PolyhedralSurface;
+	m.vertices = {{0, 0, 0}, {0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}};
+	m.ring_offsets = {0, 4, 8};
+	m.part_offsets = {0, 1, 2};
+	m.ComputeBBox();
+	return m;
+}
+
+} // namespace
+
+TEST_CASE("Geom3DArea: polygons, holes excluded, and surfaces", "[geom_analysis]") {
+	REQUIRE(Geom3DArea(FlatSquare()) == Approx(4.0));
+	REQUIRE(Geom3DArea(SquareWithHole()) == Approx(84.0));
+	REQUIRE(Geom3DArea(TwoFaces()) == Approx(2.0));
+	// A tilted square: side 2 along x, 2 * sqrt(2) along the slope y = z.
+	GeomModel tilted;
+	tilted.type = GeomType::Polygon;
+	tilted.vertices = {{0, 0, 0}, {2, 0, 0}, {2, 2, 2}, {0, 2, 2}};
+	tilted.ring_offsets = {0, 4};
+	tilted.ComputeBBox();
+	REQUIRE(Geom3DArea(tilted) == Approx(4.0 * std::sqrt(2.0)));
+	GeomModel line;
+	line.type = GeomType::LineString;
+	line.vertices = {{0, 0, 0}, {1, 1, 1}};
+	line.ComputeBBox();
+	REQUIRE(Geom3DArea(line) == 0.0);
+}
+
+TEST_CASE("Geom3DPerimeter: a polygon's rings, a surface's boundary", "[geom_analysis]") {
+	REQUIRE(Geom3DPerimeter(FlatSquare()) == Approx(8.0));
+	REQUIRE(Geom3DPerimeter(SquareWithHole()) == Approx(56.0));
+	// The shared edge is inside the surface, not on its boundary.
+	REQUIRE(Geom3DPerimeter(TwoFaces()) == Approx(6.0));
+	// A MultiPolygon's members are separate polygons: every ring counts.
+	GeomModel multi = TwoFaces();
+	multi.type = GeomType::MultiPolygon;
+	REQUIRE(Geom3DPerimeter(multi) == Approx(8.0));
+	// A closed surface has no boundary.
+	GeomModel cube;
+	cube.type = GeomType::PolyhedralSurface;
+	cube.vertices = {{0, 0, 0}, {0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1},
+	                 {0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}, {1, 0, 1},
+	                 {1, 1, 0}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}, {0, 1, 0}, {0, 0, 0}, {0, 0, 1}, {0, 1, 1}};
+	cube.ring_offsets = {0, 4, 8, 12, 16, 20, 24};
+	cube.part_offsets = {0, 1, 2, 3, 4, 5, 6};
+	cube.ComputeBBox();
+	REQUIRE(Geom3DPerimeter(cube) == 0.0);
+	GeomModel line;
+	line.type = GeomType::LineString;
+	line.vertices = {{0, 0, 0}, {1, 1, 1}};
+	line.ComputeBBox();
+	REQUIRE(Geom3DPerimeter(line) == 0.0);
 }

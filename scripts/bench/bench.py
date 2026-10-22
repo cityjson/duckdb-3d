@@ -20,6 +20,7 @@ the payload bytes or doubles -- so comparing two builds also proves they
 return bit-identical answers ("DIFF" otherwise).
 """
 import argparse
+import json
 import re
 import statistics
 import subprocess
@@ -39,9 +40,10 @@ CREATE TEMP TABLE {ds} AS SELECT * FROM i.{ds};
 CREATE TEMP TABLE {ds}_s AS SELECT id, ST_3DTryFromWKB(wkb, props) AS s FROM {ds};
 CREATE TEMP TABLE {ds}_valid AS SELECT s FROM {ds}_s WHERE s IS NOT NULL AND (ST_3DValidationReport(s)).is_valid;
 CREATE TEMP TABLE {ds}_nondegen AS SELECT s FROM {ds}_s WHERE s IS NOT NULL AND (ST_3DValidationReport(s)).degenerate_face_count = 0;
-CREATE TEMP TABLE {ds}_g AS SELECT id, ST_Geom3DFromWKB(wkb) AS g,
+CREATE TEMP TABLE {ds}_g AS SELECT id, g,
     ((b).min_x + (b).max_x) / 2 AS cx, ((b).min_y + (b).max_y) / 2 AS cy
-    FROM (SELECT id, wkb, ST_3DBounds(ST_3DTryFromWKB(wkb, props)) AS b FROM {ds}) WHERE b IS NOT NULL;
+    FROM (SELECT id, TRY(ST_Geom3DFromWKB(wkb)) AS g, ST_3DBounds(ST_3DTryFromWKB(wkb, props)) AS b FROM {ds})
+    WHERE b IS NOT NULL AND g IS NOT NULL;
 CREATE TEMP TABLE {ds}_pairs AS
     SELECT a.g AS g1, b.g AS g2 FROM {ds}_g a JOIN {ds}_g b
       ON floor(a.cx / 100) = floor(b.cx / 100) AND floor(a.cy / 100) = floor(b.cy / 100) AND a.id < b.id
@@ -58,7 +60,8 @@ def bench_queries(ds):
         ("import_struct", f"SELECT {h('ST_3DTryFromWKB(wkb, props)')} FROM {ds};"),
         ("import_json", f"SELECT {h('ST_3DTryFromWKB(wkb, props_json)')} FROM {ds};"),
         ("import_plain", f"SELECT {h('ST_3DTryFromWKB(wkb)')} FROM {ds};"),
-        ("geom_import", f"SELECT {h('ST_Geom3DFromWKB(wkb)')} FROM {ds};"),
+        ("geom_import", f"SELECT {h('TRY(ST_Geom3DFromWKB(wkb))')} FROM {ds};"),
+        ("zmax", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DZMax(s) AS v FROM {ds}_valid);"),
         ("volume", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DVolume(s) AS v FROM {ds}_valid);"),
         ("area", f"SELECT sum(v)::DECIMAL(38,6), {h('v')} FROM (SELECT ST_3DArea(s) AS v FROM {ds}_nondegen);"),
         (
@@ -72,29 +75,76 @@ def bench_queries(ds):
         ),
         ("dwithin_2m", f"SELECT count_if(v), {h('v')} FROM (SELECT ST_3DDWithin(g1, g2, 2.0) AS v FROM {ds}_pairs);"),
         ("shortestline", f"SELECT {h('ST_3DShortestLine(g1, g2)')} FROM {ds}_pairs;"),
+    ] + [
+        # The rest of the surface both builds share, one call a row.
+        (name, f"SELECT {h(expr)} FROM {table};")
+        for name, expr, table in [
+            ("solid_counts", "(ST_3DNumFaces(s), ST_3DNumShells(s), ST_3DNumSolids(s))", f"{ds}_s WHERE s IS NOT NULL"),
+            (
+                "solid_flags",
+                "(ST_3DIsClosed(s), ST_3DIsManifold(s), ST_3DIsOriented(s))",
+                f"{ds}_s WHERE s IS NOT NULL",
+            ),
+            ("solid_bounds", "ST_3DBounds(s)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("surface_area", "ST_3DSurfaceArea(s)", f"{ds}_nondegen"),
+            ("solid_perimeter", "ST_3DPerimeter(s)", f"{ds}_nondegen"),
+            ("solid_aswkb", "ST_3DAsWKB(s)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_translate", "ST_3DTranslate(s, 1, 2, 3)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_rotatez", "ST_3DRotateZ(s, 0.3)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("solid_scale", "ST_3DScale(s, 2, 2, 2)", f"{ds}_s WHERE s IS NOT NULL"),
+            ("geom_astext", "ST_3DAsText(g)", f"{ds}_g"),
+            ("geom_asbinary", "ST_3DAsBinary(g)", f"{ds}_g"),
+            ("geom_asgeojson", "ST_3DAsGeoJSON(g)", f"{ds}_g"),
+            ("geom_introspection", "(ST_3DGeometryType(g), ST_3DDimension(g), ST_3DNumGeometries(g))", f"{ds}_g"),
+            ("geom_zrange", "(ST_3DZMin(g), ST_3DZMax(g))", f"{ds}_g"),
+            ("geom_footprint", "ST_3DFootprintArea(g)", f"{ds}_g"),
+            ("geom_centroid", "ST_3DCentroid(g)", f"{ds}_g"),
+            ("geom_translate", "ST_3DTranslate(g, 1, 2, 3)", f"{ds}_g"),
+            ("geom_rotatex", "ST_3DRotateX(g, 0.3)", f"{ds}_g"),
+            ("intersects", "ST_3DIntersects(g1, g2)", f"{ds}_pairs"),
+            ("maxdistance", "ST_3DMaxDistance(g1, g2)", f"{ds}_pairs"),
+            ("dfullywithin_50m", "ST_3DDFullyWithin(g1, g2, 50.0)", f"{ds}_pairs"),
+            ("closestpoint", "ST_3DClosestPoint(g1, g2)", f"{ds}_pairs"),
+        ]
     ]
 
 
-def build_script(inputs, reps, threads, datasets, only=None):
-    out = [f"ATTACH '{inputs}' AS i (READ_ONLY);", f"SET threads = {threads};"]
+def build_steps(inputs, reps, threads, datasets, only=None):
+    """The benchmark as steps: ("sql", statement) to run untimed, and
+    ("bench", dataset, query name, rep, statement) to time."""
+    steps = [("sql", f"ATTACH '{inputs}' AS i (READ_ONLY);"), ("sql", f"SET threads = {threads};")]
     for ds in datasets:
-        out.append(setup_sql(ds))
-    out.append(".timer on")
+        steps += [("sql", stmt.strip() + ";") for stmt in setup_sql(ds).split(";") if stmt.strip()]
     for ds in datasets:
         for name, q in bench_queries(ds):
             if only and name not in only:
                 continue
-            for r in range(reps):
-                out.append(f".print @@BENCH {ds} {name} {r}")
-                out.append(q)
+            steps += [("bench", ds, name, r, q) for r in range(reps)]
+    return steps
+
+
+def build_script(steps):
+    out = []
+    timed = False
+    for step in steps:
+        if step[0] == "bench" and not timed:
+            out.append(".timer on")
+            timed = True
+        if step[0] == "sql":
+            out.append(step[1])
+        else:
+            _, ds, name, r, q = step
+            out.append(f".print @@BENCH {ds} {name} {r}")
+            out.append(q)
     return "\n".join(out) + "\n"
 
 
 TIME_RE = re.compile(r"Run Time \(s\): real ([0-9.]+) user ([0-9.]+) sys ([0-9.]+)")
 
 
-def run(binary, script):
-    proc = subprocess.run([binary, "-unsigned", "-csv", "-noheader"], input=script, capture_output=True, text=True)
+def run(binary, steps):
+    proc = subprocess.run([binary, "-unsigned", "-csv", "-noheader"], input=build_script(steps), capture_output=True,
+                          text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"{binary} failed")
@@ -117,10 +167,52 @@ def run(binary, script):
     return results
 
 
+# A loadable extension runs in the Python duckdb module of the same DuckDB
+# version, one fresh process per run, timed around each query.
+PY_RUNNER = """
+import json, os, sys, time
+import duckdb
+ext, steps = sys.argv[1], json.load(sys.stdin)
+con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+con.execute("SET enable_progress_bar = false")  # it writes to stdout, which carries the results
+con.execute(f"LOAD '{ext}'")
+out = []
+for step in steps:
+    if step[0] == "sql":
+        con.execute(step[1])
+        continue
+    _, ds, name, r, q = step
+    t0, c0 = time.perf_counter(), os.times()
+    rows = con.execute(q).fetchall()
+    t1, c1 = time.perf_counter(), os.times()
+    cpu = (c1.user - c0.user) + (c1.system - c0.system)
+    out.append([ds, name, t1 - t0, cpu, [",".join(str(v) for v in row) for row in rows]])
+json.dump(out, sys.stdout)
+"""
+
+
+def run_extension(extension, steps):
+    proc = subprocess.run([sys.executable, "-c", PY_RUNNER, extension], input=json.dumps(steps),
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(f"{extension} failed")
+    results = {}
+    for ds, name, wall, cpu, rows in json.loads(proc.stdout):
+        r = results.setdefault((ds, name), {"times": [], "cpu": [], "values": set()})
+        r["times"].append(wall)
+        r["cpu"].append(cpu)
+        r["values"] |= set(rows)
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--inputs", required=True)
-    ap.add_argument("--duckdb", required=True, help="comma-separated binaries (three_d linked in)")
+    target = ap.add_mutually_exclusive_group(required=True)
+    target.add_argument("--duckdb", help="comma-separated binaries (three_d linked in)")
+    target.add_argument("--extensions", help="comma-separated loadable three_d extensions, run in the Python "
+                        "duckdb module of the same DuckDB version")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--rounds", type=int, default=1)
@@ -128,14 +220,15 @@ def main():
     ap.add_argument("--queries", default="", help="comma-separated subset of query names")
     args = ap.parse_args()
     datasets = args.datasets.split(",")
-    script = build_script(args.inputs, args.reps, args.threads, datasets, set(filter(None, args.queries.split(","))))
-    binaries = args.duckdb.split(",")
+    steps = build_steps(args.inputs, args.reps, args.threads, datasets, set(filter(None, args.queries.split(","))))
+    binaries = (args.duckdb or args.extensions).split(",")
+    runner = run if args.duckdb else run_extension
     # Rounds alternate the binaries so drift in machine load hits all of them
     # alike; samples from every round are pooled before taking the median.
     all_results = [{} for _ in binaries]
     for _ in range(args.rounds):
         for k, b in enumerate(binaries):
-            for key, r in run(b, script).items():
+            for key, r in runner(b, steps).items():
                 acc = all_results[k].setdefault(key, {"times": [], "cpu": [], "values": set()})
                 acc["times"] += r["times"]
                 acc["cpu"] += r["cpu"]

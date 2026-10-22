@@ -21,12 +21,16 @@ static void LoadInternal(ExtensionLoader &loader) {
 	geom_3d_type.SetAlias("GEOM_3D");
 	loader.RegisterType("GEOM_3D", geom_3d_type);
 
+	RegisterPayloadCasts(loader, solid_3d_type, geom_3d_type);
 	RegisterFixtureFunctions(loader);
 	RegisterSolidIOFunctions(loader, solid_3d_type);
 	RegisterSolidAccessorFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterGeomAccessorFunctions(loader, solid_3d_type, geom_3d_type);
-	RegisterDistanceFunctions(loader, geom_3d_type);
+	RegisterDistanceFunctions(loader, solid_3d_type, geom_3d_type);
 	RegisterTransformFunctions(loader, solid_3d_type, geom_3d_type);
+	RegisterCrsFunctions(loader, solid_3d_type, geom_3d_type);
+	RegisterBoundsFunctions(loader, solid_3d_type, geom_3d_type);
+	RegisterFaceFunctions(loader, solid_3d_type, geom_3d_type);
 }
 
 void ThreeDExtension::Load(ExtensionLoader &loader) {

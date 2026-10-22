@@ -169,9 +169,9 @@ query III
 WITH coords AS (
     SELECT id, template, g,
            list_transform(regexp_extract_all(ST_3DAsText(g), '(-?[0-9.e+-]+) (-?[0-9.e+-]+) (-?[0-9.e+-]+)', 1),
-                          x -> x::DOUBLE) AS xs,
+                          lambda x: x::DOUBLE) AS xs,
            list_transform(regexp_extract_all(ST_3DAsText(g), '(-?[0-9.e+-]+) (-?[0-9.e+-]+) (-?[0-9.e+-]+)', 2),
-                          y -> y::DOUBLE) AS ys
+                          lambda y: y::DOUBLE) AS ys
     FROM placed
 )
 SELECT count(*),
