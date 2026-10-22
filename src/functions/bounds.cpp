@@ -1,6 +1,9 @@
 #include "functions/three_d_functions.hpp"
 
 #include "duckdb/common/types/geometry.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -49,49 +52,42 @@ LogicalType BBox3DType() {
 	return LogicalType::STRUCT(std::move(children));
 }
 
-//! Write `box` to row `row` of a BBox3DType struct vector.
-static void WriteBBox(Vector &result, idx_t row, const duckdb_3d::BBox3D &box) {
-	auto &entries = StructVector::GetEntries(result);
-	const double values[6] = {box.min_x, box.min_y, box.min_z, box.max_x, box.max_y, box.max_z};
-	for (idx_t k = 0; k < 6; k++) {
-		FlatVector::GetData<double>(*entries[k])[row] = values[k];
-	}
+using BBoxWriter = VectorWriter<VectorStructType<double, double, double, double, double, double>>;
+
+//! Write `box` as the writer's next BBox3DType row.
+static void WriteBBox(BBoxWriter &writer, const duckdb_3d::BBox3D &box) {
+	writer.WriteValue([&](auto &min_x, auto &min_y, auto &min_z, auto &max_x, auto &max_y, auto &max_z) {
+		min_x.WriteValue(box.min_x);
+		min_y.WriteValue(box.min_y);
+		min_z.WriteValue(box.min_z);
+		max_x.WriteValue(box.max_x);
+		max_y.WriteValue(box.max_y);
+		max_z.WriteValue(box.max_z);
+	});
 }
 
 static void ST_3DBoundsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-	UnifiedVectorFormat input;
-	args.data[0].ToUnifiedFormat(count, input);
-	auto values = UnifiedVectorFormat::GetData<string_t>(input);
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input.sel->get_index(i);
-		if (!input.validity.RowIsValid(idx)) {
-			FlatVector::SetNull(result, i, true);
-			continue;
-		}
+	auto writer =
+	    FlatVector::Writer<VectorStructType<double, double, double, double, double, double>>(result, args.size());
+	for (auto entry : args.data[0].Values<string_t>()) {
 		duckdb_3d::BBox3D box;
-		if (!PayloadBBox(values[idx], "ST_3DBounds", box)) {
-			FlatVector::SetNull(result, i, true);
+		if (!entry.IsValid() || !PayloadBBox(entry.GetValue(), "ST_3DBounds", box)) {
+			writer.WriteNull();
 			continue;
 		}
-		WriteBBox(result, i, box);
-	}
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		WriteBBox(writer, box);
 	}
 }
 
 template <double duckdb_3d::BBox3D::*FIELD>
 static void BBoxFieldFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::ExecuteWithNulls<string_t, double>(args.data[0], result, args.size(),
-	                                                  [](string_t payload, ValidityMask &mask, idx_t idx) {
-		                                                  duckdb_3d::BBox3D box;
-		                                                  if (!PayloadBBox(payload, "bounding box accessor", box)) {
-			                                                  mask.SetInvalid(idx);
-			                                                  return 0.0;
-		                                                  }
-		                                                  return box.*FIELD;
-	                                                  });
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [](string_t payload) -> optional<double> {
+		duckdb_3d::BBox3D box;
+		if (!PayloadBBox(payload, "bounding box accessor", box)) {
+			return {};
+		}
+		return box.*FIELD;
+	});
 }
 
 // ST_3DEnvelope(x) → GEOMETRY: the box's footprint, the rectangle of its X and Y
@@ -116,39 +112,37 @@ static void AppendPoint(std::vector<uint8_t> &out, double x, double y) {
 
 static void ST_3DEnvelopeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	std::vector<uint8_t> wkb;
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    args.data[0], result, args.size(), [&](string_t payload, ValidityMask &mask, idx_t idx) {
-		    duckdb_3d::BBox3D box;
-		    if (!PayloadBBox(payload, "ST_3DEnvelope", box)) {
-			    mask.SetInvalid(idx);
-			    return string_t();
-		    }
-		    wkb.clear();
-		    wkb.push_back(1);
-		    const bool flat_x = box.min_x == box.max_x, flat_y = box.min_y == box.max_y;
-		    if (flat_x && flat_y) {
-			    AppendU32(wkb, 1);
-			    AppendPoint(wkb, box.min_x, box.min_y);
-		    } else if (flat_x || flat_y) {
-			    AppendU32(wkb, 2);
-			    AppendU32(wkb, 2);
-			    AppendPoint(wkb, box.min_x, box.min_y);
-			    AppendPoint(wkb, box.max_x, box.max_y);
-		    } else {
-			    AppendU32(wkb, 3);
-			    AppendU32(wkb, 1);
-			    AppendU32(wkb, 5);
-			    AppendPoint(wkb, box.min_x, box.min_y);
-			    AppendPoint(wkb, box.max_x, box.min_y);
-			    AppendPoint(wkb, box.max_x, box.max_y);
-			    AppendPoint(wkb, box.min_x, box.max_y);
-			    AppendPoint(wkb, box.min_x, box.min_y);
-		    }
-		    string_t geometry;
-		    Geometry::FromBinary(string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size()), geometry, result,
-		                         true);
-		    return geometry;
-	    });
+	auto &heap = StringVector::GetStringHeap(result);
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, [&](string_t payload) -> optional<string_t> {
+		duckdb_3d::BBox3D box;
+		if (!PayloadBBox(payload, "ST_3DEnvelope", box)) {
+			return {};
+		}
+		wkb.clear();
+		wkb.push_back(1);
+		const bool flat_x = box.min_x == box.max_x, flat_y = box.min_y == box.max_y;
+		if (flat_x && flat_y) {
+			AppendU32(wkb, 1);
+			AppendPoint(wkb, box.min_x, box.min_y);
+		} else if (flat_x || flat_y) {
+			AppendU32(wkb, 2);
+			AppendU32(wkb, 2);
+			AppendPoint(wkb, box.min_x, box.min_y);
+			AppendPoint(wkb, box.max_x, box.max_y);
+		} else {
+			AppendU32(wkb, 3);
+			AppendU32(wkb, 1);
+			AppendU32(wkb, 5);
+			AppendPoint(wkb, box.min_x, box.min_y);
+			AppendPoint(wkb, box.max_x, box.min_y);
+			AppendPoint(wkb, box.max_x, box.max_y);
+			AppendPoint(wkb, box.min_x, box.max_y);
+			AppendPoint(wkb, box.min_x, box.min_y);
+		}
+		string_t geometry;
+		Geometry::FromBinary(string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size()), geometry, heap, true);
+		return geometry;
+	});
 }
 
 // ST_3DExtent: the box of every box. The state keeps the first CRS it sees, so
@@ -226,26 +220,16 @@ struct ExtentOperation {
 	}
 };
 
-static void ExtentFinalize(Vector &states, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
-	UnifiedVectorFormat sdata;
-	states.ToUnifiedFormat(count, sdata);
-	auto state_ptrs = UnifiedVectorFormat::GetData<ExtentState *>(sdata);
-	if (states.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *state_ptrs[sdata.sel->get_index(i)];
+static void ExtentFinalize(Vector &states, AggregateFinalizeInputData &, Vector &result, idx_t count, idx_t offset) {
+	auto writer =
+	    FlatVector::Writer<VectorStructType<double, double, double, double, double, double>>(result, count, offset);
+	for (auto entry : states.Values<ExtentState *>()) {
+		auto &state = *entry.GetValue();
 		if (!state.is_set) {
-			// An ungrouped aggregate finalizes into a constant vector, which
-			// FlatVector::SetNull would assert on.
-			if (result.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-				ConstantVector::SetNull(result, true);
-			} else {
-				FlatVector::SetNull(result, i + offset, true);
-			}
+			writer.WriteNull();
 			continue;
 		}
-		WriteBBox(result, i + offset, state.box);
+		WriteBBox(writer, state.box);
 	}
 }
 
@@ -314,8 +298,9 @@ void RegisterBoundsFunctions(ExtensionLoader &loader, const LogicalType &solid_3
 		    AggregateFunction::UnaryScatterUpdate<ExtentState, string_t, ExtentOperation>,
 		    AggregateFunction::StateCombine<ExtentState, ExtentOperation>, ExtentFinalize,
 		    FunctionNullHandling::DEFAULT_NULL_HANDLING,
-		    AggregateFunction::UnaryUpdate<ExtentState, string_t, ExtentOperation>);
-		extent.destructor = AggregateFunction::StateDestroy<ExtentState, ExtentOperation>;
+		    AggregateFunction::UnaryClusterUpdateCallback<ExtentState, string_t, ExtentOperation>());
+		extent.SetStateDestructorCallback(AggregateFunction::StateDestroy<ExtentState, ExtentOperation>);
+		NameParameters(extent, {"geom"});
 		extent_set.AddFunction(std::move(extent));
 	}
 	CreateAggregateFunctionInfo info(std::move(extent_set));

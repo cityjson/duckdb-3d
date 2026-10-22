@@ -43,22 +43,22 @@ COPY (
             'shells': [[6, 6]]}
              ::STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
              AS geometry_properties_lod2_2
-) TO '__TEST_DIR__/gp_surfaces_json.parquet' (FORMAT parquet);
+) TO '{TEST_DIR}/gp_surfaces_json.parquet' (FORMAT parquet);
 
 query II
 SELECT converted_type, logical_type
-FROM parquet_schema('__TEST_DIR__/gp_surfaces_json.parquet') WHERE name = 'surfaces';
+FROM parquet_schema('{TEST_DIR}/gp_surfaces_json.parquet') WHERE name = 'surfaces';
 ----
 JSON	JsonType()
 
 query I
-SELECT typeof(geometry_properties_lod2_2.surfaces) FROM '__TEST_DIR__/gp_surfaces_json.parquet';
+SELECT typeof(geometry_properties_lod2_2.surfaces) FROM '{TEST_DIR}/gp_surfaces_json.parquet';
 ----
 JSON
 
 query II
 SELECT ST_3DNumShells(s), ST_3DVolume(s)
 FROM (SELECT ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s
-      FROM '__TEST_DIR__/gp_surfaces_json.parquet');
+      FROM '{TEST_DIR}/gp_surfaces_json.parquet');
 ----
 2	56.0

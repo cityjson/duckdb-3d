@@ -26,7 +26,7 @@ surface.
 **The extension loads as `three_d`, not `duckdb-3d`.** The DuckDB entry macro expands the
 name into a C++ symbol, so it must be a valid identifier: the repository is `duckdb-3d`, the
 build target / entrypoint / `LOAD` name is `three_d`, and the SQL functions are `ST_3D*`.
-Targets DuckDB **v1.5.x**.
+Targets DuckDB **v2.0.x**.
 
 ```sh
 git clone --recurse-submodules …   # DuckDB itself is a submodule

@@ -29,32 +29,30 @@ namespace duckdb {
 template <PayloadKind KIND>
 static bool CastBlobToPayload(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	bool all_converted = true;
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(
-	    source, result, count, [&](string_t blob, ValidityMask &mask, idx_t idx) {
-		    auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
-		    auto size = blob.GetSize();
-		    const char *type_name = KIND == PayloadKind::Solid ? "SOLID_3D" : "GEOM_3D";
-		    std::string error;
-		    if (GetPayloadKind(data, size) != KIND) {
-			    error = std::string("BLOB is not a ") + type_name + " payload; build one from WKB with " +
-			            (KIND == PayloadKind::Solid ? "ST_3DFromWKB" : "ST_Geom3DFromWKB");
-		    } else {
-			    try {
-				    auto bytes = KIND == PayloadKind::Solid ? duckdb_3d::RebuildSolidPayload(data, size)
-				                                            : duckdb_3d::RebuildGeomPayload(data, size);
-				    return StringVector::AddStringOrBlob(result, reinterpret_cast<const char *>(bytes.data()),
-				                                         bytes.size());
-			    } catch (std::bad_alloc &) {
-				    throw; // out of memory is not a property of the row
-			    } catch (std::exception &e) {
-				    error = std::string("Cannot cast BLOB to ") + type_name + ": " + e.what();
-			    }
-		    }
-		    HandleCastError::AssignError(error, parameters);
-		    all_converted = false;
-		    mask.SetInvalid(idx);
-		    return string_t();
-	    });
+	UnaryExecutor::Execute<string_t, string_t>(source, result, [&](string_t blob) -> optional<string_t> {
+		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
+		auto size = blob.GetSize();
+		const char *type_name = KIND == PayloadKind::Solid ? "SOLID_3D" : "GEOM_3D";
+		std::string error;
+		if (GetPayloadKind(data, size) != KIND) {
+			error = std::string("BLOB is not a ") + type_name + " payload; build one from WKB with " +
+			        (KIND == PayloadKind::Solid ? "ST_3DFromWKB" : "ST_Geom3DFromWKB");
+		} else {
+			try {
+				auto bytes = KIND == PayloadKind::Solid ? duckdb_3d::RebuildSolidPayload(data, size)
+				                                        : duckdb_3d::RebuildGeomPayload(data, size);
+				return StringVector::AddStringOrBlob(result, reinterpret_cast<const char *>(bytes.data()),
+				                                     bytes.size());
+			} catch (std::bad_alloc &) {
+				throw; // out of memory is not a property of the row
+			} catch (std::exception &e) {
+				error = std::string("Cannot cast BLOB to ") + type_name + ": " + e.what();
+			}
+		}
+		HandleCastError::AssignError(error, parameters);
+		all_converted = false;
+		return {};
+	});
 	return all_converted;
 }
 

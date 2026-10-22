@@ -95,26 +95,24 @@ unique_ptr<FunctionData> GeometryArgumentCrs(const LogicalType &type) {
 }
 
 std::string BoundCrs(ExpressionState &state) {
-	auto &bind_info = state.expr.Cast<BoundFunctionExpression>().bind_info;
+	auto &bind_info = state.expr.Cast<BoundFunctionExpression>().BindInfo();
 	return bind_info ? bind_info->Cast<CrsBindData>().crs : std::string();
 }
 
 // ST_3DCRS(x) → VARCHAR: the CRS, NULL when there is none.
 static void ST_3DCRSFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::ExecuteWithNulls<string_t, string_t>(args.data[0], result, args.size(),
-	                                                    [&](string_t value, ValidityMask &mask, idx_t idx) {
-		                                                    auto crs = PayloadCrs(value);
-		                                                    if (crs.empty()) {
-			                                                    mask.SetInvalid(idx);
-			                                                    return string_t();
-		                                                    }
-		                                                    return StringVector::AddString(result, crs);
-	                                                    });
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, [&](string_t value) -> optional<string_t> {
+		auto crs = PayloadCrs(value);
+		if (crs.empty()) {
+			return {};
+		}
+		return StringVector::AddString(result, crs);
+	});
 }
 
 // ST_3DSRID(x) → INTEGER: n for a CRS "EPSG:n", else 0, PostGIS's unknown SRID.
 static void ST_3DSRIDFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(), [&](string_t value) {
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, [&](string_t value) {
 		auto crs = PayloadCrs(value);
 		constexpr char kPrefix[] = "EPSG:";
 		if (crs.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 || crs.size() == sizeof(kPrefix) - 1 ||
@@ -136,7 +134,7 @@ static void ST_3DSRIDFun(DataChunk &args, ExpressionState &state, Vector &result
 // Only the label changes: the coordinates are not reprojected.
 static void ST_3DSetCRSFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t value, string_t crs) {
+	    args.data[0], args.data[1], result, [&](string_t value, string_t crs) {
 		    auto data = reinterpret_cast<const uint8_t *>(value.GetData());
 		    auto size = value.GetSize();
 		    std::vector<uint8_t> bytes;

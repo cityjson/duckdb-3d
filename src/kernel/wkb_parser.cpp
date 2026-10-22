@@ -22,6 +22,9 @@ ParsedPolyhedralSurface ParsePolyhedralSurface(WKBReader &reader) {
 	ParsedPolyhedralSurface result;
 
 	uint32_t num_polygons = reader.ReadU32();
+	// Each child Polygon Z needs at least its byte order, type code and ring count:
+	// bound the declared count by that before anything is allocated for it.
+	reader.RequireCount(num_polygons, 1 + 2 * sizeof(uint32_t), "polygon");
 	result.polygon_count = num_polygons;
 	result.polygon_ring_counts.resize(num_polygons);
 	result.ring_vertex_counts.reserve(num_polygons); // at least one ring per polygon

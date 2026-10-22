@@ -240,3 +240,11 @@ TEST_CASE("WKB parse EWKB GeometryCollection Z keeps the outer SRID", "[wkb_pars
 	REQUIRE(surfaces[0].crs == "EPSG:7415");
 	REQUIRE(surfaces[1].crs == "EPSG:7415");
 }
+
+TEST_CASE("WKB rejects a polygon count the data cannot hold, before allocating", "[wkb_parser]") {
+	WKBBuilder b;
+	b.WriteByte(1);
+	b.WriteU32LE(1015);       // PolyhedralSurface Z
+	b.WriteU32LE(0xFFFFFFF0); // declared polygons, with no bytes behind them
+	REQUIRE_THROWS_AS(ParseWKB(b.buffer.data(), b.buffer.size()), std::runtime_error);
+}

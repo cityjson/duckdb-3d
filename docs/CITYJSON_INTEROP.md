@@ -63,7 +63,7 @@ type as `VARCHAR`) — covered by `test/sql/st_3d_from_wkb_struct_json.test`.
 
 ## Setup
 
-Both repos pin the same DuckDB core (`v1.5.5`), so the two locally built
+Both repos pin the same DuckDB core (`v2.0.0`), so the two locally built
 extensions load into one process without an ABI complaint:
 
 ```sh
@@ -240,11 +240,10 @@ arranges all three:
    there, and the test then skips on `require three_d`. `test_full` stages the
    freshly built `three_d.duckdb_extension` alongside the other two. (This is
    why the gated tests skipped even before the community build went stale.)
-3. `httpfs` must already be installed in the runner's DuckDB home. The remote
-   Delft test autoloads it, and autoinstall resolves against the official
-   repository rather than the local one — so staging it in the local repository
-   does *not* satisfy this. Without it the run fails at
-   `cityjson_delft_remote.test` with `Extension Autoloading Error`.
+3. `httpfs` must be a file in the same local repository. The remote Delft test
+   autoloads it, and autoinstall resolves against `${LOCAL_EXTENSION_REPO}`.
+   Without it the run fails at `cityjson_delft_remote.test` with
+   `Extension Autoloading Error`.
 
 The `cityjson` file comes from `CITYJSON_EXTENSION`, which defaults to
 `../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`.

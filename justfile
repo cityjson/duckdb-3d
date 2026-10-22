@@ -71,13 +71,13 @@ shell-cityjson:
 # ── DuckDB-Wasm ──
 
 # Wasm toolchain pins, mirroring the CI distribution pipeline.
-# emsdk: extension-ci-tools v1.5.5 `_extension_distribution.yml` pins
-# emscripten-core/setup-emsdk@v13 with version 3.1.71.
+# emsdk: extension-ci-tools v2.0-cyanoptera `_extension_distribution.yml` pins
+# emscripten-core/setup-emsdk@v16 with version 6.0.9.
 # vcpkg baseline: the `builtin-baseline` commit in vcpkg.json — a plain shallow clone
 # does NOT contain it, so `wasm-setup` fetches it explicitly (manifest resolution
 # fails otherwise).
-emsdk_version := "3.1.71"
-vcpkg_baseline := "84bab45d415d22042bd0b9081aea57f362da3f35"
+emsdk_version := "6.0.9"
+vcpkg_baseline := "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
 
 # Installs the pinned emsdk and a durable vcpkg checkout under the gitignored
 # .vendor/. Idempotent — safe to re-run. ~2 GB and ~10 min the first time.

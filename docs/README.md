@@ -16,7 +16,7 @@ the [top-level README](../README.md); for the function reference see
   incremental builds — DuckDB itself is compiled on the first build, and these let you avoid
   recompiling it every time.
 
-The extension targets DuckDB **`v1.5.x`**.
+The extension targets DuckDB **`v2.0.x`**.
 
 ## Build
 

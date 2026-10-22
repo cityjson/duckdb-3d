@@ -15,7 +15,7 @@ namespace {
 
 //! One face count, dispatched on the bound child type: HUGEINT after the
 //! (BLOB, ANY) bind normalisation; INTEGER from a producer or SQL struct.
-uint32_t ReadFaceCount(Vector &int_vec, idx_t pos) {
+uint32_t ReadFaceCount(const Vector &int_vec, idx_t pos) {
 	switch (int_vec.GetType().id()) {
 	case LogicalTypeId::HUGEINT: {
 		// The (BLOB, ANY) bind normalises `shells` to HUGEINT[][] so every
@@ -52,15 +52,15 @@ duckdb_3d::GeometryMetadata ReadGeometryPropertiesStructRow(Vector &struct_vec, 
 	Vector *type_vec = nullptr;
 	Vector *shells_vec = nullptr;
 	for (idx_t i = 0; i < child_types.size(); i++) {
-		if (StringUtil::CIEquals(child_types[i].first, "type")) {
-			type_vec = children[i].get();
-		} else if (StringUtil::CIEquals(child_types[i].first, "shells")) {
-			shells_vec = children[i].get();
+		if (child_types[i].first == "type") {
+			type_vec = &children[i];
+		} else if (child_types[i].first == "shells") {
+			shells_vec = &children[i];
 		}
 	}
 
 	if (type_vec) {
-		FlattenIfNeeded(*type_vec, count);
+		FlattenIfNeeded(*type_vec);
 		if (FlatVector::Validity(*type_vec).RowIsValid(row)) {
 			auto s = FlatVector::GetData<string_t>(*type_vec)[row];
 			md.type = std::string(s.GetData(), s.GetSize());
@@ -69,17 +69,17 @@ duckdb_3d::GeometryMetadata ReadGeometryPropertiesStructRow(Vector &struct_vec, 
 	if (!shells_vec) {
 		return md; // no shells field -> same default as the JSON-text parser
 	}
-	FlattenIfNeeded(*shells_vec, count);
+	FlattenIfNeeded(*shells_vec);
 	if (!FlatVector::Validity(*shells_vec).RowIsValid(row)) {
 		return md; // NULL shells -> non-solid type, same default as the JSON-text parser
 	}
-	auto outer = ListVector::GetData(*shells_vec)[row];
-	auto &inner_list = ListVector::GetEntry(*shells_vec); // LIST(HUGEINT) or LIST(INTEGER)
-	FlattenIfNeeded(inner_list, ListVector::GetListSize(*shells_vec));
-	auto inner_data = ListVector::GetData(inner_list);
+	auto outer = FlatVector::GetData<list_entry_t>(*shells_vec)[row];
+	auto &inner_list = ListVector::GetChild(*shells_vec); // LIST(HUGEINT) or LIST(INTEGER)
+	FlattenIfNeeded(inner_list);
+	auto inner_data = FlatVector::GetData<list_entry_t>(inner_list);
 	auto &inner_list_validity = FlatVector::Validity(inner_list);
-	auto &int_vec = ListVector::GetEntry(inner_list);
-	FlattenIfNeeded(int_vec, ListVector::GetListSize(inner_list));
+	auto &int_vec = ListVector::GetChild(inner_list);
+	FlattenIfNeeded(int_vec);
 	auto &int_validity = FlatVector::Validity(int_vec);
 
 	std::vector<std::vector<uint32_t>> shells;

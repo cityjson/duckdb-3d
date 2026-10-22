@@ -58,8 +58,9 @@ set(EXTENSION_SOURCES
     src/kernel/wkt_parser.cpp
     third_party/predicates/predicates.c)
 
-# PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain
-# the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.
+# PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg
+# toolchain the vcpkg copy is found first; on a bare macOS dev box fall back to
+# Homebrew.
 if(APPLE)
   list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew" "/usr/local")
 endif()

@@ -11,14 +11,12 @@ namespace duckdb {
 // ──────────────────────────────────────────────────────────────
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register SOLID_3D type (alias over BLOB)
-	auto solid_3d_type = LogicalType(LogicalTypeId::BLOB);
-	solid_3d_type.SetAlias("SOLID_3D");
+	auto solid_3d_type = LogicalType(LogicalTypeId::BLOB).WithAlias("SOLID_3D");
 	loader.RegisterType("SOLID_3D", solid_3d_type);
 
 	// Register GEOM_3D type: a general 3D geometry (point/line/polygon/multi/
 	// polyhedral-surface), also an alias over BLOB with its own payload (DESIGN_DOC §4).
-	auto geom_3d_type = LogicalType(LogicalTypeId::BLOB);
-	geom_3d_type.SetAlias("GEOM_3D");
+	auto geom_3d_type = LogicalType(LogicalTypeId::BLOB).WithAlias("GEOM_3D");
 	loader.RegisterType("GEOM_3D", geom_3d_type);
 
 	RegisterPayloadCasts(loader, solid_3d_type, geom_3d_type);
