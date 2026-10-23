@@ -43,9 +43,9 @@ CityJSON and CityJSONSeq:
 
 `three_d` does not read CityJSON itself; the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
 extension does, and hands over `(geometry_lod<X> BLOB, geometry_properties_lod<X> STRUCT)`
-pairs. Build it from the sibling checkout and load it by path — the community-published
-build is older and uses a flat `geometry` column
-([why](./CITYJSON_INTEROP.md#which-cityjson-build)):
+pairs. Build it from the sibling checkout and load it by path — it is the build these
+examples were run against; the community build for DuckDB v1.5.5 emits the same columns
+([which build](./CITYJSON_INTEROP.md#which-cityjson-build)):
 
 ```sh
 (cd ../duckdb-cityjson && GEN=ninja make release)
@@ -97,10 +97,21 @@ Most single-value examples below use one representative building:
 CREATE TABLE ex AS SELECT * FROM parts WHERE id = 'NL.IMBAG.Pand.0503100000018426-0';
 ```
 
-> **Always pass `lod => '...'`.** Without it, `cityjson` emits `geom_lod*` STRUCT columns
-> that `ST_3DFromWKB` cannot consume. The emitted names carry the *normalised* LoD, so
+> **`lod => '...'` keeps one LoD.** Without it, `cityjson` emits a `geometry_lod<X>` /
+> `geometry_properties_lod<X>` pair for every LoD in the file, any of which `ST_3DFromWKB`
+> consumes. The emitted names carry the *normalised* LoD, so
 > `lod => '2.2'` gives `geometry_lod2_2` and `lod => '2'` gives `geometry_lod2_0`; the
 > `feats` query above aliases them once so the rest of this document can say `geometry`.
+
+The CityParquet examples read `delft/building.parquet`, a package written from the same
+tile with the `cityjson` package functions. Run each statement on its own:
+
+```sql
+CREATE SCHEMA delft;
+PRAGMA cityparquet_init('delft');
+PRAGMA insert_cityjsonseq('delft', 'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
+SELECT * FROM cityparquet_write('delft', 'delft/', crs => 'EPSG:7415');
+```
 
 ---
 
@@ -223,7 +234,7 @@ constructors also accept `GEOMETRY` directly, without either:
 SELECT count(*) AS n,
        ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
                      - ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKB(geometry_lod0_0))))), 12) AS max_abs_diff
-FROM read_parquet('building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+FROM read_parquet('delft/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
 ```
 ```
 ┌───────┬──────────────┐
@@ -254,17 +265,21 @@ solid's [CRS](#crs).
 
 The optional second argument recovers structure that WKB alone cannot carry — chiefly **shell
 grouping**, which is what makes interior shells (cavities) subtract from volume and
-`ST_3DNumShells` report the truth. It accepts either JSON text (as `cityjson` emits) **or** a
-CityParquet `geometry_properties_lod*` `STRUCT` read straight from Parquet, with no
-`to_json(...)` round-trip:
+`ST_3DNumShells` report the truth. It accepts either JSON text **or** a
+`geometry_properties_lod*` `STRUCT` — as `cityjson` emits it, or read straight from a
+CityParquet file — with no `to_json(...)` round-trip. `ST_3DVolume` raises on an invalid
+solid, so both examples keep only the valid ones:
 
 ```sql
--- JSON text sidecar
-SELECT ST_3DVolume(ST_3DFromWKB(geometry, geometry_properties)) FROM feats WHERE geometry IS NOT NULL;
+-- STRUCT sidecar from the cityjson reader
+SELECT ST_3DVolume(ST_3DFromWKB(geometry, geometry_properties)) FROM feats
+WHERE geometry IS NOT NULL AND ST_3DIsValid(ST_3DFromWKB(geometry, geometry_properties));
 
--- native STRUCT (CityParquet file)
+-- the same STRUCT read from a CityParquet file
 SELECT ST_3DVolume(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2))
-FROM read_parquet('building.parquet') WHERE geometry_lod2_2 IS NOT NULL;
+FROM read_parquet('delft/building.parquet')
+WHERE geometry_lod2_2 IS NOT NULL
+  AND ST_3DIsValid(ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2));
 ```
 
 Only `type` and `shells` are read; `surfaces` may be `JSON` (the Parquet JSON logical type
