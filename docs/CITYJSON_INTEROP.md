@@ -15,27 +15,20 @@ conditional on which `cityjson` build produced the bytes.
 
 ## Which `cityjson` build
 
-**The sibling `../duckdb-cityjson` checkout, built locally.** Not
-`INSTALL cityjson FROM community`.
+**The sibling `../duckdb-cityjson` checkout, built locally.** `make test_full`
+stages that file, and every example in this repo is run against it. The community
+build for DuckDB v1.5.5 (`INSTALL cityjson FROM community`) emits the same shape.
 
-The published community extension is an older build that still emits a flat
-`geometry BLOB` + `geometry_properties VARCHAR` pair. The current one emits **one
-column pair per LoD present**:
+`cityjson` emits **one column pair per LoD present**: a `geometry_lod2_2` `BLOB`
+(WKB) and a `geometry_properties_lod2_2` `STRUCT` sidecar, and so on for each LoD.
+`lod => '...'` keeps only the pair for that LoD.
 
-| | community (stale) | `../duckdb-cityjson` (targeted here) |
-| --- | --- | --- |
-| Geometry | `geometry` `BLOB` | `geometry_lod2_2` `BLOB` — one per LoD |
-| Sidecar | `geometry_properties` `VARCHAR` (JSON) | `geometry_properties_lod2_2` `STRUCT` |
-
-`ST_3DFromWKB` accepts **both** sidecar forms — the `VARCHAR` and `STRUCT`
+`ST_3DFromWKB` also accepts the sidecar as JSON text — the `VARCHAR` and `STRUCT`
 overloads are [documented](./FUNCTIONS.md#st_3dfromwkb--st_3dtryfromwkb) and both
-are covered by `test/sql/st_3d_from_wkb_struct.test` — so this is not a kernel
-concern. What changed is the **column names**, so SQL written for one build does
-not bind against the other. Every example and gated test in this repo targets the
-current shape only; support for the flat shape was dropped deliberately rather
-than carried on a compatibility branch.
+are covered by `test/sql/st_3d_from_wkb_struct.test` — so the sidecar's form is
+not a kernel concern.
 
-Two more naming rules:
+Two naming rules:
 
 - The suffix is the **normalised** LoD: `lod => '2'` produces `geometry_lod2_0`,
   not `geometry_lod2`. `lod => '2.2'` produces `geometry_lod2_2`.
@@ -48,16 +41,17 @@ FROM (DESCRIBE SELECT * FROM read_cityjson('test/data/unit_cube.city.json', lod 
 WHERE column_name LIKE 'geometry%';
 ```
 ```
-┌────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────┐
-│        column_name         │                                     column_type                                     │
-├────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
-│ geometry_lod2_2            │ BLOB                                                                                │
-│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][]) │
-└────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┐
+│        column_name         │                                      column_type                                       │
+├────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
+│ geometry_lod2_2            │ BLOB                                                                                   │
+│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][]) │
+└────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`surfaces` is the JSON type, CityParquet's Parquet JSON logical type. `ST_3DFromWKB`
-does not read it, and its `STRUCT` overload binds whether `surfaces` arrives as `JSON`
+The reader emits `surfaces` as `VARCHAR`. Read back from a CityParquet file it is
+the JSON type, CityParquet's Parquet JSON logical type. `ST_3DFromWKB` does not
+read it, and its `STRUCT` overload binds whether `surfaces` arrives as `JSON`
 or as plain `VARCHAR` (a session without the `json` extension reads the Parquet JSON
 type as `VARCHAR`) — covered by `test/sql/st_3d_from_wkb_struct_json.test`.
 
@@ -207,14 +201,14 @@ LIMIT 10;
 make test_full
 ```
 
-Five test files are gated on `require cityjson`
+Six test files are gated on `require cityjson`
 (`cityjson_interop`, `cityjson_hollow_solid`, `cityjson_multisolid`,
-`cityjson_3dbag_attributes`, `cityjson_delft_remote`), and one on
-`require spatial` (`spatial_coexist`).
+`cityjson_3dbag_attributes`, `cityjson_delft_remote`, `cityparquet_round_trip`),
+and two on `require spatial` (`spatial_coexist`, `spatial_join`).
 Under `make test` / `make test_debug` they skip; `make test_full` does the setup
 that makes them execute, and treats a skip as a failure. It needs network access
 — the httpfs/spatial download on the first run, and the remote Delft fixture on
-every run. A green run reports **33 test cases, 0 skipped**.
+every run. A green run reports **0 skipped**.
 
 Note `test_full` runs against the **release** build, unlike `make test_debug`.
 The gated tests load third-party extensions that exist only as release-built
@@ -238,8 +232,7 @@ arranges all three:
    *including for `three_d`, which is statically linked*. The `LOAD` would
    succeed on its own, but the `INSTALL` runs first and fails if no file is
    there, and the test then skips on `require three_d`. `test_full` stages the
-   freshly built `three_d.duckdb_extension` alongside the other two. (This is
-   why the gated tests skipped even before the community build went stale.)
+   freshly built `three_d.duckdb_extension` alongside the other two.
 3. `httpfs` must already be installed in the runner's DuckDB home. The remote
    Delft test autoloads it, and autoinstall resolves against the official
    repository rather than the local one — so staging it in the local repository
@@ -267,9 +260,9 @@ once.
 ## Caveats
 
 - `read_cityjson(path, lod => '...')` is the per-LoD mode that emits the
-  `geometry_lod<X>` BLOB / `geometry_properties_lod<X>` STRUCT pair. Without the
-  `lod` parameter, cityjson emits `geom_lod*` STRUCTs instead and `ST_3DFromWKB`
-  cannot consume them — pass `lod => '...'` always. The same applies to
+  `geometry_lod<X>` BLOB / `geometry_properties_lod<X>` STRUCT pair for one LoD.
+  Without the `lod` parameter, cityjson emits that pair for every LoD in the file,
+  and `ST_3DFromWKB` consumes any of them. The same applies to
   `read_cityjsonseq`.
 - DuckDB debug builds may run with AddressSanitizer enabled. On macOS, loading a
   release-built `cityjson` into a debug shell can trip an ASan
