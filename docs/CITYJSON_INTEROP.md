@@ -57,7 +57,7 @@ type as `VARCHAR`) — covered by `test/sql/st_3d_from_wkb_struct_json.test`.
 
 ## Setup
 
-Both repos pin the same DuckDB core (`v1.5.5`), so the two locally built
+Both repos pin the same DuckDB core (`v1.5.6`), so the two locally built
 extensions load into one process without an ABI complaint:
 
 ```sh

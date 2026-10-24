@@ -33,7 +33,7 @@ GEN=ninja make release        # builds ./build/release/duckdb with three_d linke
 ### Which `cityjson` build this notebook uses — and why it matters
 
 This walkthrough was run against a **locally built** `cityjson`, not the community
-download. Both repos pin the same DuckDB core (`v1.5.5`), so the two locally built
+download. Both repos pin the same DuckDB core (`v1.5.6`), so the two locally built
 extensions load into one process without any ABI complaint:
 
 ```sh
