@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "kernel/triangulation.hpp"
 #include "kernel/measurements.hpp"
+#include "kernel/validation.hpp"
 #include "kernel/model_builder.hpp"
 #include "kernel/wkb_parser.hpp"
 #include <cstring>
@@ -304,4 +305,55 @@ TEST_CASE("Volume: multi-solid does not cancel globally reversed solids", "[meas
 
 	double vol = ComputeVolume(model);
 	REQUIRE(vol == Approx(2.0).epsilon(1e-10));
+}
+
+TEST_CASE("Volume centroid: cube and tetrahedron", "[measurements]") {
+	auto cube = MakeValidCube();
+	auto c = ComputeVolumeCentroid(cube);
+	REQUIRE(c.x == Approx(0.5));
+	REQUIRE(c.y == Approx(0.5));
+	REQUIRE(c.z == Approx(0.5));
+	// A tetrahedron's centroid is the mean of its vertices, not of its faces' areas.
+	auto tetra = MakeValidTetrahedron();
+	c = ComputeVolumeCentroid(tetra);
+	REQUIRE(c.x == Approx(0.25));
+	REQUIRE(c.y == Approx(0.25));
+	REQUIRE(c.z == Approx(0.25));
+}
+
+TEST_CASE("Volume centroid: far from the origin keeps full precision", "[measurements]") {
+	for (double offset : {8.4e4, 4.5e5, 1.0e6}) {
+		auto model = MakeValidTetrahedron();
+		for (auto &v : model.vertices) {
+			v.x += offset;
+			v.y += 2 * offset;
+			v.z += offset / 10;
+		}
+		model.ComputeBBox();
+		auto c = ComputeVolumeCentroid(model);
+		INFO("offset = " << offset);
+		REQUIRE(std::abs(c.x - (offset + 0.25)) <= 1e-9);
+		REQUIRE(std::abs(c.y - (2 * offset + 0.25)) <= 1e-9);
+		REQUIRE(std::abs(c.z - (offset / 10 + 0.25)) <= 1e-9);
+	}
+}
+
+TEST_CASE("Volume centroid: a multi-solid weighs its parts by volume", "[measurements]") {
+	// The unit cube and a cube of side 2 at x in [3, 5]: volumes 1 and 8, centroids
+	// (0.5, 0.5, 0.5) and (4, 1, 1).
+	auto cube = BuildCubeWKB();
+	auto surfaces_unit = ParseWKB(cube.data(), cube.size());
+	auto surfaces_big = ParseWKB(cube.data(), cube.size());
+	for (auto &v : surfaces_big[0].vertices) {
+		v = {3 + 2 * v.x, 2 * v.y, 2 * v.z};
+	}
+	surfaces_unit.push_back(surfaces_big[0]);
+	auto model = BuildSolidModel(surfaces_unit);
+	TriangulateSolidModel(model);
+	ValidateSolidModel(model);
+	REQUIRE(model.SolidCount() == 2);
+	auto c = ComputeVolumeCentroid(model);
+	REQUIRE(c.x == Approx((0.5 * 1 + 4.0 * 8) / 9));
+	REQUIRE(c.y == Approx((0.5 * 1 + 1.0 * 8) / 9));
+	REQUIRE(c.z == Approx((0.5 * 1 + 1.0 * 8) / 9));
 }

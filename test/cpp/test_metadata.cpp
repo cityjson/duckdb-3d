@@ -87,54 +87,75 @@ std::vector<uint8_t> MakeTwoShellWKB() {
 
 } // anonymous namespace
 
-// Spec §8 geometry_properties: `type` is a CityJSON string and `shells` carries
-// per-shell emitted-face counts — a flat array for a Solid, one array per solid
-// (nested) for MultiSolid/CompositeSolid.
+// CityParquet geometry_properties: `type` is the geometry type string and
+// `shells` is LIST<LIST<INT>> — one inner list per solid, each the per-shell face
+// counts, exterior first. A Solid has exactly one inner list ([[12]], [[12, 4]]);
+// the spec defines no flat form.
 
-TEST_CASE("ParseGeometryProperties: Solid with flat shells", "[metadata]") {
-	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [12]})");
+TEST_CASE("ParseGeometryProperties: Solid with one shell", "[metadata]") {
+	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[12]]})");
 	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1);    // one solid
-	REQUIRE(meta.shells[0].size() == 1); // one shell
-	REQUIRE(meta.shells[0][0] == 12);
+	REQUIRE(meta.shells->size() == 1);      // one solid
+	REQUIRE((*meta.shells)[0].size() == 1); // one shell
+	REQUIRE((*meta.shells)[0][0] == 12);
 }
 
-TEST_CASE("ParseGeometryProperties: Solid with two shells (flat)", "[metadata]") {
-	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [4, 4]})");
-	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1);
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
-}
-
-TEST_CASE("ParseGeometryProperties: Solid with singly-nested shells (cityparquet-rs STRUCT shape)", "[metadata]") {
-	// cityparquet-rs's geometry_properties_lod* STRUCT always nests `shells` as
-	// List<List<Int32>> — even a single Solid serializes (e.g. via to_json() on
-	// the Arrow STRUCT) as [[4, 4]], not the flat [4, 4] duckdb-cityjson emits.
-	// Both forms must parse to the identical GeometryMetadata.
+TEST_CASE("ParseGeometryProperties: Solid with an interior shell", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": [[4, 4]]})");
 	REQUIRE(meta.type == "Solid");
-	REQUIRE(meta.shells.size() == 1); // one solid
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({4, 4}));
+	REQUIRE(meta.shells->size() == 1); // one solid
+	REQUIRE((*meta.shells)[0] == std::vector<uint32_t>({4, 4}));
+}
+
+TEST_CASE("ParseGeometryProperties: flat shells are not the spec shape and raise", "[metadata]") {
+	// [4, 4] is not LIST<LIST<INT>>. Reading it as one solid's shells would guess
+	// at a shape the format does not define, so it is rejected.
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [4, 4]})"), Catch::Contains("shells"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [12]})"), Catch::Contains("shells"));
 }
 
 TEST_CASE("ParseGeometryProperties: CompositeSolid with nested shells", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "CompositeSolid", "shells": [[12], [8, 4]]})");
 	REQUIRE(meta.type == "CompositeSolid");
-	REQUIRE(meta.shells.size() == 2); // two solids
-	REQUIRE(meta.shells[0] == std::vector<uint32_t>({12}));
-	REQUIRE(meta.shells[1] == std::vector<uint32_t>({8, 4}));
+	REQUIRE(meta.shells->size() == 2); // two solids
+	REQUIRE((*meta.shells)[0] == std::vector<uint32_t>({12}));
+	REQUIRE((*meta.shells)[1] == std::vector<uint32_t>({8, 4}));
 }
 
 TEST_CASE("ParseGeometryProperties: string type without shells (non-solid)", "[metadata]") {
 	auto meta = ParseGeometryProperties(R"({"type": "MultiSurface", "surfaces": [], "face_semantics": []})");
 	REQUIRE(meta.type == "MultiSurface");
-	REQUIRE(meta.shells.empty());
+	REQUIRE_FALSE(meta.shells.has_value());
+}
+
+TEST_CASE("ParseGeometryProperties: a null shells value is absent", "[metadata]") {
+	// The spec's `shells` is null for the non-solid types.
+	auto meta = ParseGeometryProperties(R"({"type": "MultiSurface", "shells": null})");
+	REQUIRE_FALSE(meta.shells.has_value());
+}
+
+TEST_CASE("ParseGeometryProperties: an empty shells array is present, not absent", "[metadata]") {
+	auto meta = ParseGeometryProperties(R"({"type": "Solid", "shells": []})");
+	REQUIRE(meta.shells.has_value());
+	REQUIRE(meta.shells->empty());
+}
+
+TEST_CASE("BuildSolidModel with metadata: present but empty shells do not mean no metadata", "[metadata]") {
+	// A non-null `shells` must have one inner list per solid. [] for a
+	// one-member PolyhedralSurface is malformed, not "no shells": building one
+	// default shell from it would invent structure the sidecar contradicts.
+	auto wkb = MakeTwoShellWKB();
+	auto surfaces = ParseWKB(wkb.data(), wkb.size());
+	GeometryMetadata meta;
+	meta.type = "Solid";
+	meta.shells = ShellCounts {};
+	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("solid count (0)"));
 }
 
 TEST_CASE("ParseGeometryProperties: empty JSON", "[metadata]") {
 	auto meta = ParseGeometryProperties("");
 	REQUIRE(meta.type.empty());
-	REQUIRE(meta.shells.empty());
+	REQUIRE_FALSE(meta.shells.has_value());
 }
 
 TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
@@ -143,18 +164,18 @@ TEST_CASE("ParseGeometryProperties: malformed JSON raises", "[metadata]") {
 
 TEST_CASE("ParseGeometryProperties: a shell count above uint32 range raises", "[metadata]") {
 	// 2^32 exceeds a uint32 face count; reject rather than truncate-and-wrap.
-	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [4294967296]})"),
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"type": "Solid", "shells": [[4294967296]]})"),
 	                    Catch::Contains("out of range"));
 }
 
 TEST_CASE("BuildSolidModel with metadata: a zero shell count is a dropped shell", "[metadata]") {
-	// A `0` in `shells` (spec §8: a fully-dropped shell) creates no shell. Here
+	// A `0` in `shells` (a fully-dropped shell) creates no shell. Here
 	// [0, 8] on an 8-face surface yields a single 8-face shell.
 	auto wkb = MakeTwoShellWKB();
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{0, 8}};
+	meta.shells = ShellCounts {{0, 8}};
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 1);
 	REQUIRE(model.ShellCount() == 1);
@@ -169,7 +190,7 @@ TEST_CASE("BuildSolidModel with metadata: split into 2 shells", "[metadata]") {
 
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{4, 4}};
+	meta.shells = ShellCounts {{4, 4}};
 
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 1);
@@ -194,7 +215,7 @@ TEST_CASE("BuildSolidModel with metadata: conflict raises", "[metadata]") {
 
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{3, 3}}; // sum=6 but WKB has 8 faces → conflict
+	meta.shells = ShellCounts {{3, 3}}; // sum=6 but WKB has 8 faces → conflict
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("face count mismatch"));
 }
@@ -216,7 +237,7 @@ TEST_CASE("BuildSolidModel with metadata: multi-solid with nested shells (G2)", 
 
 	GeometryMetadata meta;
 	meta.type = "MultiSolid";
-	meta.shells = {{4, 4}, {4, 4}};
+	meta.shells = ShellCounts {{4, 4}, {4, 4}};
 
 	auto model = BuildSolidModel(surfaces, meta);
 	REQUIRE(model.SolidCount() == 2);
@@ -238,7 +259,25 @@ TEST_CASE("BuildSolidModel with metadata: shells member count mismatch raises", 
 
 	GeometryMetadata meta;
 	meta.type = "MultiSolid";
-	meta.shells = {{4, 4}}; // only one solid's shells for two WKB members
+	meta.shells = ShellCounts {{4, 4}}; // only one solid's shells for two WKB members
 
 	REQUIRE_THROWS_WITH(BuildSolidModel(surfaces, meta), Catch::Contains("solid count"));
+}
+
+TEST_CASE("ParseGeometryProperties skips other keys' strings but still validates them", "[metadata]") {
+	// `surfaces` is skipped, escapes and all, without disturbing the keys after it.
+	auto meta = ParseGeometryProperties(
+	    R"({"surfaces": "[{\"type\": \"RoofSurface\", \"name\": \"café \\ \/ \b\f\n\r\t\"}]", "type": "Solid", "shells": [[4]]})");
+	REQUIRE(meta.type == "Solid");
+	REQUIRE(meta.shells.has_value());
+	REQUIRE((*meta.shells)[0][0] == 4);
+
+	// A skipped string is still checked as a JSON string.
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "bad \q escape", "shells": [[4]]})"),
+	                    Catch::Contains("invalid escape sequence"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "\u12G4", "shells": [[4]]})"),
+	                    Catch::Contains("invalid unicode escape"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties(R"({"surfaces": "open)"), Catch::Contains("unterminated string"));
+	REQUIRE_THROWS_WITH(ParseGeometryProperties("{\"surfaces\": \"open\\"),
+	                    Catch::Contains("unterminated escape sequence"));
 }

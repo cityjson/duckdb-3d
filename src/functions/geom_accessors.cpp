@@ -5,11 +5,17 @@
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
+#include "kernel/convex_hull.hpp"
 #include "kernel/geom_analysis.hpp"
+#include "kernel/triangulation.hpp"
+#include "kernel/measurements.hpp"
 #include "kernel/geom_construct.hpp"
 #include "kernel/geom_model.hpp"
 #include "kernel/geom_serialize.hpp"
 #include "kernel/geom_wkb_parser.hpp"
+#include "kernel/wkt_parser.hpp"
+#include "kernel/payload.hpp"
+#include "kernel/solid_model.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -30,9 +36,14 @@ using duckdb_3d::ReadGeomPayloadHeader;
 
 // ST_Geom3DFromWKB(wkb BLOB | GEOMETRY) → GEOM_3D
 // (named to avoid clashing with DuckDB core's st_geomfromwkb -> GEOMETRY)
-static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
+//! `crs` is the CRS a GEOMETRY argument's type carries; WKB from a BLOB brings
+//! its own, from an EWKB SRID.
+static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result, const std::string &crs) {
 	UnaryExecutor::Execute<string_t, string_t>(wkb_vec, result, count, [&](string_t wkb) {
 		auto model = ParseGeomWKB(reinterpret_cast<const uint8_t *>(wkb.GetData()), wkb.GetSize());
+		if (!crs.empty()) {
+			model.crs = crs;
+		}
 		auto payload = SerializeGeomPayload(model);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -40,7 +51,18 @@ static void Geom3DFromWKBVector(Vector &wkb_vec, idx_t count, Vector &result) {
 }
 
 static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	Geom3DFromWKBVector(args.data[0], args.size(), result);
+	Geom3DFromWKBVector(args.data[0], args.size(), result, std::string());
+}
+
+// ST_3DGeomFromText(wkt VARCHAR) → GEOM_3D: the text becomes the WKB PostGIS
+// would write for it, which then takes ST_Geom3DFromWKB's path.
+static void ST_3DGeomFromTextFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t wkt) {
+		auto wkb = duckdb_3d::WktToWkb(wkt.GetData(), wkt.GetSize());
+		auto payload = SerializeGeomPayload(ParseGeomWKB(wkb.data(), wkb.size()));
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
 }
 
 // ST_Geom3DFromWKB(geom GEOMETRY) → GEOM_3D. A CityParquet footprint column
@@ -51,7 +73,7 @@ static void ST_Geom3DFromWKBFun(DataChunk &args, ExpressionState &state, Vector 
 static void ST_Geom3DFromGeometryFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	Vector wkb_vec(LogicalType::BLOB);
 	Geometry::ToBinary(args.data[0], wkb_vec, args.size());
-	Geom3DFromWKBVector(wkb_vec, args.size(), result);
+	Geom3DFromWKBVector(wkb_vec, args.size(), result, BoundCrs(state));
 }
 
 static unique_ptr<FunctionData> BindGeom3DFromWkbArg(ClientContext &, ScalarFunction &bound_function,
@@ -195,6 +217,7 @@ static void ST_3DExtrudeFun(DataChunk &args, ExpressionState &state, Vector &res
 	    args.data[0], args.data[1], result, args.size(), [&](string_t geom, double height) {
 		    auto poly = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		    auto solid = BuildExtrudedSolid(poly, height);
+		    solid.crs = poly.crs;
 		    auto payload = SerializePayload(solid);
 		    return StringVector::AddStringOrBlob(
 		        result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -206,6 +229,7 @@ static void ST_MakeSolidFun(DataChunk &args, ExpressionState &state, Vector &res
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto surface = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
 		auto solid = BuildSolidFromSurface(surface);
+		solid.crs = surface.crs;
 		auto payload = SerializePayload(solid);
 		return StringVector::AddStringOrBlob(result,
 		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
@@ -256,6 +280,26 @@ static void ST_3DCentroidFun(DataChunk &args, ExpressionState &state, Vector &re
 		GeomModel point;
 		point.type = GeomType::Point;
 		point.vertices.push_back(centroid);
+		point.crs = model.crs;
+		point.ComputeBBox();
+		auto payload = SerializeGeomPayload(point);
+		return StringVector::AddStringOrBlob(result,
+		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+	});
+}
+
+// ST_3DCentroid(solid SOLID_3D) → GEOM_3D (Point): the centroid of the volume.
+static void ST_3DCentroidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t solid) {
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+		if (model.TriangleCount() == 0) {
+			duckdb_3d::TriangulateSolidModel(model);
+		}
+		GeomModel point;
+		point.type = GeomType::Point;
+		point.vertices.push_back(duckdb_3d::ComputeVolumeCentroid(model));
+		point.crs = model.crs;
 		point.ComputeBBox();
 		auto payload = SerializeGeomPayload(point);
 		return StringVector::AddStringOrBlob(result,
@@ -275,15 +319,37 @@ static void ST_Force3DFun(DataChunk &args, ExpressionState &state, Vector &resul
 	});
 }
 
-// ST_3DConvexHull(geom GEOM_3D) → GEOM_3D
-// 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
-static void ST_3DConvexHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+//! Serialize a geometry derived from another, in that one's CRS.
+static string_t WriteGeom(Vector &result, GeomModel model, const std::string &crs) {
+	model.crs = crs;
+	auto payload = SerializeGeomPayload(model);
+	return StringVector::AddStringOrBlob(result,
+	                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+}
+
+// ST_3DConvexHull(geom GEOM_3D | SOLID_3D) → GEOM_3D
+// The 3D hull of every vertex (kernel/convex_hull.hpp).
+static void ST_3DConvexHullGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
 		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
-		auto hull = Geom3DConvexHull(model);
-		auto payload = SerializeGeomPayload(hull);
-		return StringVector::AddStringOrBlob(result,
-		                                     string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices), model.crs);
+	});
+}
+
+static void ST_3DConvexHullSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	duckdb_3d::SolidModel model;
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t solid) {
+		duckdb_3d::DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
+		return WriteGeom(result, duckdb_3d::ConvexHull3D(model.vertices), model.crs);
+	});
+}
+
+// ST_3DFootprintHull(geom GEOM_3D) → GEOM_3D
+// 2D monotone-chain hull over XY-projected vertices; output Z = input min Z.
+static void ST_3DFootprintHullFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t geom) {
+		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize());
+		return WriteGeom(result, Geom3DFootprintHull(model), model.crs);
 	});
 }
 
@@ -322,6 +388,7 @@ static int32_t GeomNumGeometries(const duckdb_3d::GeomModel &model) {
 	case GeomType::MultiLineString:
 	case GeomType::MultiPolygon:
 	case GeomType::GeometryCollection:
+	case GeomType::PolyhedralSurface:
 		return model.part_offsets.empty() ? 0 : static_cast<int32_t>(model.part_offsets.size() - 1);
 	default:
 		return 1;
@@ -339,31 +406,144 @@ void RegisterGeomAccessorFunctions(ExtensionLoader &loader, const LogicalType &s
                                    const LogicalType &geom_3d_type) {
 	// GEOM_3D construction and accessors. One ANY candidate, dispatched at bind
 	// time, so that BLOB, GEOMETRY and an untyped NULL all bind (see BindWkbArgument).
-	loader.RegisterFunction(ScalarFunction("st_geom3dfromwkb", {LogicalType::ANY}, geom_3d_type, ST_Geom3DFromWKBFun,
-	                                       BindGeom3DFromWkbArg));
+	RegisterDocumented(
+	    loader,
+	    ScalarFunction("st_geom3dfromwkb", {LogicalType::ANY}, geom_3d_type, ST_Geom3DFromWKBFun, BindGeom3DFromWkbArg),
+	    {{"wkb"},
+	     "Builds a GEOM_3D from WKB or GEOMETRY: Point, LineString, Polygon, their Multi forms, or PolyhedralSurface, "
+	     "all with Z; a TIN or Triangle is read as the PolyhedralSurface or Polygon it is. Raises on anything else, "
+	     "GeometryCollection included.",
+	     "ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY)",
+	     {"import"}});
 
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_3DGeometryTypeFun));
-	loader.RegisterFunction(ScalarFunction("st_3dx", {geom_3d_type}, LogicalType::DOUBLE, ST_3DXFun));
-	loader.RegisterFunction(ScalarFunction("st_3dy", {geom_3d_type}, LogicalType::DOUBLE, ST_3DYFun));
-	loader.RegisterFunction(ScalarFunction("st_3dz", {geom_3d_type}, LogicalType::DOUBLE, ST_3DZFun));
-	loader.RegisterFunction(ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun));
-	loader.RegisterFunction(ScalarFunction("st_3ddimension", {geom_3d_type}, LogicalType::INTEGER, ST_3DDimensionFun));
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_3DNumGeometriesFun));
-	loader.RegisterFunction(ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun));
-	loader.RegisterFunction(ScalarFunction("st_3dastext", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsTextFun));
-	loader.RegisterFunction(ScalarFunction("st_3dasgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsGeoJSONFun));
-	loader.RegisterFunction(ScalarFunction("st_3dasbinary", {geom_3d_type}, LogicalType::BLOB, ST_3DAsBinaryFun));
-	loader.RegisterFunction(ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun));
-	loader.RegisterFunction(ScalarFunction("st_3dcentroid", {geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
-	loader.RegisterFunction(ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun));
-	loader.RegisterFunction(ScalarFunction("st_3dconvexhull", {geom_3d_type}, geom_3d_type, ST_3DConvexHullFun));
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dgeomfromtext", {LogicalType::VARCHAR}, geom_3d_type, ST_3DGeomFromTextFun),
+	    {{"wkt"},
+	     "Builds a GEOM_3D from 3D WKT: Point, LineString, Polygon, their Multi forms, PolyhedralSurface, and TIN and "
+	     "Triangle, read as the PolyhedralSurface and Polygon they are. An EWKT 'SRID=n;' prefix becomes the CRS "
+	     "'EPSG:n'. Raises on 2D or M coordinates and on any other class.",
+	     "ST_3DGeomFromText('POLYHEDRALSURFACE Z (((0 0 0, 0 1 0, 1 0 0, 0 0 0)), ((0 0 0, 0 0 1, 0 1 0, 0 0 0)), "
+	     "((0 0 0, 1 0 0, 0 0 1, 0 0 0)), ((1 0 0, 0 1 0, 0 0 1, 1 0 0)))')",
+	     {"import"}});
+
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dgeometrytype", {geom_3d_type}, LogicalType::VARCHAR, ST_3DGeometryTypeFun),
+	    {{"geom"},
+	     "Returns the geometry class of a GEOM_3D value, such as 'ST_Point' or 'ST_PolyhedralSurface'.",
+	     "ST_3DGeometryType(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
+	     {"introspection"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dx", {geom_3d_type}, LogicalType::DOUBLE, ST_3DXFun),
+	                   {{"geom"},
+	                    "Returns the X coordinate of a GEOM_3D Point. Raises for any other geometry class.",
+	                    "ST_3DX(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dy", {geom_3d_type}, LogicalType::DOUBLE, ST_3DYFun),
+	                   {{"geom"},
+	                    "Returns the Y coordinate of a GEOM_3D Point. Raises for any other geometry class.",
+	                    "ST_3DY(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dz", {geom_3d_type}, LogicalType::DOUBLE, ST_3DZFun),
+	                   {{"geom"},
+	                    "Returns the Z coordinate of a GEOM_3D Point. Raises for any other geometry class.",
+	                    "ST_3DZ(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
+	RegisterDocumented(loader, ScalarFunction("st_coorddim", {geom_3d_type}, LogicalType::INTEGER, ST_CoordDimFun),
+	                   {{"geom"},
+	                    "Returns the coordinate dimension of a GEOM_3D value, always 3.",
+	                    "ST_CoordDim(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"introspection"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3ddimension", {geom_3d_type}, LogicalType::INTEGER, ST_3DDimensionFun),
+	    {{"geom"},
+	     "Returns the topological dimension of a GEOM_3D value: 0 for points, 1 for lines, 2 for surfaces.",
+	     "ST_3DDimension(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
+	     {"introspection"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dnumgeometries", {geom_3d_type}, LogicalType::INTEGER, ST_3DNumGeometriesFun),
+	    {{"geom"},
+	     "Returns the number of member geometries of a GEOM_3D value: the member count of a Multi geometry, the "
+	     "patch count of a PolyhedralSurface, 1 otherwise.",
+	     "ST_3DNumGeometries(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
+	     {"introspection"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dlength", {geom_3d_type}, LogicalType::DOUBLE, ST_3DLengthFun),
+	                   {{"geom"},
+	                    "Returns the 3D length of a GEOM_3D LineString or MultiLineString in input units, and 0 for "
+	                    "any other geometry class.",
+	                    "ST_3DLength(ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 3 4 12)'::GEOMETRY))",
+	                    {"measurement"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dastext", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsTextFun),
+	                   {{"geom"},
+	                    "Returns a GEOM_3D value as ISO WKT with Z; ordinates are formatted with 9 significant digits.",
+	                    "ST_3DAsText(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"export"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dasgeojson", {geom_3d_type}, LogicalType::VARCHAR, ST_3DAsGeoJSONFun),
+	    {{"geom"},
+	     "Returns a GEOM_3D value as a GeoJSON geometry; a PolyhedralSurface is emitted as a MultiPolygon.",
+	     "ST_3DAsGeoJSON(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	     {"export"}});
+	RegisterDocumented(loader, ScalarFunction("st_3dasbinary", {geom_3d_type}, LogicalType::BLOB, ST_3DAsBinaryFun),
+	                   {{"geom"},
+	                    "Returns a GEOM_3D value as little-endian OGC/ISO WKB with Z.",
+	                    "ST_3DAsBinary(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	                    {"export"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_isplanar", {geom_3d_type}, LogicalType::BOOLEAN, ST_IsPlanarFun),
+	    {{"geom"},
+	     "Returns whether each ring of a GEOM_3D surface is planar within tolerance; for points and lines, whether all "
+	     "vertices are coplanar.",
+	     "ST_IsPlanar(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
+	     {"introspection"}});
+	ScalarFunctionSet centroid_set("st_3dcentroid");
+	centroid_set.AddFunction(ScalarFunction({geom_3d_type}, geom_3d_type, ST_3DCentroidFun));
+	centroid_set.AddFunction(ScalarFunction({solid_3d_type}, geom_3d_type, ST_3DCentroidSolidFun));
+	RegisterDocumented(loader, std::move(centroid_set),
+	                   {{"geom"},
+	                    "Returns the centroid as a Point Z: of a SOLID_3D, its volume's (raises when it encloses "
+	                    "none); of a GEOM_3D, area-weighted for surfaces, length-weighted for lines, the vertex "
+	                    "average for points.",
+	                    "ST_3DCentroid(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY))",
+	                    {"transform"}});
+	RegisterDocumented(
+	    loader, ScalarFunction("st_force3d", {geom_3d_type}, geom_3d_type, ST_Force3DFun),
+	    {{"geom"},
+	     "Returns a GEOM_3D value with XYZ coordinates; GEOM_3D already stores XYZ, so this is an identity.",
+	     "ST_Force3D(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
+	     {"transform"}});
+	ScalarFunctionSet convex_hull_set("st_3dconvexhull");
+	convex_hull_set.AddFunction(ScalarFunction({geom_3d_type}, geom_3d_type, ST_3DConvexHullGeomFun));
+	convex_hull_set.AddFunction(ScalarFunction({solid_3d_type}, geom_3d_type, ST_3DConvexHullSolidFun));
+	RegisterDocumented(loader, convex_hull_set,
+	                   {{"geom"},
+	                    "Returns the 3D convex hull of every vertex of a GEOM_3D or SOLID_3D value: a closed "
+	                    "PolyhedralSurface Z of convex faces wound outward, so ST_MakeSolid accepts it; coplanar, "
+	                    "collinear or single-point input gives a Polygon Z, LineString Z or Point Z. Exact predicates "
+	                    "decide every orientation, and the hull's vertices are input vertices.",
+	                    "ST_3DConvexHull(ST_Geom3DFromWKB('MULTIPOINT Z (0 0 0, 1 0 0, 0 1 0, 0 0 1)'::GEOMETRY))",
+	                    {"transform"}});
+	RegisterDocumented(loader,
+	                   ScalarFunction("st_3dfootprinthull", {geom_3d_type}, geom_3d_type, ST_3DFootprintHullFun),
+	                   {{"geom"},
+	                    "Returns the 2D convex hull of a GEOM_3D value's XY projection as a Polygon Z at the input's "
+	                    "minimum Z; degenerate inputs give a LineString Z or Point Z.",
+	                    "ST_3DFootprintHull(ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 3 4 12)'::GEOMETRY))",
+	                    {"transform"}});
 	// Solid-producing constructors: return the SOLID_3D alias (like st_3dfromwkb) so
 	// the typed measurement/introspection overloads compose directly on the result.
-	loader.RegisterFunction(
-	    ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DExtrudeFun));
-	loader.RegisterFunction(ScalarFunction("st_makesolid", {geom_3d_type}, solid_3d_type, ST_MakeSolidFun));
+	RegisterDocumented(
+	    loader, ScalarFunction("st_3dextrude", {geom_3d_type, LogicalType::DOUBLE}, solid_3d_type, ST_3DExtrudeFun),
+	    {{"geom", "height"},
+	     "Extrudes a GEOM_3D Polygon vertically by height into a closed, valid SOLID_3D prism. Raises unless the input "
+	     "is a polygon with at least 3 distinct exterior vertices and height > 0.",
+	     "ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0)",
+	     {"transform"}});
+	RegisterDocumented(loader, ScalarFunction("st_makesolid", {geom_3d_type}, solid_3d_type, ST_MakeSolidFun),
+	                   {{"geom"},
+	                    "Promotes a closed PolyhedralSurface GEOM_3D to a SOLID_3D. Raises unless the surface is "
+	                    "already closed, manifold and oriented; nothing is repaired.",
+	                    "ST_MakeSolid(ST_Geom3DFromWKB(ST_3DAsWKB(ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 2 "
+	                    "0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0))))",
+	                    {"transform"}});
 }
 
 } // namespace duckdb

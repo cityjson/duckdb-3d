@@ -69,19 +69,19 @@ SELECT ST_Force3D(NULL::GEOM_3D);
 ----
 NULL
 
-# ST_3DConvexHull: polygon footprint -> same polygon hull at min Z
+# ST_3DFootprintHull: polygon footprint -> same polygon hull at min Z
 query IIII
 SELECT
-    ST_3DGeometryType(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_3DNumGeometries(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_3DZMin(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
-    ST_3DZMax(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+    ST_3DGeometryType(ST_3DFootprintHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DNumGeometries(ST_3DFootprintHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DZMin(ST_3DFootprintHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()))),
+    ST_3DZMax(ST_3DFootprintHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
 ST_Polygon	1	5.0	5.0
 
-# ST_3DConvexHull: NULL propagation
+# ST_3DFootprintHull: NULL propagation
 query I
-SELECT ST_3DConvexHull(NULL::GEOM_3D);
+SELECT ST_3DFootprintHull(NULL::GEOM_3D);
 ----
 NULL
 
@@ -91,11 +91,11 @@ SELECT ST_3DFootprintArea(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 12.0
 
-# ST_3DFootprintArea composed with ST_3DConvexHull: the hull of the 4x3 rectangle is the
+# ST_3DFootprintArea composed with ST_3DFootprintHull: the hull of the 4x3 rectangle is the
 # rectangle itself, so its footprint area is also 12 (this is the metric the
-# PostGIS differential harness uses for ST_3DConvexHull).
+# PostGIS differential harness uses for ST_3DFootprintHull).
 query I
-SELECT ST_3DFootprintArea(ST_3DConvexHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
+SELECT ST_3DFootprintArea(ST_3DFootprintHull(ST_Geom3DFromWKB(ST_AsWKBPolygonZ())));
 ----
 12.0
 

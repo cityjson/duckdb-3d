@@ -1,4 +1,6 @@
 #include "kernel/geom_payload.hpp"
+#include "kernel/byte_io.hpp"
+#include "kernel/triangulation.hpp"
 
 #include <cstring>
 #include <stdexcept>
@@ -7,81 +9,7 @@ namespace duckdb_3d {
 
 namespace {
 
-void PushU16(std::vector<uint8_t> &buf, uint16_t v) {
-	buf.push_back(v & 0xFF);
-	buf.push_back((v >> 8) & 0xFF);
-}
-void PushU32(std::vector<uint8_t> &buf, uint32_t v) {
-	buf.push_back(v & 0xFF);
-	buf.push_back((v >> 8) & 0xFF);
-	buf.push_back((v >> 16) & 0xFF);
-	buf.push_back((v >> 24) & 0xFF);
-}
-void PushF64(std::vector<uint8_t> &buf, double v) {
-	uint8_t b[8];
-	std::memcpy(b, &v, 8);
-	buf.insert(buf.end(), b, b + 8);
-}
-
-struct Reader {
-	const uint8_t *data;
-	size_t size;
-	size_t pos;
-
-	void Require(size_t n) const {
-		if (pos + n > size) {
-			throw std::runtime_error("DeserializeGeomPayload: truncated payload");
-		}
-	}
-	//! Reject a declared element count before reserving for it: the elements
-	//! cannot fit in the bytes that remain. Guards against a malformed header
-	//! claiming a huge count, which would otherwise reserve a large buffer
-	//! before the truncated read is detected. `elem_size` is 64-bit so the
-	//! multiplication cannot overflow.
-	void RequireCount(uint64_t count, uint64_t elem_size, const char *what) const {
-		if (count * elem_size > size - pos) {
-			throw std::runtime_error(std::string("DeserializeGeomPayload: truncated payload (declared ") + what +
-			                         " count exceeds remaining payload size)");
-		}
-	}
-	uint16_t U16() {
-		Require(2);
-		uint16_t v = data[pos] | (uint16_t(data[pos + 1]) << 8);
-		pos += 2;
-		return v;
-	}
-	uint32_t U32() {
-		Require(4);
-		uint32_t v;
-		std::memcpy(&v, data + pos, 4);
-		pos += 4;
-		return v;
-	}
-	double F64() {
-		Require(8);
-		double v;
-		std::memcpy(&v, data + pos, 8);
-		pos += 8;
-		return v;
-	}
-};
-
-void ValidateGeomOffsets(const std::vector<uint32_t> &offsets, uint32_t expected_last, const char *name) {
-	if (offsets.empty()) {
-		throw std::runtime_error(std::string("GEOM_3D payload: missing ") + name + " offsets");
-	}
-	if (offsets.front() != 0) {
-		throw std::runtime_error(std::string("GEOM_3D payload: invalid ") + name + " offsets");
-	}
-	for (size_t i = 1; i < offsets.size(); i++) {
-		if (offsets[i] < offsets[i - 1]) {
-			throw std::runtime_error(std::string("GEOM_3D payload: non-monotonic ") + name + " offsets");
-		}
-	}
-	if (offsets.back() != expected_last) {
-		throw std::runtime_error(std::string("GEOM_3D payload: inconsistent ") + name + " offsets");
-	}
-}
+constexpr const char *kTruncationMessage = "DeserializeGeomPayload: truncated payload";
 
 //! Structural validation mirroring the SOLID_3D path's ValidatePayloadModel
 //! (payload.cpp): ring_offsets/part_offsets are used as raw indices by every
@@ -102,7 +30,7 @@ void ValidateGeomModel(const GeomModel &model) {
 			throw std::runtime_error("GEOM_3D payload: Polygon must not carry part offsets");
 		}
 		if (!model.ring_offsets.empty()) {
-			ValidateGeomOffsets(model.ring_offsets, vertex_count, "ring-vertex");
+			ValidateOffsets(model.ring_offsets, vertex_count, "ring-vertex", "GEOM_3D payload");
 		}
 		break;
 	case GeomType::MultiPoint:
@@ -111,13 +39,13 @@ void ValidateGeomModel(const GeomModel &model) {
 			throw std::runtime_error("GEOM_3D payload: MultiPoint/MultiLineString must not carry ring offsets");
 		}
 		if (!model.part_offsets.empty()) {
-			ValidateGeomOffsets(model.part_offsets, vertex_count, "part-vertex");
+			ValidateOffsets(model.part_offsets, vertex_count, "part-vertex", "GEOM_3D payload");
 		}
 		break;
 	case GeomType::MultiPolygon:
 	case GeomType::PolyhedralSurface:
 		if (!model.ring_offsets.empty()) {
-			ValidateGeomOffsets(model.ring_offsets, vertex_count, "ring-vertex");
+			ValidateOffsets(model.ring_offsets, vertex_count, "ring-vertex", "GEOM_3D payload");
 		}
 		if (!model.part_offsets.empty()) {
 			// part_offsets holds ring indices; writers dereference
@@ -125,7 +53,8 @@ void ValidateGeomModel(const GeomModel &model) {
 			if (model.ring_offsets.empty()) {
 				throw std::runtime_error("GEOM_3D payload: part offsets without ring offsets");
 			}
-			ValidateGeomOffsets(model.part_offsets, static_cast<uint32_t>(model.ring_offsets.size()) - 1, "part-ring");
+			ValidateOffsets(model.part_offsets, static_cast<uint32_t>(model.ring_offsets.size()) - 1, "part-ring",
+			                "GEOM_3D payload");
 		}
 		break;
 	case GeomType::GeometryCollection:
@@ -138,113 +67,161 @@ void ValidateGeomModel(const GeomModel &model) {
 	default:
 		throw std::runtime_error("GEOM_3D payload: unknown geometry type code");
 	}
+
+	// The triangulation cache: one range per polygon, indices into the vertices.
+	uint32_t polygon_count = model.PolygonCount();
+	if (polygon_count == 0) {
+		if (!model.polygon_triangle_offsets.empty() || !model.triangle_indices.empty()) {
+			throw std::runtime_error("GEOM_3D payload: triangles on a geometry without polygons");
+		}
+		return;
+	}
+	if (model.polygon_triangle_offsets.size() != polygon_count + 1) {
+		throw std::runtime_error("GEOM_3D payload: triangle offsets do not match the polygon count");
+	}
+	ValidateOffsets(model.polygon_triangle_offsets, static_cast<uint32_t>(model.triangle_indices.size() / 3),
+	                "polygon-triangle", "GEOM_3D payload");
+	if (model.triangle_indices.size() % 3 != 0) {
+		throw std::runtime_error("GEOM_3D payload: triangle index count is not a multiple of three");
+	}
+	for (auto i : model.triangle_indices) {
+		if (i >= vertex_count) {
+			throw std::runtime_error("GEOM_3D payload: triangle vertex index out of range");
+		}
+	}
+}
+
+//! The magic and the version: the bytes before the type.
+constexpr size_t kPreambleSize = 4 + 2 * sizeof(uint16_t);
+
+//! Check the magic and the major version at the start of `data`; the caller's
+//! reader resumes at kPreambleSize. It reads with a reader of its own: handing
+//! the caller's to a call that is not inlined would keep its position in memory
+//! for every read that follows, and the header read runs once a row.
+void ReadPreamble(const uint8_t *data, size_t size, const char *who) {
+	ByteReader r(data, size, kTruncationMessage);
+	r.Require(4);
+	if (std::memcmp(r.data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
+		throw std::runtime_error(std::string(who) + ": bad magic (not a GEOM_3D value)");
+	}
+	r.pos = 4;
+	uint16_t major = r.ReadU16();
+	r.ReadU16(); // minor
+	if (major != GEOM_PAYLOAD_VERSION_MAJOR) {
+		throw std::runtime_error(std::string(who) + ": unsupported major version " + std::to_string(major) +
+		                         " (this build reads version " + std::to_string(GEOM_PAYLOAD_VERSION_MAJOR) +
+		                         "); rebuild the value from its WKB with ST_Geom3DFromWKB");
+	}
+}
+
+void ReadU32Vector(ByteReader &r, std::vector<uint32_t> &out, const char *what) {
+	uint32_t count = r.ReadU32();
+	r.RequireCount(count, sizeof(uint32_t), what);
+	out.resize(count);
+	r.ReadU32Array(out.data(), count);
 }
 
 } // namespace
 
 std::vector<uint8_t> SerializeGeomPayload(const GeomModel &model) {
-	std::vector<uint8_t> buf;
-	buf.insert(buf.end(), GEOM_PAYLOAD_MAGIC, GEOM_PAYLOAD_MAGIC + 4);
-	PushU16(buf, GEOM_PAYLOAD_VERSION_MAJOR);
-	PushU16(buf, GEOM_PAYLOAD_VERSION_MINOR);
-	PushU32(buf, static_cast<uint32_t>(model.type));
+	// Every GEOM_3D value carries its polygons' triangles. Fill them in here when
+	// the caller has not, so no constructor can produce a value without them.
+	const GeomModel *source = &model;
+	GeomModel triangulated;
+	if (model.PolygonCount() > 0 && model.polygon_triangle_offsets.size() != model.PolygonCount() + 1) {
+		triangulated = model;
+		TriangulateGeomModel(triangulated);
+		source = &triangulated;
+	}
+	const GeomModel &m = *source;
 
-	PushF64(buf, model.bbox.min_x);
-	PushF64(buf, model.bbox.min_y);
-	PushF64(buf, model.bbox.min_z);
-	PushF64(buf, model.bbox.max_x);
-	PushF64(buf, model.bbox.max_y);
-	PushF64(buf, model.bbox.max_z);
+	ByteWriter w;
+	w.WriteBytes(GEOM_PAYLOAD_MAGIC, 4);
+	w.WriteU16(GEOM_PAYLOAD_VERSION_MAJOR);
+	w.WriteU16(GEOM_PAYLOAD_VERSION_MINOR);
+	w.WriteU32(static_cast<uint32_t>(m.type));
 
-	PushU32(buf, static_cast<uint32_t>(model.vertices.size()));
-	for (const auto &v : model.vertices) {
-		PushF64(buf, v.x);
-		PushF64(buf, v.y);
-		PushF64(buf, v.z);
-	}
-	PushU32(buf, static_cast<uint32_t>(model.ring_offsets.size()));
-	for (auto o : model.ring_offsets) {
-		PushU32(buf, o);
-	}
-	PushU32(buf, static_cast<uint32_t>(model.part_offsets.size()));
-	for (auto o : model.part_offsets) {
-		PushU32(buf, o);
-	}
-	return buf;
+	w.WriteF64(m.bbox.min_x);
+	w.WriteF64(m.bbox.min_y);
+	w.WriteF64(m.bbox.min_z);
+	w.WriteF64(m.bbox.max_x);
+	w.WriteF64(m.bbox.max_y);
+	w.WriteF64(m.bbox.max_z);
+	w.WriteU32(static_cast<uint32_t>(m.vertices.size()));
+	// CRS: after the fixed fields, so header readers keep fixed offsets
+	w.WriteString(m.crs);
+
+	w.WriteVertices(m.vertices.data(), m.vertices.size());
+	w.WriteU32(static_cast<uint32_t>(m.ring_offsets.size()));
+	w.WriteU32Array(m.ring_offsets.data(), m.ring_offsets.size());
+	w.WriteU32(static_cast<uint32_t>(m.part_offsets.size()));
+	w.WriteU32Array(m.part_offsets.data(), m.part_offsets.size());
+	w.WriteU32(static_cast<uint32_t>(m.polygon_triangle_offsets.size()));
+	w.WriteU32Array(m.polygon_triangle_offsets.data(), m.polygon_triangle_offsets.size());
+	w.WriteU32(static_cast<uint32_t>(m.triangle_indices.size()));
+	w.WriteU32Array(m.triangle_indices.data(), m.triangle_indices.size());
+	return w.buffer;
 }
 
 GeomPayloadInfo ReadGeomPayloadHeader(const uint8_t *data, size_t size) {
-	Reader r {data, size, 0};
-	r.Require(4);
-	if (std::memcmp(data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
-		throw std::runtime_error("ReadGeomPayloadHeader: bad magic (not a GEOM_3D value)");
-	}
-	r.pos = 4;
-	uint16_t major = r.U16();
-	r.U16(); // minor
-	if (major != GEOM_PAYLOAD_VERSION_MAJOR) {
-		throw std::runtime_error("ReadGeomPayloadHeader: unsupported major version");
-	}
+	ByteReader r(data, size, kTruncationMessage);
+	ReadPreamble(data, size, "ReadGeomPayloadHeader");
+	r.pos = kPreambleSize;
 
 	GeomPayloadInfo info;
-	info.type = static_cast<GeomType>(r.U32());
-	info.bbox.min_x = r.F64();
-	info.bbox.min_y = r.F64();
-	info.bbox.min_z = r.F64();
-	info.bbox.max_x = r.F64();
-	info.bbox.max_y = r.F64();
-	info.bbox.max_z = r.F64();
-	info.vertex_count = r.U32();
+	info.type = static_cast<GeomType>(r.ReadU32());
+	info.bbox.min_x = r.ReadF64();
+	info.bbox.min_y = r.ReadF64();
+	info.bbox.min_z = r.ReadF64();
+	info.bbox.max_x = r.ReadF64();
+	info.bbox.max_y = r.ReadF64();
+	info.bbox.max_z = r.ReadF64();
+	info.vertex_count = r.ReadU32();
+	info.crs = r.ReadStringView("CRS byte");
 	return info;
 }
 
 GeomModel DeserializeGeomPayload(const uint8_t *data, size_t size) {
-	Reader r {data, size, 0};
-	r.Require(4);
-	if (std::memcmp(data, GEOM_PAYLOAD_MAGIC, 4) != 0) {
-		throw std::runtime_error("DeserializeGeomPayload: bad magic (not a GEOM_3D value)");
-	}
-	r.pos = 4;
-	uint16_t major = r.U16();
-	r.U16(); // minor
-	if (major != GEOM_PAYLOAD_VERSION_MAJOR) {
-		throw std::runtime_error("DeserializeGeomPayload: unsupported major version");
-	}
+	ByteReader r(data, size, kTruncationMessage);
+	ReadPreamble(data, size, "DeserializeGeomPayload");
+	r.pos = kPreambleSize;
 
 	GeomModel model;
-	model.type = static_cast<GeomType>(r.U32());
+	model.type = static_cast<GeomType>(r.ReadU32());
 
-	model.bbox.min_x = r.F64();
-	model.bbox.min_y = r.F64();
-	model.bbox.min_z = r.F64();
-	model.bbox.max_x = r.F64();
-	model.bbox.max_y = r.F64();
-	model.bbox.max_z = r.F64();
+	model.bbox.min_x = r.ReadF64();
+	model.bbox.min_y = r.ReadF64();
+	model.bbox.min_z = r.ReadF64();
+	model.bbox.max_x = r.ReadF64();
+	model.bbox.max_y = r.ReadF64();
+	model.bbox.max_z = r.ReadF64();
 
-	uint32_t vertex_count = r.U32();
+	uint32_t vertex_count = r.ReadU32();
+	model.crs = r.ReadString("CRS byte");
 	r.RequireCount(vertex_count, 3 * sizeof(double), "vertex");
-	model.vertices.reserve(vertex_count);
-	for (uint32_t i = 0; i < vertex_count; i++) {
-		Vertex3D v;
-		v.x = r.F64();
-		v.y = r.F64();
-		v.z = r.F64();
-		model.vertices.push_back(v);
-	}
-	uint32_t ring_off_count = r.U32();
-	r.RequireCount(ring_off_count, sizeof(uint32_t), "ring-offset");
-	model.ring_offsets.reserve(ring_off_count);
-	for (uint32_t i = 0; i < ring_off_count; i++) {
-		model.ring_offsets.push_back(r.U32());
-	}
-	uint32_t part_off_count = r.U32();
-	r.RequireCount(part_off_count, sizeof(uint32_t), "part-offset");
-	model.part_offsets.reserve(part_off_count);
-	for (uint32_t i = 0; i < part_off_count; i++) {
-		model.part_offsets.push_back(r.U32());
-	}
+	model.vertices.resize(vertex_count);
+	r.ReadVertices(model.vertices.data(), vertex_count);
+	ReadU32Vector(r, model.ring_offsets, "ring-offset");
+	ReadU32Vector(r, model.part_offsets, "part-offset");
+	ReadU32Vector(r, model.polygon_triangle_offsets, "polygon-triangle offset");
+	ReadU32Vector(r, model.triangle_indices, "triangle index");
 	ValidateGeomModel(model);
 	return model;
+}
+
+std::vector<uint8_t> RebuildGeomPayload(const uint8_t *data, size_t size) {
+	auto model = DeserializeGeomPayload(data, size);
+	model.ComputeBBox();
+	model.polygon_triangle_offsets.clear();
+	model.triangle_indices.clear();
+	return SerializeGeomPayload(model);
+}
+
+std::vector<uint8_t> WithGeomPayloadCrs(const uint8_t *data, size_t size, const std::string &crs) {
+	// Magic, version, type, the bounding box and the vertex count come first.
+	constexpr size_t kCrsOffset = 4 + 2 + 2 + 4 + 6 * sizeof(double) + sizeof(uint32_t);
+	auto info = ReadGeomPayloadHeader(data, size);
+	return ReplaceCrsSlot(data, size, kCrsOffset, info.crs.size(), crs);
 }
 
 } // namespace duckdb_3d

@@ -1,0 +1,93 @@
+# name: test/sql/faces.test
+# description: ST_3DFaces, ST_3DFaceN and the per-face areas, normals, slopes and azimuths
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# A 2 x 2 x 3 box: two horizontal faces of area 4, four walls of area 6 facing
+# north, east, south and west.
+statement ok
+CREATE TABLE box AS SELECT ST_3DSetCRS(ST_3DExtrude(ST_Geom3DFromWKB(
+    'POLYGON Z ((0 0 0, 2 0 0, 2 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 3.0), 'EPSG:28992') AS s;
+
+query IIII
+SELECT len(f), list_transform(f, lambda x: x.face), list_distinct(list_transform(f, lambda x: x.solid)),
+       list_distinct(list_transform(f, lambda x: x.shell))
+FROM (SELECT ST_3DFaces(s) AS f FROM box);
+----
+6	[1, 2, 3, 4, 5, 6]	[1]	[1]
+
+# Each face is a Polygon Z in the solid's CRS, and their areas make up the surface.
+query III
+SELECT list_distinct(list_transform(f, lambda x: ST_3DGeometryType(x.polygon))),
+       list_distinct(list_transform(f, lambda x: ST_3DCRS(x.polygon))),
+       list_sum(list_transform(f, lambda x: ST_3DArea(x.polygon))) = ST_3DSurfaceArea(s)
+FROM (SELECT s, ST_3DFaces(s) AS f FROM box);
+----
+[ST_Polygon]	['EPSG:28992']	true
+
+query IIII
+SELECT list_sort(ST_3DFaceAreas(s)), list_sum(ST_3DFaceAreas(s)) = ST_3DSurfaceArea(s),
+       list_sort(ST_3DFaceSlopes(s)), list_sort(ST_3DFaceAzimuths(s))
+FROM box;
+----
+[4.0, 4.0, 6.0, 6.0, 6.0, 6.0]	true	[0.0, 0.0, 90.0, 90.0, 90.0, 90.0]	[0.0, 90.0, 180.0, 270.0, NULL, NULL]
+
+# The normals of a valid solid point out of it.
+query I
+SELECT list_sort(list_transform(ST_3DFaceNormals(s), lambda n: [n.x, n.y, n.z])) FROM box;
+----
+[[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+
+# ST_3DFaceN is the n-th entry of ST_3DFaces; outside 1..n it is NULL.
+query IIII
+SELECT ST_3DAsText(ST_3DFaceN(s, 1)) = ST_3DAsText(ST_3DFaces(s)[1].polygon),
+       ST_3DArea(ST_3DFaceN(s, 6)) = ST_3DFaceAreas(s)[6], ST_3DFaceN(s, 0) IS NULL, ST_3DFaceN(s, 7) IS NULL
+FROM box;
+----
+true	true	true	true
+
+# A cavity's faces are the second shell, their normals pointing into the cavity,
+# out of the material.
+query III
+SELECT list_transform(f, lambda x: x.shell)[1:12:6], list_sum(ST_3DFaceAreas(s)),
+       ST_3DFaceNormals(s)[7].z * ST_3DFaceNormals(s)[1].z
+FROM (SELECT s, ST_3DFaces(s) AS f
+      FROM (SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}') AS s));
+----
+[1, 2]	120.0	-1.0
+
+# Slope is the face's tilt from horizontal, 0 to 90 degrees whichever way it
+# faces; azimuth is the compass direction its normal leans toward, clockwise
+# from +Y. Wound one way the 45 degree face leans east and down, the other way
+# west and up.
+query IIII
+SELECT ST_3DFaceSlopes(a)[1], ST_3DFaceAzimuths(a)[1], ST_3DFaceSlopes(b)[1], ST_3DFaceAzimuths(b)[1]
+FROM (SELECT ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 0 2 0, 1 2 1, 1 0 1, 0 0 0))'::GEOMETRY) AS a,
+             ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 1 0 1, 1 2 1, 0 2 0, 0 0 0))'::GEOMETRY) AS b);
+----
+45.0	90.0	45.0	270.0
+
+# Turning the box counter-clockwise by 30 degrees turns every azimuth back by 30.
+query I
+SELECT list_sort(list_transform(ST_3DFaceAzimuths(ST_3DRotateZ(s, pi() / 6)), lambda a: ROUND(a, 9))) FROM box;
+----
+[60.0, 150.0, 240.0, 330.0, NULL, NULL]
+
+# On a GEOM_3D the faces are its polygons, and their areas make up ST_3DArea.
+query III
+SELECT len(ST_3DFaceAreas(g)), list_sum(ST_3DFaceAreas(g)) = ST_3DArea(g), ST_3DFaceAreas(l)
+FROM (SELECT ST_Geom3DFromWKB(ST_3DAsWKB(s)) AS g, ST_Geom3DFromWKB('LINESTRING Z (0 0 0, 1 1 1)'::GEOMETRY) AS l
+      FROM box);
+----
+6	true	[]
+
+# A face without triangles, here of zero area, has no area, normal, slope or
+# azimuth.
+query IIII
+SELECT ST_3DFaceAreas(g), ST_3DFaceNormals(g), ST_3DFaceSlopes(g), ST_3DFaceAzimuths(g)
+FROM (SELECT ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 1 1 1, 2 2 2, 0 0 0))'::GEOMETRY) AS g);
+----
+[NULL]	[NULL]	[NULL]	[NULL]

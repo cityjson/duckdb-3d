@@ -14,6 +14,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
+# Vendored header-only dependencies (see third_party/README.md).
+include_directories(third_party)
 
 set(EXTENSION_SOURCES
     src/three_d_extension.cpp
@@ -24,6 +26,10 @@ set(EXTENSION_SOURCES
     src/functions/distance.cpp
     src/functions/transforms.cpp
     src/functions/struct_metadata.cpp
+    src/functions/casts.cpp
+    src/functions/bounds.cpp
+    src/functions/crs.cpp
+    src/functions/faces.cpp
     src/kernel/solid_model.cpp
     src/kernel/payload.cpp
     src/kernel/wkb_parser.cpp
@@ -31,6 +37,7 @@ set(EXTENSION_SOURCES
     src/kernel/wkb_export.cpp
     src/kernel/geometry_math.cpp
     src/kernel/validation.cpp
+    src/kernel/self_intersection.cpp
     src/kernel/triangulation.cpp
     src/kernel/measurements.cpp
     src/kernel/metadata_parser.cpp
@@ -41,7 +48,15 @@ set(EXTENSION_SOURCES
     src/kernel/geom_construct.cpp
     src/kernel/geom_analysis.cpp
     src/kernel/geom_serialize.cpp
-    src/kernel/crs_transform.cpp)
+    src/kernel/crs_transform.cpp
+    src/kernel/affine.cpp
+    src/kernel/predicates.cpp
+    src/kernel/convex_hull.cpp
+    src/kernel/geom_intersects.cpp
+    src/kernel/solid_relations.cpp
+    src/kernel/faces.cpp
+    src/kernel/wkt_parser.cpp
+    third_party/predicates/predicates.c)
 
 # PROJ backs ST_3DTransform (kernel/crs_transform.cpp). Under the vcpkg toolchain
 # the vcpkg copy is found first; on a bare macOS dev box fall back to Homebrew.

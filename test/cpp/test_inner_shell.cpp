@@ -113,7 +113,7 @@ SolidModel BuildHollowCube(bool with_metadata, bool inner_inward = true) {
 	if (with_metadata) {
 		GeometryMetadata meta;
 		meta.type = "Solid";
-		meta.shells = {{6, 6}};
+		meta.shells = ShellCounts {{6, 6}};
 		model = BuildSolidModel(surfaces, meta);
 	} else {
 		model = BuildSolidModel(surfaces);
@@ -176,7 +176,7 @@ TEST_CASE("Hollow solid: a same-wound interior shell is REJECTED (CityGML orient
 	auto surfaces = ParseWKB(wkb.data(), wkb.size());
 	GeometryMetadata meta;
 	meta.type = "Solid";
-	meta.shells = {{6, 6}};
+	meta.shells = ShellCounts {{6, 6}};
 	auto model = BuildSolidModel(surfaces, meta);
 
 	REQUIRE(model.validation.orientation_error_count >= 1);

@@ -19,6 +19,9 @@ double DistSegmentSegment(const Vertex3D &p1, const Vertex3D &q1, const Vertex3D
 //! Distance between point `p` and triangle (a,b,c).
 double DistPointTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c);
 
+//! The point of triangle (a,b,c) nearest `p`.
+Vertex3D ClosestPointOnTriangle(const Vertex3D &p, const Vertex3D &a, const Vertex3D &b, const Vertex3D &c);
+
 //! Distance between segment [p,q] and triangle (a,b,c). 0 if they intersect.
 double DistSegmentTriangle(const Vertex3D &p, const Vertex3D &q, const Vertex3D &a, const Vertex3D &b,
                            const Vertex3D &c);
@@ -59,5 +62,10 @@ struct ClosestPointPair {
 };
 
 ClosestPointPair Geom3DClosestPoints(const GeomModel &g1, const GeomModel &g2);
+
+//! Closest points between triangles (a1,b1,c1) and (a2,b2,c2), (on the first,
+//! on the second); their distance is DistTriangleTriangle's.
+ClosestPointPair ClosestPointPairTriangleTriangle(const Vertex3D &a1, const Vertex3D &b1, const Vertex3D &c1,
+                                                  const Vertex3D &a2, const Vertex3D &b2, const Vertex3D &c2);
 
 } // namespace duckdb_3d

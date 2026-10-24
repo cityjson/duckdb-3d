@@ -1,0 +1,64 @@
+# name: test/sql/st_3d_from_wkb_struct_json.test
+# description: the geometry_properties STRUCT overload binds when `surfaces` is the JSON type
+# group: [sql]
+
+require three_d
+
+require json
+
+require parquet
+
+require-env THREE_D_TEST_FIXTURES
+
+# CityParquet types geometry_properties_lod*.surfaces as the Parquet JSON logical
+# type, which DuckDB surfaces as JSON when the json extension is loaded (plain
+# VARCHAR otherwise). The STRUCT overload must bind on either.
+
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': '[{"type":"WallSurface"}]'::JSON, 'face_semantics': NULL::INTEGER[], 'shells': [[6, 6]]}
+      ::STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
+));
+----
+56.0
+
+query I
+SELECT ST_3DNumShells(ST_3DTryFromWKB(
+    ST_AsWKBHollowCube(),
+    {'type': 'Solid', 'surfaces': NULL::JSON, 'face_semantics': NULL::INTEGER[], 'shells': [[6, 6]]}
+      ::STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
+));
+----
+2
+
+# The shape a reader actually meets: written to Parquet, `surfaces` carries the
+# JSON logical type and reads back as JSON.
+statement ok
+COPY (
+    SELECT ST_AsWKBHollowCube() AS geometry_lod2_2,
+           {'type': 'Solid',
+            'surfaces': '[{"type":"GroundSurface"},{"type":"WallSurface"}]'::JSON,
+            'face_semantics': [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            'shells': [[6, 6]]}
+             ::STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][])
+             AS geometry_properties_lod2_2
+) TO '__TEST_DIR__/gp_surfaces_json.parquet' (FORMAT parquet);
+
+query II
+SELECT converted_type, logical_type
+FROM parquet_schema('__TEST_DIR__/gp_surfaces_json.parquet') WHERE name = 'surfaces';
+----
+JSON	JsonType()
+
+query I
+SELECT typeof(geometry_properties_lod2_2.surfaces) FROM '__TEST_DIR__/gp_surfaces_json.parquet';
+----
+JSON
+
+query II
+SELECT ST_3DNumShells(s), ST_3DVolume(s)
+FROM (SELECT ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s
+      FROM '__TEST_DIR__/gp_surfaces_json.parquet');
+----
+2	56.0

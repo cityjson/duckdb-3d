@@ -21,7 +21,7 @@ variable is exported; the `Makefile` exports it.
 
 ## Oracles
 
-Three independent sources, each authoritative for a different class of claim.
+Five independent sources, each authoritative for a different class of claim.
 
 ### 3DBAG published attributes — real-geometry measurement
 
@@ -84,7 +84,7 @@ container. `test/data/postgis_oracle/README.md` documents every column.
 | --- | --- |
 | `ST_3DArea`, `ST_Volume(ST_MakeSolid(·))` | `ST_3DSurfaceArea` / `ST_3DArea`, `ST_3DVolume` |
 | `ST_IsClosed` | `ST_3DIsClosed` |
-| `ST_Area(ST_ConvexHull(ST_Points(·)))` | `ST_3DConvexHull` (via `ST_3DFootprintArea`) |
+| `ST_Area(ST_ConvexHull(ST_Points(·)))` | `ST_3DFootprintHull` (via `ST_3DFootprintArea`) |
 | `ST_Area(ST_Force2D(·))` | `ST_3DFootprintArea` (halved on two-sided classes) |
 | `ST_XMin`…`ST_ZMax` | `ST_3DBounds`, `ST_3DZMin`, `ST_3DZMax` |
 | `ST_NDims`, `ST_CoordDim`, `ST_GeometryType` | `ST_NDims`, `ST_CoordDim`, `ST_3DGeometryType` |
@@ -98,10 +98,10 @@ container. `test/data/postgis_oracle/README.md` documents every column.
 
 Three comparisons are deliberately indirect:
 
-- **Geometry-returning functions are never round-tripped.** PostGIS emits EWKB, whose SRID
-  flag this extension's ISO parser rejects. Transforms are compared through the transformed
-  bounding box and a re-measurement of volume/area/length; `ST_3DShortestLine` and
-  `ST_3DClosestPoint` through their length and distance-to-`b`.
+- **Geometry-returning functions are compared through what they measure.** Transforms
+  through the transformed bounding box and a re-measurement of volume/area/length;
+  `ST_3DShortestLine` and `ST_3DClosestPoint` through their length and distance-to-`b`. The
+  live comparison below compares `ST_3DGeometryN` and `ST_3DGeomFromText` byte for byte.
 - **WKT is compared numerically, not as a string.** `kernel/geom_serialize.cpp` formats
   ordinates with `%.9g` while PostGIS emits round-trip precision, and PostGIS writes no space
   after the comma. The test extracts the numbers from both and compares them pairwise, token
@@ -118,8 +118,84 @@ Three comparisons are deliberately indirect:
 | `ST_3DCentroid` | PostGIS has no 3D centroid. `ST_Centroid` raises outright on a `PolyhedralSurface`, and on the other classes it is a 2D, XY-projected-area-weighted point — not this extension's 3D-area-weighted `Point Z` | `geom_3d_construct.test`, `docs/TESTING.md` §6 and §15 |
 | `ST_3DDimension`, `ST_3DNumGeometries` on a `PolyhedralSurface` | PostGIS reads a *closed* `PolyhedralSurface` as a solid (`ST_Dimension` = 3, and 2 for an open one) and `ST_NumGeometries` as its patch count. This extension reports the topological dimension of the surface (2) and treats the surface as one geometry | oracled on the `geom` rows; `st_3d_introspection.test`, `geom_3d_accessors.test` |
 | `ST_3DNumSolids`, `ST_3DNumShells`, `ST_3DNumFaces` | Shell and patch counting differ structurally: the `shells` sidecar partition is a CityGML concept PostGIS's flat `PolyhedralSurface` has no equivalent of | `test/cpp/test_inner_shell.cpp`, `st_3d_hollow_solid.test`, `st_3d_multisolid.test`, `cityjson_multisolid.test` |
-| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | PostGIS repairs or rejects; this extension flags without repairing. Its own report is authoritative | `st_3d_validation.test`, `test/cpp/test_validation.cpp`, `docs/TESTING.md` §8–9 |
-| `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_MakeSolid`, `ST_3DExtrude`, `ST_Force3D`, `ST_3DHasZ` | Import and construction contracts, with no PostGIS analogue. Their correctness is proven *downstream*: every oracled measurement above runs on geometry they produced, so a broken importer fails the area/volume/bbox comparisons | `st_3d_from_wkb*.test`, `geom_3d_construct.test`, `test/cpp/` |
+| `ST_3DValidationReport`, `ST_3DIsManifold`, `ST_3DIsOriented` | PostGIS repairs or rejects; this extension flags without repairing | val3dity (above), `st_3d_validation.test`, `test/cpp/test_validation.cpp`, `docs/TESTING.md` §8–9 |
+| The distance family on faces with holes or non-planar faces | See the live comparison above | `live_diff.py`'s independent computation; `geom_3d_distance.test`, `test/cpp/test_geom_distance.cpp` |
+| `ST_3DFromWKB`, `ST_3DTryFromWKB`, `ST_Geom3DFromWKB`, `ST_MakeSolid`, `ST_3DExtrude`, `ST_Force3D`, `ST_3DHasZ` | Import and construction contracts, with no PostGIS analogue. Their correctness is proven *downstream*: every oracled measurement above runs on geometry they produced, so a broken importer fails the area/volume/bbox comparisons | `st_3d_from_wkb*.test`, `cityparquet_round_trip.test`, `geom_3d_construct.test`, `test/cpp/` |
+
+### val3dity — validity
+
+[val3dity](https://github.com/tudelft3d/val3dity), built from source and run with its
+defaults (1 mm snapping, 1 cm planarity tolerance), is the reference for what
+`ST_3DValidationReport` decides. It is a development-time comparison, not a CI step. On the
+3DBAG Delft tile it agrees with `is_valid` on all 1116 LoD1.2 solids and on 1109 of the 1116
+LoD2.2 solids. The seven LoD2.2 differences are documented tolerances rather than missing
+checks: one non-planar roof (duckdb-3d does not test planarity), five solids whose faces
+collapse under 1 mm snapping (duckdb-3d does not snap), and one repeated consecutive vertex,
+which import drops (DESIGN_DOC §2.1). The checks val3dity has and this extension added —
+connectivity (305), non-manifold vertices (303), self-intersection (306, 401), cavities
+outside the exterior or inside each other (403, 401) — have no disagreement. The kernel
+tests in `test/cpp/test_validation.cpp` pin each check on constructed solids and on real
+3DBAG buildings, including that the verdict survives rotation and a change of unit.
+
+### Live comparison on real data — distance, solids, measures and elements
+
+`scripts/oracle/live_diff.py` runs the distance family on five published datasets (3DBAG
+Delft, the TU Delft LoD3 railway model, Rotterdam Delfshaven, Den Haag, Vienna) in duckdb-3d
+and a live PostGIS, and reports every disagreement: object pairs, face pairs and random
+points around faces, at thresholds 0, 0.5 and 2. Like `gen_golden.py`, it is a development
+tool. Each row is compared against the reference that is right for it:
+
+| Rows | Reference |
+| --- | --- |
+| Planar faces, no holes | PostGIS, to 1e-6 m |
+| Faces with holes | An independent computation in the script: rings projected onto the face's plane, even-odd containment, vertex and edge distances |
+| Non-planar faces | The same computation, within twice the faces' deviation from their planes; PostGIS reported beside it for information |
+| `ST_3DClosestPoint`, `ST_3DShortestLine` | Their definitions: the point lies on the first geometry, at the distance from the second |
+
+PostGIS is not the reference for the last three rows: its 3D point-in-polygon test ignores
+interior rings in the face's plane (a point at the centre of a 1 x 1 hole is 2.12 from the
+face, not 0.5), and it measures a non-planar face against a plane of its own fitting, which
+on Delft puts some faces 0.7 mm from planar 5 mm out. `test/sql/geom_3d_distance.test` pins
+both by construction.
+
+`--checks solids` compares the `SOLID_3D` overloads, which measure the volume, against
+SFCGAL's volume predicates on points and object pairs. `--checks measures` compares:
+
+| Function | Reference |
+| --- | --- |
+| `ST_3DArea(GEOM_3D)` | SFCGAL `ST_3DArea` per face, and each ring's Newell vector area on every row |
+| `ST_3DPerimeter(GEOM_3D)` | PostGIS on polygons; on surfaces the edges one patch uses (DESIGN_DOC §8.7) |
+| `ST_3DNumGeometries(GEOM_3D)` | PostGIS `ST_NumGeometries` |
+| `ST_3DCentroid(SOLID_3D)` | Signed tetrahedra over ear-clipped faces, within how far a different diagonal on a non-planar face moves the centroid |
+
+On the five datasets (seed 20261015) every row agrees: 82 047 faces against SFCGAL and
+105 087 geometries against the Newell area, 95 477 polygon and 9 610 surface perimeters,
+105 087 part counts and 6 226 solid centroids. SFCGAL is handed each face starting at a vertex
+whose successors are not collinear: it takes the plane from the first three vertices, and on
+eight Vienna wall faces whose first three are collinear it reports area 0. Two Den Haag
+centroids differ from the oracle by up to 1.5 cm only through the diagonal of two non-planar
+quads; with the same diagonals the two agree to 1e-14. On 4 103 of the 6 226 solids the faces
+are planar enough that the centroid is held to 1e-6 m; the largest difference elsewhere is
+7.6 cm, on a Den Haag building whose faces lie up to 30 cm from planar.
+
+`--checks elements` compares what takes a value apart or builds one from text:
+
+| Function | Reference |
+| --- | --- |
+| `ST_3DXMin` … `ST_3DZMax`, `ST_3DExtent` | PostGIS `ST_XMin` … `ST_ZMax`, `ST_3DExtent` |
+| `ST_3DGeometryN(GEOM_3D)` | PostGIS `ST_GeometryN`, byte for byte as WKB |
+| `ST_3DGeomFromText` | PostGIS `ST_GeomFromText` of the same text, as WKB |
+| CRS from EWKT and EWKB | PostGIS `ST_AsEWKT` / `ST_AsEWKB` of `ST_SetSRID` |
+| `ST_3DFaces`, `ST_3DExteriorShell` | PostGIS `ST_GeometryN` of the solid's surface after `ST_RemoveRepeatedPoints`, as WKB |
+| `ST_3DFaceAreas(SOLID_3D)` | SFCGAL `ST_3DArea` per face; each ring's Newell vector area on the faces SFCGAL refuses |
+| `ST_3DFaceSlopes`, `ST_3DFaceAzimuths` | Their definition, from the exterior ring's Newell normal |
+
+On the five datasets (seed 20261015) every row agrees: 105 087 geometries' bounds, parts,
+WKT and CRS round trips exact; 6 422 solids' faces and shells byte for byte; 92 311 face areas
+against SFCGAL to 1e-10 and 13 122 more against the Newell area; 413 025 face slopes and
+azimuths to 1.4e-14 degrees. Skipped rows are the ones the functions refuse or answer NULL by
+definition: 11 polygons the import cannot triangulate, 16 solids with a ring of fewer than
+three distinct vertices, and faces with no triangles.
 
 ### Metamorphic properties — dependency-free invariants
 
@@ -139,12 +215,12 @@ over the whole frozen 3DBAG corpus.
 | `test/data/multisolid.city.json`, `compositesolid.city.json` | `MultiSolid` / `CompositeSolid` import per solid, with shell grouping recovered from the sidecar (`test/sql/cityjson_multisolid.test`). Import does **not** raise on either class |
 | `test/data/unit_cube.city.json` | End-to-end `cityjson` → `three_d` smoke test |
 | `test/data/3dbag.city.jsonl` | Nine real 3DBAG buildings at LoD1.2 / 1.3 / 2.2. The WKB the PostGIS oracle freezes as its `NL.IMBAG.Pand.*` rows comes from here, and `test/sql/cityjson_3dbag_attributes.test` measures the same nine against 3DBAG's published attributes offline |
+| `test/data/railway_implicit/` | `vegetation.parquet` and `implicit_geometries.parquet` of the CityParquet package `cityparquet convert -o <dir> lib/cityparquet-rs/tests/fixtures/lod3_railway.city.json` writes (a build predating the Parquet JSON logical type for `surfaces` / `other`; the test reads neither, so a regenerated package serves equally): 15 implicit geometries over three relative geometries. `test/sql/st_3d_place_implicit.test` places each and checks its bounds against values computed from the CityJSON source directly (template vertices, matrix and decoded reference vertex), independent of either writer |
+| `test/data/3dbag_rs/` | The CityParquet package `cityparquet convert -o <dir> test/data/3dbag.city.jsonl` writes (`cityparquet-rs`). `test/sql/cityparquet_round_trip.test` imports every solid LoD from it, and from a package the `cityjson` extension writes at test time, and requires each solid to export the same WKB and carry the same validation report as the streamed CityJSONSeq, and each LoD0 footprint to keep its area |
+| `test/cpp/real_rings.hpp` | Real faces from the 3DBAG Delft tile and the railway fixture — rings pinched at a repeated vertex, a face with four holes, a twisted quad, collinear runs — that `test/cpp/test_triangulation.cpp` requires to triangulate completely, against Newell areas computed independently of any triangulation |
 
 ## Open work
 
-- **`ST_3DBounds` on `GEOM_3D`.** It is registered for `SOLID_3D` only, so the differential
-  oracle compares the full box on the `solid` rows and only `ST_3DZMin`/`ST_3DZMax` on the
-  `geom` rows. Extending the signature would let the whole box be oracled on every class.
 - **A hollow/multi-solid reference.** SFCGAL rejects the hollow cube as "not connected", so
   interior-shell subtraction has no differential oracle at all — only the kernel tests and
   the analytic 56/120 pins.

@@ -30,7 +30,7 @@ SELECT ST_3DIsOriented(solid) FROM solids;
 true
 
 # Test: ST_3DValidationReport returns struct with all fields
-query IIIIIIIIIIIII
+query IIIIIIIIIIIIIIII
 SELECT
     r.is_valid,
     r.is_closed,
@@ -43,14 +43,42 @@ SELECT
     r.non_manifold_edge_count,
     r.degenerate_face_count,
     r.orientation_error_count,
+    r.non_manifold_vertex_count,
+    r.disconnected_shell_count,
+    r.self_intersection_count,
     r.code,
     r.message
 FROM (SELECT ST_3DValidationReport(solid) AS r FROM solids);
 ----
-true	true	true	true	1	1	4	0	0	0	0	VALID	Valid solid
+true	true	true	true	1	1	4	0	0	0	0	0	0	0	VALID	Valid solid
 
-# Test: NULL propagation. Each validation function is overloaded over SOLID_3D /
-# BLOB, so an untyped NULL is ambiguous and must be cast.
+# Two cubes in one shell: overlapping, sharing a vertex, apart. Every edge is
+# used twice in opposite directions, so the edge checks pass; the shell is
+# still two parts, and the overlapping pair crosses (each of the six faces of
+# one cube that pokes into the other crosses two or three faces of it).
+query IIIIIII
+SELECT o, r.is_closed, r.disconnected_shell_count, r.non_manifold_vertex_count,
+       r.self_intersection_count > 0, r.is_valid, r.message
+FROM (SELECT o, ST_3DValidationReport(ST_3DFromWKB(ST_AsWKBTwoCubes(o))) AS r FROM (VALUES (0.5), (2.0), (5.0)) v(o))
+ORDER BY o;
+----
+0.5	true	1	0	true	false	Invalid solid: disconnected shells, self-intersecting faces
+2.0	true	1	0	false	false	Invalid solid: disconnected shells
+5.0	true	1	0	false	false	Invalid solid: disconnected shells
+
+# Volume refuses the overlapping pair, whose divergence sum counts the overlap
+# twice (16 for a union of 12.625), and keeps the separate parts' sum.
+statement error
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBTwoCubes(0.5)));
+----
+self-intersecting faces
+
+query I
+SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBTwoCubes(5.0)));
+----
+16.0
+
+# Test: NULL propagation.
 query IIII
 SELECT ST_3DIsClosed(NULL::SOLID_3D), ST_3DIsManifold(NULL::SOLID_3D), ST_3DIsOriented(NULL::SOLID_3D),
        ST_3DValidationReport(NULL::SOLID_3D) IS NULL;

@@ -1,0 +1,85 @@
+# name: test/sql/solid_3d_relations.test
+# description: SOLID_3D overloads of ST_3DDistance, ST_3DDWithin and ST_3DIntersects measure the volume
+# group: [sql]
+
+require three_d
+
+require-env THREE_D_TEST_FIXTURES
+
+# A solid is the volume its shells bound, cavities excluded. Every expected value
+# follows from the construction: the box [0,4]^3 (extruded), the box [0,10]^3
+# with a [4,6]^3 box inside it, and the fixture hollow cube [0,4]^3 with the
+# cavity [1,3]^3.
+
+statement ok
+CREATE TABLE s AS SELECT
+    ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 4 0 0, 4 4 0, 0 4 0, 0 0 0))'::GEOMETRY), 4.0) AS box,
+    ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((0 0 0, 10 0 0, 10 10 0, 0 10 0, 0 0 0))'::GEOMETRY), 10.0) AS big,
+    ST_3DExtrude(ST_Geom3DFromWKB('POLYGON Z ((4 4 4, 6 4 4, 6 6 4, 4 6 4, 4 4 4))'::GEOMETRY), 2.0) AS small,
+    ST_3DFromWKB(ST_AsWKBHollowCube(), '{"type": "Solid", "shells": [[6, 6]]}') AS hollow,
+    ST_3DFromWKB(ST_AsWKBOpenTetra()) AS open;
+
+# A point inside the volume is at distance 0 and intersects it, in either order.
+query IIIIII
+SELECT ST_3DDistance(box, p), ST_3DDistance(p, box), ST_3DIntersects(box, p), ST_3DIntersects(p, box),
+       ST_3DDWithin(box, p, 0.0), ST_3DDWithin(p, box, 0.0)
+FROM s, (SELECT ST_Geom3DFromWKB('POINT Z (2 2 2)'::GEOMETRY) AS p);
+----
+0.0	0.0	true	true	true	true
+
+# Outside, the distance is to the surface.
+query III
+SELECT ST_3DDistance(box, p), ST_3DIntersects(box, p), ST_3DDWithin(box, p, 1.5)
+FROM s, (SELECT ST_Geom3DFromWKB('POINT Z (2 2 6)'::GEOMETRY) AS p);
+----
+2.0	false	false
+
+# A polygon wholly inside the volume: 0 to the solid, 1 to its surface (the walls).
+query II
+SELECT ST_3DDistance(box, g), ST_3DDistance(ST_Geom3DFromWKB(ST_3DAsWKB(box)), g)
+FROM s, (SELECT ST_Geom3DFromWKB('POLYGON Z ((1 1 2, 3 1 2, 3 3 2, 1 3 2, 1 1 2))'::GEOMETRY) AS g);
+----
+0.0	1.0
+
+# A solid inside another.
+query IIII
+SELECT ST_3DDistance(big, small), ST_3DDistance(small, big), ST_3DIntersects(big, small), ST_3DDWithin(small, big, 0.0)
+FROM s;
+----
+0.0	0.0	true	true
+
+# A cavity is not part of the volume: a point at its centre is 1 from its walls.
+query IIIII
+SELECT ST_3DDistance(hollow, c), ST_3DIntersects(hollow, c), ST_3DDWithin(hollow, c, 0.9),
+       ST_3DDistance(hollow, m), ST_3DIntersects(hollow, m)
+FROM s, (SELECT ST_Geom3DFromWKB('POINT Z (2 2 2)'::GEOMETRY) AS c,
+                ST_Geom3DFromWKB('POINT Z (0.5 2 2)'::GEOMETRY) AS m);
+----
+1.0	false	false	0.0	true
+
+# A box in the cavity is apart from the hollow cube; one in its wall is not.
+query III
+SELECT ST_3DDistance(hollow, ST_3DTranslate(ST_3DScale(small, 0.5, 0.5, 0.5), -0.5, -0.5, -0.5)),
+       ST_3DIntersects(hollow, ST_3DTranslate(ST_3DScale(small, 0.5, 0.5, 0.5), -0.5, -0.5, -0.5)),
+       ST_3DIntersects(hollow, ST_3DTranslate(ST_3DScale(small, 0.25, 0.25, 0.25), -0.75, -0.75, -0.75))
+FROM s;
+----
+0.5	false	true
+
+# An invalid solid bounds no volume: the functions raise, and TRY gives NULL.
+statement error
+SELECT ST_3DDistance(open, box) FROM s;
+----
+Invalid Input Error: the solid is not valid
+
+query III
+SELECT TRY(ST_3DDistance(open, box)), TRY(ST_3DIntersects(box, open)), TRY(ST_3DDWithin(open, box, 1.0)) FROM s;
+----
+NULL	NULL	NULL
+
+# NULL propagation.
+query III
+SELECT ST_3DDistance(NULL::SOLID_3D, box), ST_3DIntersects(box, NULL::GEOM_3D), ST_3DDWithin(box, NULL::SOLID_3D, 1.0)
+FROM s;
+----
+NULL	NULL	NULL

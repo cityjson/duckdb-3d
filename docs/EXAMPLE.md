@@ -13,9 +13,9 @@ extension-composition mechanics and troubleshooting, see
 
 `three_d` never parses CityJSON itself. The division of labour is:
 
-- **`cityjson`** reads CityJSON / CityJSONSeq and, in per-LoD mode (`lod => '...'`),
-  emits one `geometry_lod<X> BLOB` (WKB) column per LoD present, each paired with a
-  sidecar `geometry_properties_lod<X> STRUCT`.
+- **`cityjson`** reads CityJSON / CityJSONSeq and emits one `geometry_lod<X> BLOB` (WKB)
+  column per LoD present, each paired with a sidecar `geometry_properties_lod<X> STRUCT`;
+  `lod => '...'` narrows the output to that one LoD.
 - **`three_d`** consumes that pair through
   `ST_3DFromWKB(geometry_lod<X>, geometry_properties_lod<X>)` and gives you a `SOLID_3D`
   you can validate, measure, and transform.
@@ -37,9 +37,9 @@ GEN=ninja make                                   # ./build/release/duckdb, three
 (cd ../duckdb-cityjson && GEN=ninja make release)
 ```
 
-`cityjson` is loaded **by path** — the published community build is a different, older
-extension that still emits a flat `geometry` column, and none of the SQL below binds
-against it:
+`cityjson` is loaded **by path** from the sibling build, which is what every example below
+was run against. On DuckDB v1.5.5 the community build (`INSTALL cityjson FROM community`)
+emits the same column pairs and runs this walkthrough unchanged:
 
 ```sql
 LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
@@ -158,7 +158,8 @@ WHERE NOT ST_3DValidationReport(solid).is_valid
 LIMIT 3;
 -- report = {is_valid, is_closed, is_manifold, is_oriented, solid_count, shell_count,
 --           face_count, open_edge_count, non_manifold_edge_count, degenerate_face_count,
---           orientation_error_count, code, message}
+--           orientation_error_count, non_manifold_vertex_count, disconnected_shell_count,
+--           self_intersection_count, code, message}
 ```
 
 Compute total built volume over only the valid solids:
@@ -246,7 +247,7 @@ SELECT ST_3DTranslate(solid, 100, 50, 0) FROM parts LIMIT 1;
 ```
 
 Available transforms: `ST_3DTranslate`, `ST_3DScale`, `ST_3DRotateX/Y/Z`, `ST_Force3D`,
-`ST_3DConvexHull` (2D XY hull), `ST_IsPlanar`.
+`ST_3DConvexHull` (3D hull), `ST_3DFootprintHull` (2D XY hull), `ST_IsPlanar`.
 
 Construction:
 
@@ -258,15 +259,16 @@ Construction:
 
 ## Gotchas checklist
 
-- **Always pass `lod => '...'`** to `read_cityjson` / `read_cityjsonseq`. Without it,
-  `cityjson` emits per-LoD `geom_lod*` structs that `ST_3DFromWKB` cannot consume.
+- **Pass `lod => '...'`** to `read_cityjson` / `read_cityjsonseq` to keep one LoD.
+  Without it, `cityjson` emits a `geometry_lod<X>` / `geometry_properties_lod<X>` pair
+  for every LoD in the file (`lod0_0`, `lod1_2`, `lod1_3` and `lod2_2` on Delft), and any
+  of them can go to `ST_3DFromWKB`.
 - **The LoD suffix is normalised.** `lod => '2'` yields `geometry_lod2_0`, and the object
   may carry several LoDs at once — `DESCRIBE` the reader to see which columns exist.
 - **Filter `WHERE geometry_lod<X> IS NOT NULL`** upstream — objects lacking the requested
   LoD have a NULL geometry.
-- **Load `cityjson` by path from the sibling build.** The community-published extension
-  is older and uses the flat `geometry` / `geometry_properties VARCHAR` shape; this
-  document targets only the current one.
+- **Load `cityjson` by path from the sibling build.** It is the build this document was
+  run against; the community build for DuckDB v1.5.5 emits the same column shape.
 - **Attributes are on the parent `Building`**, geometry is on the `BuildingPart`; join
   via `parents` / `children` (§2).
 - **Validate before `ST_3DVolume` / `ST_3DSurfaceArea`** — they raise on invalid solids.

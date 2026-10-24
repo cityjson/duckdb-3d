@@ -194,6 +194,30 @@ TEST_CASE("BuildSolidModel removes duplicate consecutive ring vertices", "[model
 	REQUIRE(ring_end - ring_start == 3);
 }
 
+TEST_CASE("BuildSolidModel drops a doubled closing vertex", "[model_builder]") {
+	// Den Haag writes rings as a, b, c, a, a: once WKB's closing vertex is
+	// stripped, the last vertex repeats the first, the ring's wrap-around pair.
+	WKBBuilder b;
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.WriteU32LE(1);
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolygonZ);
+	b.WriteU32LE(1);
+	b.WriteU32LE(5);
+	const double ring[5][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, 0}};
+	for (auto &v : ring) {
+		b.WriteF64LE(v[0]);
+		b.WriteF64LE(v[1]);
+		b.WriteF64LE(v[2]);
+	}
+
+	auto model = BuildSolidModel(ParseWKB(b.buffer.data(), b.buffer.size()));
+
+	REQUIRE(model.FaceCount() == 1);
+	REQUIRE(model.ring_vertex_offsets[1] - model.ring_vertex_offsets[0] == 3);
+}
+
 TEST_CASE("WKB round-trip: tetrahedron", "[wkb_export]") {
 	auto wkb_in = MakeTetrahedronWKB();
 	auto surfaces = ParseWKB(wkb_in.data(), wkb_in.size());
@@ -271,4 +295,30 @@ TEST_CASE("Full payload round-trip: WKB -> SolidModel -> Payload -> SolidModel -
 	REQUIRE(model3.SolidCount() == 1);
 	REQUIRE(model3.FaceCount() == 6);
 	REQUIRE(model3.vertices.size() == 8);
+}
+
+TEST_CASE("BuildSolidModel shares a vertex written as +0 in one face and -0 in another", "[model_builder]") {
+	// Vertex equality is operator== on the coordinates, under which -0 == +0, so
+	// the tetrahedron still has four vertices and its shell still closes.
+	WKBBuilder b;
+	b.WriteByteOrder();
+	b.WriteGeometryType(WKBGeometryType::PolyhedralSurfaceZ);
+	b.WriteU32LE(4);
+	Vertex3D v0 = {0, 0, 0}, v0neg = {-0.0, -0.0, -0.0}, v1 = {1, 0, 0}, v2 = {0.5, 1, 0}, v3 = {0.5, 0.5, 1};
+	auto writeFace = [&](Vertex3D a, Vertex3D vb, Vertex3D c) {
+		b.WriteByteOrder();
+		b.WriteGeometryType(WKBGeometryType::PolygonZ);
+		b.WriteU32LE(1);
+		b.WriteRing({a, vb, c});
+	};
+	writeFace(v0, v2, v1);
+	writeFace(v0neg, v1, v3);
+	writeFace(v1, v2, v3);
+	writeFace(v2, v0neg, v3);
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+	auto model = BuildSolidModel(surfaces);
+
+	REQUIRE(model.vertices.size() == 4);
+	REQUIRE(model.validation.is_closed);
 }

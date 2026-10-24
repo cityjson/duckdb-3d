@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "kernel/model_builder.hpp"
 #include "kernel/wkb_parser.hpp"
 #include <cstring>
 
@@ -202,4 +203,40 @@ TEST_CASE("WKB rejects GeometryCollection with non-PolyhedralSurface child", "[w
 	b.buffer.insert(b.buffer.end(), poly.begin(), poly.end());
 
 	REQUIRE_THROWS_WITH(ParseWKB(b.buffer.data(), b.buffer.size()), Catch::Contains("Unsupported"));
+}
+
+TEST_CASE("WKB parse EWKB PolyhedralSurface Z with an SRID", "[wkb_parser][ewkb]") {
+	WKBBuilder b;
+	b.WriteByteOrder();
+	b.WriteU32LE(0xA000000F); // PolyhedralSurface | Z | SRID
+	b.WriteU32LE(28992);
+	b.WriteU32LE(1);
+	b.WriteByteOrder();
+	b.WriteU32LE(0x80000003); // Polygon | Z
+	b.WriteU32LE(1);
+	b.WriteRing({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+
+	REQUIRE(surfaces.size() == 1);
+	REQUIRE(surfaces[0].polygon_count == 1);
+	REQUIRE(surfaces[0].crs == "EPSG:28992");
+	REQUIRE(BuildSolidModel(surfaces).crs == "EPSG:28992");
+}
+
+TEST_CASE("WKB parse EWKB GeometryCollection Z keeps the outer SRID", "[wkb_parser][ewkb]") {
+	auto tri = MakeTriangleWKB();
+	WKBBuilder b;
+	b.WriteByteOrder();
+	b.WriteU32LE(0xA0000007); // GeometryCollection | Z | SRID
+	b.WriteU32LE(7415);
+	b.WriteU32LE(2);
+	b.buffer.insert(b.buffer.end(), tri.begin(), tri.end());
+	b.buffer.insert(b.buffer.end(), tri.begin(), tri.end());
+
+	auto surfaces = ParseWKB(b.buffer.data(), b.buffer.size());
+
+	REQUIRE(surfaces.size() == 2);
+	REQUIRE(surfaces[0].crs == "EPSG:7415");
+	REQUIRE(surfaces[1].crs == "EPSG:7415");
 }

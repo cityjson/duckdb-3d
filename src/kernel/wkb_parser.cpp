@@ -1,6 +1,6 @@
 #include "kernel/wkb_parser.hpp"
 #include "kernel/geometry_math.hpp"
-#include "kernel/wkb_io.hpp"
+#include "kernel/byte_io.hpp"
 #include <stdexcept>
 
 namespace duckdb_3d {
@@ -14,7 +14,7 @@ public:
 	WKBReader(const uint8_t *data, size_t size) : WkbCursor(data, size, "WKB data truncated") {
 	}
 	WKBGeometryType ReadGeometryType() {
-		return static_cast<WKBGeometryType>(ReadU32());
+		return static_cast<WKBGeometryType>(ReadTypeCode());
 	}
 };
 
@@ -43,24 +43,23 @@ ParsedPolyhedralSurface ParsePolyhedralSurface(WKBReader &reader) {
 
 		for (uint32_t r = 0; r < num_rings; r++) {
 			uint32_t num_points = reader.ReadU32();
-			std::vector<Vertex3D> ring_pts;
-			ring_pts.reserve(num_points);
 
+			// The ring's points go straight into the surface's vertex array.
+			size_t ring_start = result.vertices.size();
 			for (uint32_t i = 0; i < num_points; i++) {
 				Vertex3D v;
 				v.x = reader.ReadF64();
 				v.y = reader.ReadF64();
 				v.z = reader.ReadF64();
-				ring_pts.push_back(v);
+				result.vertices.push_back(v);
 			}
 
 			// Remove WKB closing vertex if it duplicates the first
-			if (ring_pts.size() >= 2 && IsClosingVertex(ring_pts.front(), ring_pts.back())) {
-				ring_pts.pop_back();
+			if (num_points >= 2 && IsClosingVertex(result.vertices[ring_start], result.vertices.back())) {
+				result.vertices.pop_back();
 			}
 
-			result.ring_vertex_counts.push_back(static_cast<uint32_t>(ring_pts.size()));
-			result.vertices.insert(result.vertices.end(), ring_pts.begin(), ring_pts.end());
+			result.ring_vertex_counts.push_back(static_cast<uint32_t>(result.vertices.size() - ring_start));
 		}
 
 		reader.swap_bytes = outer_swap;
@@ -99,6 +98,9 @@ std::vector<ParsedPolyhedralSurface> ParseWKB(const uint8_t *data, size_t size) 
 	} else {
 		throw std::runtime_error("Unsupported WKB geometry type for SOLID_3D import: type code " +
 		                         std::to_string(static_cast<uint32_t>(geom_type)));
+	}
+	for (auto &surface : results) {
+		surface.crs = reader.SridCrs();
 	}
 
 	return results;

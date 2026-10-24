@@ -188,7 +188,7 @@ void WkbCubeFaces(std::vector<uint8_t> &buf, double lo, double hi, bool reversed
 
 // Test helper: a hollow cube — outer cube [0,4]^3 (outward) enclosing inner cube
 // [1,3]^3 (inward) as a single 12-face PolyhedralSurface Z. Paired with
-// geometry_properties {"type":"Solid","shells":[6,6]} it imports as one
+// geometry_properties {"type":"Solid","shells":[[6,6]]} it imports as one
 // solid with two shells: volume 64-8=56, surface area 96+24=120.
 static std::vector<uint8_t> BuildHollowCubeWKB() {
 	std::vector<uint8_t> buf;
@@ -240,6 +240,22 @@ static void ST_AsWKBMultiCubeSepFun(DataChunk &args, ExpressionState &state, Vec
 		auto wkb = BuildMultiCubeWKB(separation);
 		auto blob_str = string_t(reinterpret_cast<const char *>(wkb.data()), wkb.size());
 		return StringVector::AddStringOrBlob(result, blob_str);
+	});
+}
+
+// Test helper: two outward cubes [0,2]^3 and [o,o+2]^3 as ONE PolyhedralSurface
+// Z, so they import as one shell. o = 0.5 overlaps them (self-intersecting),
+// o = 2 makes them share one vertex, o = 5 keeps them apart: all three are
+// disconnected shells.
+static void ST_AsWKBTwoCubesFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<double, string_t>(args.data[0], result, args.size(), [&](double offset) {
+		std::vector<uint8_t> buf;
+		WkbU8(buf, 1);
+		WkbU32(buf, 1015); // PolyhedralSurfaceZ
+		WkbU32(buf, 12);
+		WkbCubeFaces(buf, 0.0, 2.0, /*reversed=*/false);
+		WkbCubeFaces(buf, offset, offset + 2.0, /*reversed=*/false);
+		return StringVector::AddStringOrBlob(result, string_t(reinterpret_cast<const char *>(buf.data()), buf.size()));
 	});
 }
 
@@ -499,6 +515,8 @@ void RegisterFixtureFunctions(ExtensionLoader &loader) {
 	multicube_set.AddFunction(ScalarFunction({}, LogicalType::BLOB, ST_AsWKBMultiCubeFun));
 	multicube_set.AddFunction(ScalarFunction({LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBMultiCubeSepFun));
 	loader.RegisterFunction(multicube_set);
+	loader.RegisterFunction(
+	    ScalarFunction("st_aswkbtwocubes", {LogicalType::DOUBLE}, LogicalType::BLOB, ST_AsWKBTwoCubesFun));
 	loader.RegisterFunction(ScalarFunction("st_aswkbpointz",
 	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
 	                                       LogicalType::BLOB, ST_AsWKBPointZFun));

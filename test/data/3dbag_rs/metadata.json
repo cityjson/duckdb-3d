@@ -1,0 +1,328 @@
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://cityjson.github.io/stac-city3d/v0.2.0/schema.json",
+    "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json"
+  ],
+  "id": "bag_rs",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [
+          4.0570305098740445,
+          51.48417654183347
+        ],
+        [
+          4.058714137687267,
+          51.48417654183347
+        ],
+        [
+          4.058714137687267,
+          51.49031096599591
+        ],
+        [
+          4.0570305098740445,
+          51.49031096599591
+        ],
+        [
+          4.0570305098740445,
+          51.48417654183347
+        ]
+      ]
+    ]
+  },
+  "bbox": [
+    4.0570305098740445,
+    51.48417654183347,
+    -1.6670000553131104,
+    4.058714137687267,
+    51.49031096599591,
+    15.133597373962402
+  ],
+  "properties": {
+    "datetime": "2026-10-08T10:43:55Z",
+    "city3d:version": "2.0",
+    "city3d:city_objects": 18,
+    "city3d:lods": [
+      "0.0",
+      "1.2",
+      "1.3",
+      "2.2"
+    ],
+    "city3d:co_types": [
+      "Building",
+      "BuildingPart"
+    ],
+    "city3d:attributes": [
+      {
+        "name": "b3_bag_bag_overlap",
+        "type": "Number"
+      },
+      {
+        "name": "b3_bouwlagen",
+        "type": "String"
+      },
+      {
+        "name": "b3_dak_type",
+        "type": "String"
+      },
+      {
+        "name": "b3_extrusie",
+        "type": "String"
+      },
+      {
+        "name": "b3_h_dak_50p",
+        "type": "Number"
+      },
+      {
+        "name": "b3_h_dak_70p",
+        "type": "Number"
+      },
+      {
+        "name": "b3_h_dak_max",
+        "type": "Number"
+      },
+      {
+        "name": "b3_h_dak_min",
+        "type": "Number"
+      },
+      {
+        "name": "b3_h_maaiveld",
+        "type": "Number"
+      },
+      {
+        "name": "b3_h_nok",
+        "type": "String"
+      },
+      {
+        "name": "b3_is_glas_dak",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_kas_warenhuis",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_kwaliteitsindicator",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_mutatie_ahn3_ahn4",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_mutatie_ahn4_ahn5",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_n_nok",
+        "type": "Number"
+      },
+      {
+        "name": "b3_n_vlakken",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_fractie_ahn3",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_fractie_ahn4",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_fractie_ahn5",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_radius_ahn3",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_radius_ahn4",
+        "type": "Number"
+      },
+      {
+        "name": "b3_nodata_radius_ahn5",
+        "type": "Number"
+      },
+      {
+        "name": "b3_opp_buitenmuur",
+        "type": "Number"
+      },
+      {
+        "name": "b3_opp_dak_plat",
+        "type": "Number"
+      },
+      {
+        "name": "b3_opp_dak_schuin",
+        "type": "Number"
+      },
+      {
+        "name": "b3_opp_grond",
+        "type": "Number"
+      },
+      {
+        "name": "b3_opp_scheidingsmuur",
+        "type": "Number"
+      },
+      {
+        "name": "b3_puntdichtheid_ahn3",
+        "type": "Number"
+      },
+      {
+        "name": "b3_puntdichtheid_ahn4",
+        "type": "Number"
+      },
+      {
+        "name": "b3_puntdichtheid_ahn5",
+        "type": "Number"
+      },
+      {
+        "name": "b3_pw_bron",
+        "type": "String"
+      },
+      {
+        "name": "b3_pw_datum",
+        "type": "Number"
+      },
+      {
+        "name": "b3_pw_onvoldoende",
+        "type": "Boolean"
+      },
+      {
+        "name": "b3_pw_selectie_reden",
+        "type": "String"
+      },
+      {
+        "name": "b3_rmse_lod12",
+        "type": "Number"
+      },
+      {
+        "name": "b3_rmse_lod13",
+        "type": "Number"
+      },
+      {
+        "name": "b3_rmse_lod22",
+        "type": "Number"
+      },
+      {
+        "name": "b3_t_run",
+        "type": "Number"
+      },
+      {
+        "name": "b3_val3dity_lod12",
+        "type": "String"
+      },
+      {
+        "name": "b3_val3dity_lod13",
+        "type": "String"
+      },
+      {
+        "name": "b3_val3dity_lod22",
+        "type": "String"
+      },
+      {
+        "name": "b3_volume_lod12",
+        "type": "Number"
+      },
+      {
+        "name": "b3_volume_lod13",
+        "type": "Number"
+      },
+      {
+        "name": "b3_volume_lod22",
+        "type": "Number"
+      },
+      {
+        "name": "begingeldigheid",
+        "type": "Date"
+      },
+      {
+        "name": "documentdatum",
+        "type": "Date"
+      },
+      {
+        "name": "documentnummer",
+        "type": "String"
+      },
+      {
+        "name": "eindgeldigheid",
+        "type": "String"
+      },
+      {
+        "name": "eindregistratie",
+        "type": "String"
+      },
+      {
+        "name": "fid",
+        "type": "Number"
+      },
+      {
+        "name": "geconstateerd",
+        "type": "Boolean"
+      },
+      {
+        "name": "identificatie",
+        "type": "String"
+      },
+      {
+        "name": "oorspronkelijkbouwjaar",
+        "type": "Number"
+      },
+      {
+        "name": "status",
+        "type": "String"
+      },
+      {
+        "name": "tijdstipeindregistratielv",
+        "type": "String"
+      },
+      {
+        "name": "tijdstipinactief",
+        "type": "String"
+      },
+      {
+        "name": "tijdstipinactieflv",
+        "type": "String"
+      },
+      {
+        "name": "tijdstipnietbaglv",
+        "type": "String"
+      },
+      {
+        "name": "tijdstipregistratie",
+        "type": "Date"
+      },
+      {
+        "name": "tijdstipregistratielv",
+        "type": "Date"
+      },
+      {
+        "name": "voorkomenidentificatie",
+        "type": "Number"
+      }
+    ],
+    "city3d:semantic_surfaces": true,
+    "city3d:textures": false,
+    "city3d:materials": false,
+    "cityparquet:version": "0.1.0-draft",
+    "proj:code": "EPSG:7415"
+  },
+  "links": [],
+  "assets": {
+    "building.parquet": {
+      "href": "./building.parquet",
+      "type": "application/vnd.apache.parquet",
+      "roles": [
+        "data",
+        "cityparquet-objects"
+      ],
+      "file:size": 79813,
+      "file:checksum": "1220edf20ec3ff9423b013b09160fd2eb4721a52fc96b3ad74b55d02e5dfa5215eda"
+    }
+  }
+}

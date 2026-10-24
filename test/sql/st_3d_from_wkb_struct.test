@@ -152,3 +152,15 @@ SELECT ST_3DNumShells(ST_3DFromWKB(wkb, gp)) FROM rows ORDER BY 1;
 ----
 1
 2
+
+# The same holds for the STRUCT: an empty `shells` list is present and malformed,
+# while a NULL one is absent.
+statement error
+SELECT ST_3DFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': []::INTEGER[][]});
+----
+shells solid count (0)
+
+query I
+SELECT ST_3DTryFromWKB(ST_AsWKBHollowCube(), {'type': 'Solid', 'shells': []::INTEGER[][]}) IS NULL;
+----
+true

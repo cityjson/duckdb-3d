@@ -1,0 +1,59 @@
+# name: test/sql/st_3d_convex_hull.test
+# description: ST_3DConvexHull is the 3D hull; ST_3DFootprintHull the XY hull at minimum Z
+# group: [sql]
+
+require three_d
+
+# The 125 points of a 5x5x5 lattice: the hull keeps the 8 corners and merges
+# coplanar triangles into one square per side, wound outward, so ST_MakeSolid
+# accepts it as it stands.
+query IIII
+WITH g AS (
+    SELECT ST_Geom3DFromWKB(('MULTIPOINT Z (' || string_agg(x || ' ' || y || ' ' || z, ', ') || ')')::GEOMETRY) AS g
+    FROM range(5) a(x), range(5) b(y), range(5) c(z)
+), h AS (SELECT ST_3DConvexHull(g) AS h FROM g)
+SELECT ST_3DGeometryType(h), ST_3DNumFaces(ST_MakeSolid(h)), ST_3DVolume(ST_MakeSolid(h)),
+       ST_3DSurfaceArea(ST_MakeSolid(h))
+FROM h;
+----
+ST_PolyhedralSurface	6	64.0	96.0
+
+# A tetrahedron with a point inside it.
+query II
+SELECT ST_3DNumFaces(ST_MakeSolid(h)), ST_3DVolume(ST_MakeSolid(h)) * 6
+FROM (SELECT ST_3DConvexHull(ST_Geom3DFromWKB('MULTIPOINT Z (0 0 0, 1 0 0, 0 1 0, 0 0 1, 0.1 0.1 0.1)'::GEOMETRY)) AS h);
+----
+4	1.0
+
+# Lower-dimensional inputs give the hull of their own dimension.
+query III
+SELECT ST_3DAsText(ST_3DConvexHull(ST_Geom3DFromWKB('MULTIPOINT Z (0 0 0, 2 0 2, 2 2 2, 0 2 0, 1 1 1, 1 0 1)'::GEOMETRY))),
+       ST_3DAsText(ST_3DConvexHull(ST_Geom3DFromWKB('MULTIPOINT Z (1 0 2, 3 0 4, 0 0 1, 2 0 3)'::GEOMETRY))),
+       ST_3DAsText(ST_3DConvexHull(ST_Geom3DFromWKB('POINT Z (5 5 7)'::GEOMETRY)));
+----
+POLYGON Z ((0 0 0, 2 0 2, 2 2 2, 0 2 0, 0 0 0))	LINESTRING Z (0 0 1, 3 0 4)	POINT Z (5 5 7)
+
+# On a SOLID_3D: the hull of an L-shaped prism is the prism over the L's hull,
+# a pentagon of area 3.5, so 7 faces and volume 3.5 * 2.
+query II
+SELECT ST_3DNumFaces(ST_MakeSolid(h)), ST_3DVolume(ST_MakeSolid(h))
+FROM (SELECT ST_3DConvexHull(ST_3DExtrude(ST_Geom3DFromWKB(
+    'POLYGON Z ((0 0 0, 2 0 0, 2 1 0, 1 1 0, 1 2 0, 0 2 0, 0 0 0))'::GEOMETRY), 2.0)) AS h);
+----
+7	7.0
+
+# ST_3DFootprintHull: the XY hull of a tilted triangle, at its minimum Z.
+query I
+SELECT ST_3DAsText(ST_3DFootprintHull(ST_Geom3DFromWKB('POLYGON Z ((0 0 1, 4 0 3, 0 3 5, 0 0 1))'::GEOMETRY)));
+----
+POLYGON Z ((0 0 1, 4 0 1, 0 3 1, 0 0 1))
+
+query II
+SELECT ST_3DConvexHull(NULL::GEOM_3D), ST_3DFootprintHull(NULL::GEOM_3D);
+----
+NULL	NULL
+
+query I
+SELECT ST_3DConvexHull(NULL::SOLID_3D);
+----
+NULL

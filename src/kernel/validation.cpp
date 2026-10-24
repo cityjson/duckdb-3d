@@ -1,6 +1,6 @@
 #include "kernel/validation.hpp"
 #include "kernel/geometry_math.hpp"
-#include <unordered_map>
+#include "kernel/self_intersection.hpp"
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -9,39 +9,29 @@ namespace duckdb_3d {
 
 namespace {
 
-//! An ordered edge (v_from, v_to)
-struct DirectedEdge {
-	uint32_t from;
-	uint32_t to;
-};
-
-//! An unordered edge for counting (min, max)
-struct UndirectedEdge {
-	uint32_t a;
-	uint32_t b;
-
-	UndirectedEdge(uint32_t from, uint32_t to) : a(std::min(from, to)), b(std::max(from, to)) {
-	}
-
-	bool operator==(const UndirectedEdge &other) const {
-		return a == other.a && b == other.b;
-	}
-};
-
-struct UndirectedEdgeHash {
-	size_t operator()(const UndirectedEdge &e) const {
-		size_t h = std::hash<uint32_t> {}(e.a);
-		h ^= std::hash<uint32_t> {}(e.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
-		return h;
-	}
-};
-
 double Magnitude(const Vertex3D &v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-//! Check if a face is degenerate (area near zero).
-//! Uses the sum of all ring area vectors to account for faces with holes.
+//! Squared distance from a ring's first vertex to its farthest vertex: the
+//! length scale a ring's area is compared against.
+double RingExtent2(const SolidModel &model, uint32_t ring_idx) {
+	uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+	uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
+	const auto &o = model.vertices[model.ring_vertex_indices[vi_start]];
+	double extent2 = 0;
+	for (uint32_t i = vi_start + 1; i < vi_end; i++) {
+		const auto &v = model.vertices[model.ring_vertex_indices[i]];
+		double dx = v.x - o.x, dy = v.y - o.y, dz = v.z - o.z;
+		extent2 = std::max(extent2, dx * dx + dy * dy + dz * dz);
+	}
+	return extent2;
+}
+
+//! Check if a face is degenerate: fewer than 3 distinct vertices in a ring, an
+//! area near zero (the sum of all ring area vectors, to account for holes), or
+//! a triangulation that failed. "Near zero" is relative to the ring's own
+//! extent (kEpsRelative), so the verdict does not depend on the unit of length.
 bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 	uint32_t ring_start = model.face_ring_offsets[face_idx];
 	uint32_t ring_end = model.face_ring_offsets[face_idx + 1];
@@ -58,7 +48,7 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 		}
 
 		auto ring_area = NewellRingAreaVector(model, ring_idx);
-		if (Magnitude(ring_area) < kEpsAbsolute) {
+		if (!(Magnitude(ring_area) > kEpsRelative * RingExtent2(model, ring_idx))) {
 			return true;
 		}
 
@@ -67,30 +57,18 @@ bool IsFaceDegenerate(const SolidModel &model, uint32_t face_idx) {
 		face_area.z += ring_area.z;
 	}
 
-	return Magnitude(face_area) < kEpsAbsolute;
-}
-
-//! Collect directed edges from a shell's faces
-void CollectShellEdges(const SolidModel &model, uint32_t shell_idx, std::vector<DirectedEdge> &directed_edges) {
-	uint32_t face_start = model.shell_face_offsets[shell_idx];
-	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
-
-	for (uint32_t f = face_start; f < face_end; f++) {
-		uint32_t ring_start = model.face_ring_offsets[f];
-		uint32_t ring_end = model.face_ring_offsets[f + 1];
-
-		for (uint32_t ring_idx = ring_start; ring_idx < ring_end; ring_idx++) {
-			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
-			uint32_t vi_end = model.ring_vertex_offsets[ring_idx + 1];
-			uint32_t n = vi_end - vi_start;
-
-			for (uint32_t i = 0; i < n; i++) {
-				uint32_t from = model.ring_vertex_indices[vi_start + i];
-				uint32_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
-				directed_edges.push_back({from, to});
-			}
-		}
+	if (!(Magnitude(face_area) > kEpsRelative * RingExtent2(model, ring_start))) {
+		return true;
 	}
+
+	// A face the triangulator could not tile keeps an empty triangle range
+	// rather than a partial one (kernel/triangulation.cpp); it has no usable
+	// triangles for volume, so it is degenerate.
+	if (model.face_triangle_offsets.size() == model.FaceCount() + 1 &&
+	    model.face_triangle_offsets[face_idx + 1] == model.face_triangle_offsets[face_idx]) {
+		return true;
+	}
+	return false;
 }
 
 struct ShellValidationResult {
@@ -102,61 +80,70 @@ struct ShellValidationResult {
 	bool is_oriented = true;
 };
 
-ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t shell_idx) {
+//! Edge keys for one shell, reused from shell to shell so validation allocates
+//! once per solid rather than once per shell.
+struct EdgeScratch {
+	std::vector<uint64_t> directed;   //!< (from << 32) | to, one per ring edge
+	std::vector<uint64_t> undirected; //!< (min << 32) | max, one per ring edge
+};
+
+//! Calls `f(run_length)` for each run of equal values in a sorted vector.
+template <class F>
+void ForEachRun(const std::vector<uint64_t> &sorted, F &&f) {
+	for (size_t i = 0, n = sorted.size(); i < n;) {
+		size_t j = i + 1;
+		while (j < n && sorted[j] == sorted[i]) {
+			j++;
+		}
+		f(j - i);
+		i = j;
+	}
+}
+
+//! Closedness, manifoldness and winding consistency of one shell, from its ring
+//! edges. An undirected edge used once is open and one used more than twice is
+//! non-manifold; a directed edge used more than once means two faces traverse it
+//! the same way, an orientation error. (A directed edge used once with no reverse
+//! is used once undirected, so it is open, not an orientation error.) Counting by
+//! sorting the edge keys gives the same counts a hash map would.
+ShellValidationResult ValidateShellTopology(const SolidModel &model, uint32_t shell_idx, EdgeScratch &edges) {
 	ShellValidationResult result;
+	edges.directed.clear();
+	edges.undirected.clear();
 
-	std::vector<DirectedEdge> directed_edges;
-	CollectShellEdges(model, shell_idx, directed_edges);
-
-	// Count directed edges per undirected edge
-	// For closedness: each undirected edge should appear exactly 2 times total
-	// For orientation: each directed edge (a,b) should have a matching (b,a)
-	std::unordered_map<UndirectedEdge, uint32_t, UndirectedEdgeHash> undirected_count;
-	// Count directed edge occurrences using a pair hash
-	struct PairHash {
-		size_t operator()(const std::pair<uint32_t, uint32_t> &p) const {
-			size_t h = std::hash<uint32_t> {}(p.first);
-			h ^= std::hash<uint32_t> {}(p.second) + 0x9e3779b9 + (h << 6) + (h >> 2);
-			return h;
-		}
-	};
-	std::unordered_map<std::pair<uint32_t, uint32_t>, uint32_t, PairHash> directed_count;
-
-	for (auto &e : directed_edges) {
-		undirected_count[UndirectedEdge(e.from, e.to)]++;
-		directed_count[{e.from, e.to}]++;
-	}
-
-	for (auto it = undirected_count.begin(); it != undirected_count.end(); ++it) {
-		if (it->second < 2) {
-			result.open_edges++;
-			result.is_closed = false;
-		} else if (it->second > 2) {
-			result.non_manifold_edges++;
-			result.is_manifold = false;
-		}
-	}
-
-	// Orientation check: for each directed edge (a,b), the reverse (b,a) should exist exactly once
-	for (auto dit = directed_count.begin(); dit != directed_count.end(); ++dit) {
-		auto reverse = std::make_pair(dit->first.second, dit->first.first);
-		auto rit = directed_count.find(reverse);
-		if (dit->second > 1) {
-			// Same directed edge appears more than once — orientation error or non-manifold
-			result.orientation_errors++;
-			result.is_oriented = false;
-		} else if (rit == directed_count.end() || rit->second == 0) {
-			// No reverse edge — this is an orientation issue (if closed, edges should cancel)
-			// But only flag as orientation error if the edge exists twice undirected
-			UndirectedEdge ue(dit->first.first, dit->first.second);
-			auto uit = undirected_count.find(ue);
-			if (uit != undirected_count.end() && uit->second == 2) {
-				// Edge exists twice but both in same direction — orientation error
-				result.orientation_errors++;
-				result.is_oriented = false;
+	uint32_t face_start = model.shell_face_offsets[shell_idx];
+	uint32_t face_end = model.shell_face_offsets[shell_idx + 1];
+	for (uint32_t f = face_start; f < face_end; f++) {
+		for (uint32_t ring_idx = model.face_ring_offsets[f]; ring_idx < model.face_ring_offsets[f + 1]; ring_idx++) {
+			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+			uint32_t n = model.ring_vertex_offsets[ring_idx + 1] - vi_start;
+			for (uint32_t i = 0; i < n; i++) {
+				uint64_t from = model.ring_vertex_indices[vi_start + i];
+				uint64_t to = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+				edges.directed.push_back((from << 32) | to);
+				edges.undirected.push_back(from < to ? ((from << 32) | to) : ((to << 32) | from));
 			}
 		}
 	}
+
+	std::sort(edges.undirected.begin(), edges.undirected.end());
+	ForEachRun(edges.undirected, [&](size_t uses) {
+		if (uses < 2) {
+			result.open_edges++;
+			result.is_closed = false;
+		} else if (uses > 2) {
+			result.non_manifold_edges++;
+			result.is_manifold = false;
+		}
+	});
+
+	std::sort(edges.directed.begin(), edges.directed.end());
+	ForEachRun(edges.directed, [&](size_t uses) {
+		if (uses > 1) {
+			result.orientation_errors++;
+			result.is_oriented = false;
+		}
+	});
 
 	return result;
 }
@@ -225,18 +212,209 @@ ShellSignedVolume ComputeShellSignedVolume(const SolidModel &model, uint32_t she
 	return out;
 }
 
+//! Union-find over a small index range, reused across shells.
+struct DisjointSets {
+	std::vector<uint32_t> parent;
+	void Reset(uint32_t n) {
+		parent.resize(n);
+		for (uint32_t i = 0; i < n; i++) {
+			parent[i] = i;
+		}
+	}
+	uint32_t Find(uint32_t x) {
+		while (parent[x] != x) {
+			parent[x] = parent[parent[x]];
+			x = parent[x];
+		}
+		return x;
+	}
+	//! Returns true when x and y were in different sets.
+	bool Union(uint32_t x, uint32_t y) {
+		x = Find(x);
+		y = Find(y);
+		if (x == y) {
+			return false;
+		}
+		parent[std::max(x, y)] = std::min(x, y);
+		return true;
+	}
+};
+
+//! One ring corner: vertex `vertex` of face `face` (shell-local), with its
+//! neighbours along the ring.
+struct Corner {
+	uint32_t vertex;
+	uint32_t face;
+	uint32_t prev;
+	uint32_t next;
+};
+
+struct TopologyScratch {
+	std::vector<std::pair<uint64_t, uint32_t>> edge_faces; //!< (undirected edge key, shell-local face)
+	std::vector<Corner> corners;
+	std::vector<std::pair<uint32_t, uint32_t>> spokes; //!< (other end of an edge at the vertex, face)
+	std::vector<uint32_t> fan_faces;
+	std::vector<uint32_t> roots;
+	DisjointSets components;
+	DisjointSets fans;
+};
+
+//! Connectivity and vertex manifoldness of one shell. Faces are joined when
+//! they share an edge; a shell whose faces form more than one such part is
+//! disconnected (val3dity 305). Around each vertex, faces sharing an edge at
+//! that vertex form a fan; a vertex with more fans than the parts its faces
+//! belong to is pinched (val3dity 303). Counting fans per part keeps a vertex
+//! where two separate parts touch out of the count: that shell is already
+//! disconnected.
+void CheckShellConnectivity(const SolidModel &model, uint32_t shell_idx, TopologyScratch &t,
+                            uint32_t &disconnected_shells, uint32_t &non_manifold_vertices) {
+	uint32_t face_start = model.shell_face_offsets[shell_idx];
+	uint32_t face_count = model.shell_face_offsets[shell_idx + 1] - face_start;
+	if (face_count == 0) {
+		return;
+	}
+	t.edge_faces.clear();
+	t.corners.clear();
+	for (uint32_t lf = 0; lf < face_count; lf++) {
+		uint32_t f = face_start + lf;
+		for (uint32_t ring_idx = model.face_ring_offsets[f]; ring_idx < model.face_ring_offsets[f + 1]; ring_idx++) {
+			uint32_t vi_start = model.ring_vertex_offsets[ring_idx];
+			uint32_t n = model.ring_vertex_offsets[ring_idx + 1] - vi_start;
+			for (uint32_t i = 0; i < n; i++) {
+				uint32_t v = model.ring_vertex_indices[vi_start + i];
+				uint32_t next = model.ring_vertex_indices[vi_start + ((i + 1) % n)];
+				uint32_t prev = model.ring_vertex_indices[vi_start + ((i + n - 1) % n)];
+				uint64_t lo = std::min(v, next), hi = std::max(v, next);
+				t.edge_faces.emplace_back((lo << 32) | hi, lf);
+				t.corners.push_back({v, lf, prev, next});
+			}
+		}
+	}
+
+	t.components.Reset(face_count);
+	std::sort(t.edge_faces.begin(), t.edge_faces.end());
+	uint32_t parts = face_count;
+	for (size_t i = 1; i < t.edge_faces.size(); i++) {
+		if (t.edge_faces[i].first == t.edge_faces[i - 1].first &&
+		    t.components.Union(t.edge_faces[i].second, t.edge_faces[i - 1].second)) {
+			parts--;
+		}
+	}
+	if (parts > 1) {
+		disconnected_shells++;
+	}
+
+	std::sort(t.corners.begin(), t.corners.end(), [](const Corner &a, const Corner &b) { return a.vertex < b.vertex; });
+	t.fans.Reset(face_count);
+	for (size_t i = 0, n = t.corners.size(); i < n;) {
+		size_t j = i;
+		while (j < n && t.corners[j].vertex == t.corners[i].vertex) {
+			j++;
+		}
+		if (j - i > 1) {
+			t.spokes.clear();
+			t.fan_faces.clear();
+			for (size_t k = i; k < j; k++) {
+				t.spokes.emplace_back(t.corners[k].prev, t.corners[k].face);
+				t.spokes.emplace_back(t.corners[k].next, t.corners[k].face);
+				t.fan_faces.push_back(t.corners[k].face);
+			}
+			std::sort(t.fan_faces.begin(), t.fan_faces.end());
+			t.fan_faces.erase(std::unique(t.fan_faces.begin(), t.fan_faces.end()), t.fan_faces.end());
+			std::sort(t.spokes.begin(), t.spokes.end());
+			uint32_t fans = static_cast<uint32_t>(t.fan_faces.size());
+			for (size_t k = 1; k < t.spokes.size(); k++) {
+				if (t.spokes[k].first == t.spokes[k - 1].first &&
+				    t.fans.Union(t.spokes[k].second, t.spokes[k - 1].second)) {
+					fans--;
+				}
+			}
+			// Parts the vertex's faces belong to.
+			t.roots.clear();
+			for (auto face : t.fan_faces) {
+				t.roots.push_back(t.components.Find(face));
+			}
+			std::sort(t.roots.begin(), t.roots.end());
+			auto vertex_parts = static_cast<uint32_t>(std::unique(t.roots.begin(), t.roots.end()) - t.roots.begin());
+			if (fans > vertex_parts) {
+				non_manifold_vertices++;
+			}
+			// Restore the fan sets touched for this vertex.
+			for (auto face : t.fan_faces) {
+				t.fans.parent[face] = face;
+			}
+		}
+		i = j;
+	}
+}
+
 //! Enforce CityGML §9.3's interior-opposite-exterior winding within each solid
 //! (DESIGN_DOC §8.1 / §8.2). Shell 0 is the exterior (CityJSON writes the
 //! outer shell first, §7.1); every interior shell MUST be wound opposite to it,
 //! else its volume would silently add instead of subtract. Two error classes:
 //!   * an interior shell wound the SAME way as the exterior;
-//!   * an interior shell whose |signed volume| >= the exterior's (it cannot be
-//!     contained, so it is not a real cavity).
-//! Scope is deliberately RELATIVE: the exterior's absolute orientation (outward
-//! vs inward) and true point-in-polyhedron containment are out of scope — this
-//! guards volume integrity, the property ComputeVolume depends on. The check
-//! assumes closed, consistently-oriented shells (validated separately) and is a
-//! no-op for single-shell solids. Returns the number of orientation errors found.
+//!   * an interior shell that is not a cavity: its |signed volume| is at least
+//!     the exterior's, it lies outside the exterior, or it lies inside another
+//!     interior shell (its volume would be subtracted twice).
+//! The exterior's absolute orientation (outward vs inward) is out of scope —
+//! this guards volume integrity, the property ComputeVolume depends on.
+//! Containment is decided by winding number on the cached triangles; shells
+//! that cross are left to the self-intersection check. The check assumes
+//! closed, consistently-oriented shells (validated separately) and is a no-op
+//! for single-shell solids. Returns the number of shells in error.
+//! Generalised winding number of shell `shell` about point `p`: the solid angle
+//! its triangles subtend at p over 4*pi (van Oosterom and Strackee). About +-1
+//! inside a closed shell, 0 outside, and near +-0.5 on its surface. Taken
+//! relative to p, so it does not depend on where the model sits.
+double ShellWindingNumber(const SolidModel &model, uint32_t shell, const Vertex3D &p) {
+	double total = 0.0;
+	for (uint32_t f = model.shell_face_offsets[shell]; f < model.shell_face_offsets[shell + 1]; f++) {
+		for (uint32_t t = model.face_triangle_offsets[f]; t < model.face_triangle_offsets[f + 1]; t++) {
+			Vertex3D v[3];
+			double len[3];
+			for (int k = 0; k < 3; k++) {
+				const auto &q = model.vertices[model.triangle_vertex_indices[t * 3 + k]];
+				v[k] = {q.x - p.x, q.y - p.y, q.z - p.z};
+				len[k] = std::sqrt(v[k].x * v[k].x + v[k].y * v[k].y + v[k].z * v[k].z);
+			}
+			auto dot = [](const Vertex3D &a, const Vertex3D &b) {
+				return a.x * b.x + a.y * b.y + a.z * b.z;
+			};
+			double det = v[0].x * (v[1].y * v[2].z - v[1].z * v[2].y) - v[0].y * (v[1].x * v[2].z - v[1].z * v[2].x) +
+			             v[0].z * (v[1].x * v[2].y - v[1].y * v[2].x);
+			double denom = len[0] * len[1] * len[2] + dot(v[0], v[1]) * len[2] + dot(v[1], v[2]) * len[0] +
+			               dot(v[2], v[0]) * len[1];
+			total += 2.0 * std::atan2(det, denom);
+		}
+	}
+	return total / (4.0 * 3.14159265358979323846);
+}
+
+//! Whether shell `inner` lies inside shell `outer`, judged by the winding number
+//! of `outer` about `inner`'s vertices. Called on shells that do not cross, so
+//! every vertex of `inner` off `outer`'s surface gives the same answer; vertices
+//! on the surface (|w| near 0.5) are skipped. A shell with no clear vertex (all
+//! of them on `outer`) counts as inside.
+bool ShellInside(const SolidModel &model, uint32_t inner, uint32_t outer) {
+	uint32_t f_begin = model.shell_face_offsets[inner];
+	uint32_t f_end = model.shell_face_offsets[inner + 1];
+	if (f_begin == f_end) {
+		return true;
+	}
+	uint32_t r_begin = model.face_ring_offsets[f_begin];
+	uint32_t r_end = model.face_ring_offsets[f_end];
+	for (uint32_t i = model.ring_vertex_offsets[r_begin]; i < model.ring_vertex_offsets[r_end]; i++) {
+		double w = std::abs(ShellWindingNumber(model, outer, model.vertices[model.ring_vertex_indices[i]]));
+		if (w < 0.25) {
+			return false;
+		}
+		if (w > 0.75) {
+			return true;
+		}
+	}
+	return true;
+}
+
 uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 	uint32_t errors = 0;
 	uint32_t solid_count = model.SolidCount();
@@ -269,6 +447,15 @@ uint32_t CheckInteriorShellWinding(const SolidModel &model) {
 				errors++; // same winding as exterior → cavity would add, not subtract
 			} else if (std::abs(in.signed_vol) >= ext_mag) {
 				errors++; // larger than the exterior → cannot be an interior cavity
+			} else if (!ShellInside(model, s, shell_start)) {
+				errors++; // outside the exterior → nothing to subtract from
+			} else {
+				for (uint32_t other = shell_start + 1; other < shell_end; other++) {
+					if (other != s && ShellInside(model, s, other) && !ShellInside(model, other, s)) {
+						errors++; // inside another cavity → subtracted twice
+						break;
+					}
+				}
 			}
 		}
 	}
@@ -299,8 +486,14 @@ void ValidateSolidModel(SolidModel &model) {
 
 	// Validate each shell
 	uint32_t shell_count = model.ShellCount();
+	// Kept per thread between calls, as the triangulation's scratch is.
+	thread_local EdgeScratch edges;
+	thread_local TopologyScratch topology;
+	uint32_t disconnected_shells = 0;
+	uint32_t non_manifold_vertices = 0;
 	for (uint32_t s = 0; s < shell_count; s++) {
-		auto result = ValidateShellTopology(model, s);
+		CheckShellConnectivity(model, s, topology, disconnected_shells, non_manifold_vertices);
+		auto result = ValidateShellTopology(model, s, edges);
 		total_open += result.open_edges;
 		total_non_manifold += result.non_manifold_edges;
 		total_orientation_errors += result.orientation_errors;
@@ -326,14 +519,22 @@ void ValidateSolidModel(SolidModel &model) {
 		}
 	}
 
+	// Faces crossing each other, within a shell or across the shells of a
+	// solid. Like the winding check, it needs the triangulation.
+	uint32_t self_intersections = model.TriangleCount() > 0 ? CountSelfIntersections(model) : 0;
+
 	vc.open_edge_count = total_open;
 	vc.non_manifold_edge_count = total_non_manifold;
 	vc.degenerate_face_count = total_degenerate;
 	vc.orientation_error_count = total_orientation_errors;
+	vc.non_manifold_vertex_count = non_manifold_vertices;
+	vc.disconnected_shell_count = disconnected_shells;
+	vc.self_intersection_count = self_intersections;
 	vc.is_closed = all_closed;
-	vc.is_manifold = all_manifold;
+	vc.is_manifold = all_manifold && non_manifold_vertices == 0;
 	vc.is_oriented = all_oriented;
-	vc.is_valid = all_closed && all_manifold && all_oriented && (total_degenerate == 0);
+	vc.is_valid = vc.is_closed && vc.is_manifold && all_oriented && total_degenerate == 0 && disconnected_shells == 0 &&
+	              self_intersections == 0;
 }
 
 } // namespace duckdb_3d

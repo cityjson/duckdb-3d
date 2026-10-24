@@ -1,9 +1,9 @@
 # Manual testing notebook — every public function against real data
 
-A copy-pasteable SQL walkthrough that exercises **all 45 public `duckdb-3d` functions**
+A copy-pasteable SQL walkthrough that exercises **all 53 public `duckdb-3d` functions**
 against real 3D city models: local CityJSON, remote CityJSONSeq (3DBAG Delft and
-Helsinki) and an on-disk **CityParquet** package. Every cell below was executed and its printed output is the real output,
-not an illustration.
+Helsinki) and on-disk **CityParquet** packages from both writers. Every cell below was executed
+and its printed output is the real output, not an illustration.
 
 This complements the other docs rather than repeating them:
 
@@ -15,8 +15,7 @@ This complements the other docs rather than repeating them:
 | **TESTING.md** (this file) | Breadth: prove every function runs on real data, and record what surprised us |
 
 Read [Quirks and known gaps](#quirks-and-known-gaps) before trusting any cell —
-several outputs diverge from the naive expectation, and one of them was a real bug that
-this walkthrough found and fixed.
+several outputs diverge from the naive expectation.
 
 ---
 
@@ -34,7 +33,7 @@ GEN=ninja make release        # builds ./build/release/duckdb with three_d linke
 ### Which `cityjson` build this notebook uses — and why it matters
 
 This walkthrough was run against a **locally built** `cityjson`, not the community
-download. Both repos pin the same DuckDB core (`v1.5.4`), so the two locally built
+download. Both repos pin the same DuckDB core (`v1.5.5`), so the two locally built
 extensions load into one process without any ABI complaint:
 
 ```sh
@@ -48,17 +47,25 @@ THREE_D_TEST_FIXTURES=1 ./build/release/duckdb -unsigned
 ```sql
 LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
+LOAD spatial;
+SELECT extension_name, extension_version, install_mode FROM duckdb_extensions()
+WHERE extension_name IN ('cityjson', 'spatial', 'three_d') ORDER BY 1;
 ```
 
 ```
 ┌────────────────┬───────────────────┬───────────────────┐
 │ extension_name │ extension_version │   install_mode    │
+│    varchar     │      varchar      │      varchar      │
 ├────────────────┼───────────────────┼───────────────────┤
-│ cityjson       │ aa64174           │ REPOSITORY        │
-│ spatial        │ 28db190           │ REPOSITORY        │
-│ three_d        │ 5c25f21           │ STATICALLY_LINKED │
+│ cityjson       │ 294a595           │ NOT_INSTALLED     │
+│ spatial        │ eb1e57c           │ NOT_INSTALLED     │
+│ three_d        │ 569f986           │ STATICALLY_LINKED │
 └────────────────┴───────────────────┴───────────────────┘
 ```
+
+`three_d` is the copy linked into the shell. If an older `three_d` is installed under
+`~/.duckdb`, `install_mode` reads `REPOSITORY` instead, but `extension_version` still names the
+linked build, which is the one that runs.
 
 **This choice changes the SQL you write.** The current `cityjson` and the community build
 that `INSTALL cityjson FROM community` still serves (`d511bdb`) expose *different column
@@ -108,11 +115,12 @@ FROM (
 ```
 
 ```
-┌──────┬────────┬────────┬───────┬────────┬──────────┬──────────┬──────┬────────┐
-│  id  │ solids │ shells │ faces │ closed │ manifold │ oriented │ area │ volume │
-├──────┼────────┼────────┼───────┼────────┼──────────┼──────────┼──────┼────────┤
-│ cube │ 1      │ 1      │ 6     │ true   │ true     │ true     │ 6.0  │ 1.0    │
-└──────┴────────┴────────┴───────┴────────┴──────────┴──────────┴──────┴────────┘
+┌─────────┬────────┬────────┬───────┬─────────┬──────────┬──────────┬────────┬────────┐
+│   id    │ solids │ shells │ faces │ closed  │ manifold │ oriented │  area  │ volume │
+│ varchar │ int64  │ int64  │ int64 │ boolean │ boolean  │ boolean  │ double │ double │
+├─────────┼────────┼────────┼───────┼─────────┼──────────┼──────────┼────────┼────────┤
+│ cube    │      1 │      1 │     6 │ true    │ true     │ true     │    6.0 │    1.0 │
+└─────────┴────────┴────────┴───────┴─────────┴──────────┴──────────┴────────┴────────┘
 ```
 
 ## 2 — Hollow solid: interior shells survive the WKB round trip
@@ -138,16 +146,18 @@ FROM (
 ```
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                                     props                                     │
-├───────────────────────────────────────────────────────────────────────────────┤
-│ {'type': Solid, 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]} │
-└───────────────────────────────────────────────────────────────────────────────┘
-┌────────┬────────┬────────┬───────┐
-│ shells │ closed │ volume │ area  │
-├────────┼────────┼────────┼───────┤
-│ 2      │ true   │ 56.0   │ 120.0 │
-└────────┴────────┴────────┴───────┘
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                         props                                          │
+│ struct("type" varchar, surfaces varchar, face_semantics integer[], shells integer[][]) │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ {'type': Solid, 'surfaces': NULL, 'face_semantics': NULL, 'shells': [[6, 6]]}          │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────┬─────────┬────────┬────────┐
+│ shells │ closed  │ volume │  area  │
+│ int64  │ boolean │ double │ double │
+├────────┼─────────┼────────┼────────┤
+│      2 │ true    │   56.0 │  120.0 │
+└────────┴─────────┴────────┴────────┘
 ```
 
 Note `shells` arrives as `[[6, 6]]` — the CityParquet `List<List<Int32>>` shape, with an
@@ -180,9 +190,10 @@ WHERE geometry_lod1_0 IS NOT NULL;
 ```
 ┌────────────────┬────────┬────────┬────────┐
 │    cj_type     │ solids │ shells │ volume │
+│    varchar     │ int64  │ int64  │ double │
 ├────────────────┼────────┼────────┼────────┤
-│ MultiSolid     │ 2      │ 2      │ 2.0    │
-│ CompositeSolid │ 2      │ 2      │ 2.0    │
+│ MultiSolid     │      2 │      2 │    2.0 │
+│ CompositeSolid │      2 │      2 │    2.0 │
 └────────────────┴────────┴────────┴────────┘
 ```
 
@@ -204,12 +215,13 @@ GROUP BY 1 ORDER BY 1;
 ```
 
 ```
-┌──────────────────┬─────┬──────────┐
-│     cj_type      │  n  │ as_solid │
-├──────────────────┼─────┼──────────┤
-│ CompositeSurface │ 1   │ 0        │
-│ MultiSurface     │ 104 │ 0        │
-└──────────────────┴─────┴──────────┘
+┌──────────────────┬───────┬──────────┐
+│     cj_type      │   n   │ as_solid │
+│     varchar      │ int64 │  int64   │
+├──────────────────┼───────┼──────────┤
+│ CompositeSurface │     1 │        0 │
+│ MultiSurface     │   104 │        0 │
+└──────────────────┴───────┴──────────┘
 ```
 
 `ST_3DTryFromWKB` returns `NULL` for every row. The strict form raises, and the message
@@ -222,7 +234,7 @@ WHERE geometry_lod3_0 IS NOT NULL LIMIT 1;
 ```
 
 ```
-Invalid Error: Unsupported WKB geometry type for SOLID_3D import: type code 1006
+Invalid Input Error: Unsupported WKB geometry type for SOLID_3D import: type code 1006
 ```
 
 `1006` is `MultiPolygon Z` — `SOLID_3D` only ingests `PolyhedralSurface Z`. Surface-family
@@ -254,16 +266,17 @@ FROM (
 ```
 
 ```
-┌────────────────────────────┬─────────────┬─────────────────┬───────────┬─────┬───────┬──────────┬───────┬────────┬───────────┬──────┬──────┐
-│             id             │ object_type │      gtype      │ n_patches │ dim │ ndims │ coorddim │ has_z │ planar │ footprint │ zmin │ zmax │
-├────────────────────────────┼─────────────┼─────────────────┼───────────┼─────┼───────┼──────────┼───────┼────────┼───────────┼──────┼──────┤
-│ GMLID_BUI100628_817_8083   │ Bridge      │ ST_MultiPolygon │ 30        │ 2   │ 3     │ 3        │ true  │ false  │ 0.7       │ 8.59 │ 8.7  │
-│ GMLID_BUI205585_1385_1373  │ Bridge      │ ST_MultiPolygon │ 30        │ 2   │ 3     │ 3        │ true  │ false  │ 0.72      │ 8.42 │ 8.54 │
-│ GMLID_BUI30683_572_6686    │ Bridge      │ ST_MultiPolygon │ 503       │ 2   │ 3     │ 3        │ true  │ false  │ 1.95      │ 8.33 │ 8.91 │
-│ GMLID_BUI51891_765_738     │ Bridge      │ ST_MultiPolygon │ 626       │ 2   │ 3     │ 3        │ true  │ false  │ 1.37      │ 8.55 │ 8.86 │
-│ GMLID_0632464_192141_968   │ Railway     │ ST_MultiPolygon │ 2638      │ 2   │ 3     │ 3        │ true  │ false  │ 3.07      │ 8.0  │ 8.08 │
-│ GMLID_10415082_319158_1266 │ Railway     │ ST_MultiPolygon │ 6568      │ 2   │ 3     │ 3        │ true  │ false  │ 6.05      │ 8.0  │ 8.02 │
-└────────────────────────────┴─────────────┴─────────────────┴───────────┴─────┴───────┴──────────┴───────┴────────┴───────────┴──────┴──────┘
+┌────────────────────────────┬─────────────┬─────────────────┬───────────┬───────┬───────┬──────────┬─────────┬─────────┬───────────┬────────┬────────┐
+│             id             │ object_type │      gtype      │ n_patches │  dim  │ ndims │ coorddim │  has_z  │ planar  │ footprint │  zmin  │  zmax  │
+│          varchar           │   varchar   │     varchar     │   int32   │ int32 │ int32 │  int32   │ boolean │ boolean │  double   │ double │ double │
+├────────────────────────────┼─────────────┼─────────────────┼───────────┼───────┼───────┼──────────┼─────────┼─────────┼───────────┼────────┼────────┤
+│ GMLID_BUI100628_817_8083   │ Bridge      │ ST_MultiPolygon │        30 │     2 │     3 │        3 │ true    │ false   │       0.7 │   8.59 │    8.7 │
+│ GMLID_BUI205585_1385_1373  │ Bridge      │ ST_MultiPolygon │        30 │     2 │     3 │        3 │ true    │ false   │      0.72 │   8.42 │   8.54 │
+│ GMLID_BUI30683_572_6686    │ Bridge      │ ST_MultiPolygon │       503 │     2 │     3 │        3 │ true    │ false   │      1.95 │   8.33 │   8.91 │
+│ GMLID_BUI51891_765_738     │ Bridge      │ ST_MultiPolygon │       626 │     2 │     3 │        3 │ true    │ false   │      1.37 │   8.55 │   8.86 │
+│ GMLID_0632464_192141_968   │ Railway     │ ST_MultiPolygon │      2638 │     2 │     3 │        3 │ true    │ false   │      3.07 │    8.0 │   8.08 │
+│ GMLID_10415082_319158_1266 │ Railway     │ ST_MultiPolygon │      6568 │     2 │     3 │        3 │ true    │ false   │      6.05 │    8.0 │   8.02 │
+└────────────────────────────┴─────────────┴─────────────────┴───────────┴───────┴───────┴──────────┴─────────┴─────────┴───────────┴────────┴────────┘
 ```
 
 `ST_3DDimension` is `2` (surfaces) while `ST_NDims`/`ST_CoordDim` are `3` (coordinate
@@ -291,12 +304,13 @@ FROM (
 ```
 
 ```
-┌────────────────────────────┬────────────────────────────────────────────┬───────┬───────┬───────┬───────┐
-│             id             │                  centroid                  │  cx   │  cy   │  cz   │ len3d │
-├────────────────────────────┼────────────────────────────────────────────┼───────┼───────┼───────┼───────┤
-│ GMLID_0632464_192141_968   │ POINT Z (4.19173326 1.18174351 8.01251848) │ 4.192 │ 1.182 │ 8.013 │ 0.0   │
-│ GMLID_10415082_319158_1266 │ POINT Z (6.7775388 2.45251156 8.0117759)   │ 6.778 │ 2.453 │ 8.012 │ 0.0   │
-└────────────────────────────┴────────────────────────────────────────────┴───────┴───────┴───────┴───────┘
+┌────────────────────────────┬────────────────────────────────────────────┬────────┬────────┬────────┬────────┐
+│             id             │                  centroid                  │   cx   │   cy   │   cz   │ len3d  │
+│          varchar           │                  varchar                   │ double │ double │ double │ double │
+├────────────────────────────┼────────────────────────────────────────────┼────────┼────────┼────────┼────────┤
+│ GMLID_0632464_192141_968   │ POINT Z (4.19173326 1.18174351 8.01251848) │  4.192 │  1.182 │  8.013 │    0.0 │
+│ GMLID_10415082_319158_1266 │ POINT Z (6.7775388 2.45251156 8.0117759)   │  6.778 │  2.453 │  8.012 │    0.0 │
+└────────────────────────────┴────────────────────────────────────────────┴────────┴────────┴────────┴────────┘
 ```
 
 `ST_3DLength` is `0.0`, not an error: it is defined for `LineString`/`MultiLineString`
@@ -324,12 +338,13 @@ FROM feats GROUP BY 1 ORDER BY 1;
 ```
 
 ```
-┌──────────────┬──────┬───────────┐
-│ object_type  │  n   │ with_geom │
-├──────────────┼──────┼───────────┤
-│ Building     │ 1115 │ 0         │
-│ BuildingPart │ 1116 │ 1116      │
-└──────────────┴──────┴───────────┘
+┌──────────────┬───────┬───────────┐
+│ object_type  │   n   │ with_geom │
+│   varchar    │ int64 │   int64   │
+├──────────────┼───────┼───────────┤
+│ Building     │  1115 │         0 │
+│ BuildingPart │  1116 │      1116 │
+└──────────────┴───────┴───────────┘
 ```
 
 ## 8 — Join parts to parents, import with the `TRY` form
@@ -355,8 +370,9 @@ FROM parts;
 ```
 ┌───────┬──────────┬────────┬──────────┬──────────┬───────┐
 │ parts │ imported │ closed │ manifold │ oriented │ valid │
+│ int64 │  int64   │ int64  │  int64   │  int64   │ int64 │
 ├───────┼──────────┼────────┼──────────┼──────────┼───────┤
-│ 1116  │ 1116     │ 1107   │ 1103     │ 1103     │ 1098  │
+│  1116 │     1116 │   1107 │     1101 │     1103 │  1098 │
 └───────┴──────────┴────────┴──────────┴──────────┴───────┘
 ```
 
@@ -373,16 +389,10 @@ FROM parts WHERE NOT ST_3DValidationReport(solid).is_valid LIMIT 2;
 
 ```
     id = NL.IMBAG.Pand.0503100000031902-0
-report = {'is_valid': false, 'is_closed': true, 'is_manifold': false, 'is_oriented': false,
-          'solid_count': 1, 'shell_count': 1, 'face_count': 1316, 'open_edge_count': 0,
-          'non_manifold_edge_count': 1, 'degenerate_face_count': 1, 'orientation_error_count': 2,
-          'code': INVALID, 'message': 'Invalid solid: non-manifold edges, orientation inconsistent, degenerate faces'}
+report = {'is_valid': false, 'is_closed': true, 'is_manifold': false, 'is_oriented': false, 'solid_count': 1, 'shell_count': 1, 'face_count': 1316, 'open_edge_count': 0, 'non_manifold_edge_count': 1, 'degenerate_face_count': 1, 'orientation_error_count': 2, 'non_manifold_vertex_count': 0, 'disconnected_shell_count': 0, 'self_intersection_count': 0, 'code': INVALID, 'message': 'Invalid solid: non-manifold edges, orientation inconsistent, degenerate faces'}
 
     id = NL.IMBAG.Pand.0503100000032799-0
-report = {'is_valid': false, 'is_closed': false, 'is_manifold': true, 'is_oriented': true,
-          'solid_count': 1, 'shell_count': 1, 'face_count': 115, 'open_edge_count': 9,
-          'non_manifold_edge_count': 0, 'degenerate_face_count': 0, 'orientation_error_count': 0,
-          'code': INVALID, 'message': 'Invalid solid: not closed'}
+report = {'is_valid': false, 'is_closed': false, 'is_manifold': false, 'is_oriented': true, 'solid_count': 1, 'shell_count': 1, 'face_count': 115, 'open_edge_count': 9, 'non_manifold_edge_count': 0, 'degenerate_face_count': 0, 'orientation_error_count': 0, 'non_manifold_vertex_count': 1, 'disconnected_shell_count': 0, 'self_intersection_count': 3, 'code': INVALID, 'message': 'Invalid solid: not closed, non-manifold vertices, self-intersecting faces'}
 ```
 
 A 1316-face building undone by a *single* non-manifold edge is typical. The report gives
@@ -406,15 +416,16 @@ FROM good ORDER BY id LIMIT 5;
 ```
 
 ```
-┌──────────────────────────────────┬───────────┬────────────┬─────────┬──────────────┬─────────────┬───────┬───────┬───────┐
-│                id                │ volume_m3 │ surface_m2 │ area_m2 │ footprint_m2 │ perimeter_m │ zmin  │ zmax  │ faces │
-├──────────────────────────────────┼───────────┼────────────┼─────────┼──────────────┼─────────────┼───────┼───────┼───────┤
-│ NL.IMBAG.Pand.0503100000000030-0 │ 137182.8  │ 39403.4    │ 39403.4 │ 15341.5      │ 0.0         │ 0.13  │ 17.53 │ 271   │
-│ NL.IMBAG.Pand.0503100000000137-0 │ 796.8     │ 539.9      │ 539.9   │ 84.8         │ 0.0         │ -0.08 │ 9.64  │ 16    │
-│ NL.IMBAG.Pand.0503100000000138-0 │ 20.7      │ 47.0       │ 47.0    │ 8.0          │ 0.0         │ 0.23  │ 2.84  │ 6     │
-│ NL.IMBAG.Pand.0503100000000139-0 │ 398.1     │ 332.3      │ 332.3   │ 47.3         │ 0.0         │ 0.46  │ 8.96  │ 10    │
-│ NL.IMBAG.Pand.0503100000000140-0 │ 18179.1   │ 5292.6     │ 5292.6  │ 1284.6       │ 0.0         │ 0.07  │ 17.95 │ 118   │
-└──────────────────────────────────┴───────────┴────────────┴─────────┴──────────────┴─────────────┴───────┴───────┴───────┘
+┌──────────────────────────────────┬───────────┬────────────┬─────────┬──────────────┬─────────────┬────────┬────────┬───────┐
+│                id                │ volume_m3 │ surface_m2 │ area_m2 │ footprint_m2 │ perimeter_m │  zmin  │  zmax  │ faces │
+│             varchar              │  double   │   double   │ double  │    double    │   double    │ double │ double │ int64 │
+├──────────────────────────────────┼───────────┼────────────┼─────────┼──────────────┼─────────────┼────────┼────────┼───────┤
+│ NL.IMBAG.Pand.0503100000000030-0 │  137184.3 │    39403.4 │ 39403.4 │      15341.5 │         0.0 │   0.13 │  17.53 │   271 │
+│ NL.IMBAG.Pand.0503100000000137-0 │     796.8 │      539.9 │   539.9 │         84.8 │         0.0 │  -0.08 │   9.64 │    16 │
+│ NL.IMBAG.Pand.0503100000000138-0 │      20.7 │       47.0 │    47.0 │          8.0 │         0.0 │   0.23 │   2.84 │     6 │
+│ NL.IMBAG.Pand.0503100000000139-0 │     398.1 │      332.3 │   332.3 │         47.3 │         0.0 │   0.46 │   8.96 │    10 │
+│ NL.IMBAG.Pand.0503100000000140-0 │   18179.2 │     5292.6 │  5292.6 │       1284.6 │         0.0 │   0.07 │  17.95 │   118 │
+└──────────────────────────────────┴───────────┴────────────┴─────────┴──────────────┴─────────────┴────────┴────────┴───────┘
 ```
 
 `ST_3DArea` is an alias of `ST_3DSurfaceArea` — identical by construction. **`ST_3DPerimeter`
@@ -428,8 +439,7 @@ SELECT ST_3DBounds(solid) AS bounds FROM good ORDER BY id LIMIT 1;
 ```
 
 ```
-bounds = {'min_x': 84501.553625, 'min_y': 446165.972, 'min_z': 0.12600262451172028,
-          'max_x': 84729.745625, 'max_y': 446295.636, 'max_z': 17.530002624511717}
+bounds = {'min_x': 84501.553625, 'min_y': 446165.972, 'min_z': 0.12600262451172028, 'max_x': 84729.745625, 'max_y': 446295.636, 'max_z': 17.530002624511717}
 ```
 
 ## 11 — `ST_3DPerimeter` on the nine unclosed parts
@@ -444,11 +454,12 @@ FROM parts WHERE NOT ST_3DIsClosed(solid) ORDER BY id LIMIT 4;
 ```
 ┌──────────────────────────────────┬────────────┬─────────────┐
 │                id                │ open_edges │ perimeter_m │
+│             varchar              │   int64    │   double    │
 ├──────────────────────────────────┼────────────┼─────────────┤
-│ NL.IMBAG.Pand.0503100000000010-0 │ 6          │ 23.245      │
-│ NL.IMBAG.Pand.0503100000019817-0 │ 6          │ 23.172      │
-│ NL.IMBAG.Pand.0503100000024960-0 │ 3          │ 38.297      │
-│ NL.IMBAG.Pand.0503100000025026-0 │ 11         │ 88.948      │
+│ NL.IMBAG.Pand.0503100000000010-0 │          6 │      23.245 │
+│ NL.IMBAG.Pand.0503100000019817-0 │          6 │      23.172 │
+│ NL.IMBAG.Pand.0503100000024960-0 │          3 │      38.297 │
+│ NL.IMBAG.Pand.0503100000025026-0 │         11 │      88.948 │
 └──────────────────────────────────┴────────────┴─────────────┘
 ```
 
@@ -477,15 +488,15 @@ FROM g2;
 ```
 
 ```
-dist_m            = 1033.745
-maxdist_m         = 1041.808
-dwithin_1100      = true
-dwithin_100       = false
+           dist_m = 1033.745
+        maxdist_m = 1041.808
+     dwithin_1100 = true
+      dwithin_100 = false
 dfullywithin_1200 = true
-intersects        = false
-closest_pt        = POINT Z (85563.7526 446828.446 2.39100262)
-shortest_line     = LINESTRING Z (85563.7526 446828.446 2.39100262, 84597.5076 446461.023 2.39100262)
-line_len          = 1033.745
+       intersects = false
+       closest_pt = POINT Z (85563.7526 446828.446 2.39100262)
+    shortest_line = LINESTRING Z (85563.7526 446828.446 2.39100262, 84597.5076 446461.023 2.39100262)
+         line_len = 1033.745
 ```
 
 `ST_3DLength(ST_3DShortestLine(...))` reproduces `ST_3DDistance` exactly — a useful
@@ -498,8 +509,9 @@ SELECT ST_3DIntersects(a, a) AS self_intersects, ROUND(ST_3DDistance(a, a), 6) A
 ```
 ┌─────────────────┬───────────┐
 │ self_intersects │ self_dist │
+│     boolean     │  double   │
 ├─────────────────┼───────────┤
-│ true            │ 0.0       │
+│ true            │       0.0 │
 └─────────────────┴───────────┘
 ```
 
@@ -515,11 +527,12 @@ FROM good WHERE n_parts = 1 AND b3_volume_lod22 > 0 AND b3_opp_grond > 0;
 ```
 
 ```
-┌──────┬────────────────────┬───────────────────┐
-│  n   │ median_vol_err_pct │ median_fp_err_pct │
-├──────┼────────────────────┼───────────────────┤
-│ 1096 │ 0.0167             │ 0.0043            │
-└──────┴────────────────────┴───────────────────┘
+┌───────┬────────────────────┬───────────────────┐
+│   n   │ median_vol_err_pct │ median_fp_err_pct │
+│ int64 │       double       │      double       │
+├───────┼────────────────────┼───────────────────┤
+│  1096 │             0.0167 │            0.0043 │
+└───────┴────────────────────┴───────────────────┘
 ```
 
 The automated version of this check is
@@ -548,15 +561,17 @@ FROM ex;
 ```
 ┌─────────┬─────────────┬─────────┬─────────┬─────────┬─────────────┐
 │   v0    │ v_translate │ v_rotx  │ v_roty  │ v_rotz  │ scale_ratio │
+│ double  │   double    │ double  │ double  │ double  │   double    │
 ├─────────┼─────────────┼─────────┼─────────┼─────────┼─────────────┤
-│ 19.5254 │ 19.5254     │ 19.5254 │ 19.5254 │ 19.5254 │ 8.0         │
+│ 19.5242 │     19.5242 │ 19.5242 │ 19.5242 │ 19.5242 │         8.0 │
 └─────────┴─────────────┴─────────┴─────────┴─────────┴─────────────┘
 ```
 
-> **This cell used to fail.** `v_rotx` read `18.9956` — 2.7 % off — before the fix
-> described in [Quirks](#a-real-bug-this-walkthrough-found-volume-drift-under-rotation). The output above is post-fix.
+> **This cell is a conditioning test.** A volume sum taken about the absolute origin would
+> put `v_rotx` percent-level off here; see
+> [Quirks](#volume-under-rotation-is-a-conditioning-test).
 
-Across all 1098 valid parts, the relative volume drift under rotation is now zero to six
+Across all 1098 valid parts, the relative volume drift under rotation is zero to six
 decimal places — the query below rounds, so read it as "below 5e-7", not as "exactly zero":
 
 ```sql
@@ -569,12 +584,13 @@ FROM good;
 ```
 ┌─────────────────┬─────────────────┬─────────────────┐
 │ max_relerr_rotx │ max_relerr_roty │ max_relerr_rotz │
+│     double      │     double      │     double      │
 ├─────────────────┼─────────────────┼─────────────────┤
-│ 0.0             │ 0.0             │ 0.0             │
+│             0.0 │             0.0 │             0.0 │
 └─────────────────┴─────────────────┴─────────────────┘
 ```
 
-Unrounded, the same three maxima are **2.6e-11**, **6.2e-12** and **3.0e-11**, and the
+Unrounded, the same three maxima are **1.5e-11**, **4.4e-12** and **4.4e-11**, and the
 translation maximum is *exactly* 0.0. Rotation is the looser case for a reason that has
 nothing to do with the volume sum: rotating absolute RD coordinates injects `|p|·eps`
 rounding into the vertices themselves before any measurement runs, so ~1e-11 is the floor
@@ -592,6 +608,7 @@ FROM ex;
 ```
 ┌───────────────────────────────────────────┬───────────────────────────────────────────┬───────────────────────────────────────────┐
 │                rd_centroid                │              wgs84_centroid               │              wgs84_str_form               │
+│                  varchar                  │                  varchar                  │                  varchar                  │
 ├───────────────────────────────────────────┼───────────────────────────────────────────┼───────────────────────────────────────────┤
 │ POINT Z (84595.382 446461.183 1.82866198) │ POINT Z (4.36190203 52.0020555 1.8422511) │ POINT Z (4.36190203 52.0020555 1.8422511) │
 └───────────────────────────────────────────┴───────────────────────────────────────────┴───────────────────────────────────────────┘
@@ -607,27 +624,31 @@ deliberately deferred.
 ## 16 — Construction: hull, extrude, make-solid, force-3D
 
 ```sql
-SELECT ST_3DGeometryType(ST_3DConvexHull(g))                        AS hull_type,
-       ST_3DNumGeometries(ST_3DConvexHull(g))                       AS hull_parts,
-       ROUND(ST_3DFootprintArea(ST_3DConvexHull(g)), 2)             AS hull_area,
-       ST_3DGeometryType(ST_Force3D(g))                             AS force3d_type,
-       ST_3DNumFaces(ST_3DExtrude(ST_3DConvexHull(g), 10.0))        AS prism_faces,
-       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DConvexHull(g), 10.0)), 2) AS prism_vol,
-       ROUND(ST_3DFootprintArea(ST_3DConvexHull(g)) * 10.0, 2)      AS fp_x_h,
-       ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_3DAsWKB(solid)))), 4) AS makesolid_vol
+SELECT ST_3DGeometryType(ST_3DFootprintHull(g))                        AS fp_hull_type,
+       ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)), 2)             AS fp_hull_area,
+       ST_3DGeometryType(ST_Force3D(g))                                AS force3d_type,
+       ST_3DNumFaces(ST_3DExtrude(ST_3DFootprintHull(g), 10.0))        AS prism_faces,
+       ROUND(ST_3DVolume(ST_3DExtrude(ST_3DFootprintHull(g), 10.0)), 2) AS prism_vol,
+       ROUND(ST_3DFootprintArea(ST_3DFootprintHull(g)) * 10.0, 2)      AS fp_x_h,
+       ROUND(ST_3DVolume(ST_MakeSolid(ST_Geom3DFromWKB(ST_3DAsWKB(solid)))), 4) AS makesolid_vol,
+       ST_3DNumFaces(ST_MakeSolid(ST_3DConvexHull(solid)))             AS hull_faces,
+       ROUND(ST_3DVolume(ST_MakeSolid(ST_3DConvexHull(solid))), 4)     AS hull_vol
 FROM ex;
 ```
 
 ```
-┌────────────┬────────────┬───────────┬──────────────────────┬─────────────┬───────────┬────────┬───────────────┐
-│ hull_type  │ hull_parts │ hull_area │     force3d_type     │ prism_faces │ prism_vol │ fp_x_h │ makesolid_vol │
-├────────────┼────────────┼───────────┼──────────────────────┼─────────────┼───────────┼────────┼───────────────┤
-│ ST_Polygon │ 1          │ 7.21      │ ST_PolyhedralSurface │ 6           │ 72.13     │ 72.13  │ 19.5254       │
-└────────────┴────────────┴───────────┴──────────────────────┴─────────────┴───────────┴────────┴───────────────┘
+┌──────────────┬──────────────┬──────────────────────┬─────────────┬───────────┬────────┬───────────────┬────────────┬──────────┐
+│ fp_hull_type │ fp_hull_area │     force3d_type     │ prism_faces │ prism_vol │ fp_x_h │ makesolid_vol │ hull_faces │ hull_vol │
+│   varchar    │    double    │       varchar        │    int64    │  double   │ double │    double     │   int64    │  double  │
+├──────────────┼──────────────┼──────────────────────┼─────────────┼───────────┼────────┼───────────────┼────────────┼──────────┤
+│ ST_Polygon   │         7.21 │ ST_PolyhedralSurface │           6 │     72.13 │  72.13 │       19.5242 │          7 │  19.5254 │
+└──────────────┴──────────────┴──────────────────────┴─────────────┴───────────┴────────┴───────────────┴────────────┴──────────┘
 ```
 
-`prism_vol` equals `hull_area × 10` exactly. `makesolid_vol` equals the original
-`19.5254` from §14 — the `SOLID_3D → WKB → GEOM_3D → SOLID_3D` round trip is lossless.
+`prism_vol` equals `fp_hull_area × 10` exactly. `makesolid_vol` equals the original
+`19.5242` from §14 — the `SOLID_3D → WKB → GEOM_3D → SOLID_3D` round trip is lossless.
+The 3D hull (`ST_3DConvexHull`) is a closed seven-face polyhedron that `ST_MakeSolid`
+accepts, and its volume is just above the solid's, as a hull's must be.
 `ST_Force3D` is currently an identity (`GEOM_3D` is already XYZ).
 
 ## 17 — Serialization
@@ -645,8 +666,9 @@ FROM ex;
 ```
 ┌─────────────┬────────────────┬───────────┬───────────────┬──────────────────────────────────────────────────────┬──────────────────────────────────────────────────────┐
 │ aswkb_bytes │ asbinary_bytes │ wkt_chars │ geojson_chars │                       wkt_head                       │                     geojson_head                     │
+│    int64    │     int64      │   int64   │     int64     │                       varchar                        │                       varchar                        │
 ├─────────────┼────────────────┼───────────┼───────────────┼──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤
-│ 807         │ 807            │ 1077      │ 1126          │ POLYHEDRALSURFACE Z (((84593.9846 446459.603 0.47500 │ {"type":"MultiPolygon","coordinates":[[[[84593.9846, │
+│         807 │            807 │      1077 │          1126 │ POLYHEDRALSURFACE Z (((84593.9846 446459.603 0.47500 │ {"type":"MultiPolygon","coordinates":[[[[84593.9846, │
 └─────────────┴────────────────┴───────────┴───────────────┴──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
@@ -663,6 +685,7 @@ FROM ex;
 ```
 ┌──────────────────┬─────────────────┐
 │ volume_roundtrip │ bytes_roundtrip │
+│     boolean      │     boolean     │
 ├──────────────────┼─────────────────┤
 │ true             │ true            │
 └──────────────────┴─────────────────┘
@@ -692,12 +715,13 @@ FROM helsolids;
 ```
 ┌─────────┬──────────┬────────┬──────────┬──────────┬───────┐
 │ objects │ imported │ closed │ manifold │ oriented │ valid │
+│  int64  │  int64   │ int64  │  int64   │  int64   │ int64 │
 ├─────────┼──────────┼────────┼──────────┼──────────┼───────┤
-│ 77249   │ 77249    │ 75541  │ 77055    │ 77046    │ 75474 │
+│   77249 │    77249 │  75574 │    76973 │    77046 │ 75413 │
 └─────────┴──────────┴────────┴──────────┴──────────┴───────┘
 ```
 
-97.7 % valid — the dominant failure mode here is *not closed* (1708 objects), unlike
+97.6 % valid — the dominant failure mode here is *not closed* (1675 objects), unlike
 Delft where non-manifoldness featured. Aggregate over the valid subset:
 
 ```sql
@@ -712,8 +736,9 @@ FROM (SELECT s FROM helsolids WHERE ST_3DValidationReport(s).is_valid);
 ```
 ┌───────────────┬──────────────────┬─────────────────────┬───────────────┬───────────┐
 │ valid_objects │ total_volume_km3 │ total_footprint_km2 │ mean_height_m │ tallest_m │
+│     int64     │      double      │       double        │    double     │  double   │
 ├───────────────┼──────────────────┼─────────────────────┼───────────────┼───────────┤
-│ 75474         │ 0.1915           │ 16.065              │ 11.92         │ 119.5     │
+│         75413 │           0.1906 │              16.008 │         11.91 │     119.5 │
 └───────────────┴──────────────────┴─────────────────────┴───────────────┴───────────┘
 ```
 
@@ -729,57 +754,82 @@ functions with preconditions must happen in `WHERE`, not `FILTER`.
 
 # Part C — CityParquet round trip
 
-Nothing before this point proves the **stored** CityParquet encoding — a Parquet file with
-`geometry_lod*` WKB columns and `geometry_properties_lod*` STRUCT columns — feeds back
-into `SOLID_3D`. These cells do.
+Nothing before this point proves the **stored** CityParquet encoding — Parquet files with
+`geometry_lod*` WKB columns and `geometry_properties_lod*` STRUCT columns — feeds back into
+`SOLID_3D`. These cells do, for packages from both writers: the `cityjson` extension and
+the `cityparquet-rs` CLI. The cells continue the Part B session, which holds `parts`.
 
-## 19 — Write a real CityParquet package
+## 19 — Write a real CityParquet package, twice
+
+With the `cityjson` extension: an empty schema, initialised, takes its tables and its CRS
+from the first insert. Submit the statements one at a time — DuckDB expands every pragma in
+a submitted script before running any of it. The insert pragma prints the statements it
+runs; only the write's own result is shown here.
 
 ```sql
 CREATE SCHEMA pkg;
-CREATE TABLE pkg.building AS
-SELECT * FROM read_cityjsonseq('../cityparquet-rs/tests/fixtures/delft.city.jsonl');
-
 PRAGMA cityparquet_init('pkg');
+PRAGMA insert_cityjsonseq('pkg', '../cityparquet-rs/tests/fixtures/delft.city.jsonl');
 SELECT table_name, role FROM pkg.__cityparquet ORDER BY 1;
-
-PRAGMA cityparquet_validate('pkg');
-SELECT * FROM cityparquet_validation;
-
-SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out', crs => 'EPSG:7415');
+SELECT * FROM cityparquet_write('pkg', '/tmp/cp_test/pkg_out');
 ```
 
 ```
-┌────────────┬────────┐        ┌──────────────────┬─────────┬──────┬─────────┐
-│ table_name │  role  │        │       file       │ action  │ rows │  bytes  │
-├────────────┼────────┤        ├──────────────────┼─────────┼──────┼─────────┤
-│ building   │ object │        │ building.parquet │ written │ 2231 │ 3690150 │
-└────────────┴────────┘        │ metadata.json    │ written │    0 │    6722 │
-                               └──────────────────┴─────────┴──────┴─────────┘
+┌────────────┬─────────┐
+│ table_name │  role   │
+│  varchar   │ varchar │
+├────────────┼─────────┤
+│ building   │ object  │
+└────────────┴─────────┘
+┌──────────────────┬─────────┬───────┬─────────┐
+│       file       │ action  │ rows  │  bytes  │
+│     varchar      │ varchar │ int64 │  int64  │
+├──────────────────┼─────────┼───────┼─────────┤
+│ building.parquet │ written │  2231 │ 3755583 │
+│ metadata.json    │ written │     0 │    6762 │
+└──────────────────┴─────────┴───────┴─────────┘
 ```
 
-`cityparquet_validation` is empty — no findings. The file carries four LoDs:
+With `cityparquet-rs`, from the monorepo's `lib/cityparquet-rs` (`cargo build --release -p
+cityparquet-cli`):
+
+```sh
+../cityparquet-rs/target/release/cityparquet convert \
+    ../cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/cp_test/rs_out
+```
+
+The solid LoDs are plain `BLOB` columns (LoD0, the footprint, is §22), and `other` and the
+sidecar's `surfaces` are Parquet `JSON`. The `cityparquet-rs` package's `building.parquet`
+prints the same five rows:
 
 ```sql
-SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
-WHERE column_name LIKE 'geometry_lod%';
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet'))
+WHERE column_name IN ('geometry_lod1_2', 'geometry_lod1_3', 'geometry_lod2_2',
+                      'geometry_properties_lod2_2', 'other');
 ```
 
 ```
-┌─────────────────┐
-│   column_name   │
-├─────────────────┤
-│ geometry_lod0_0 │
-│ geometry_lod1_2 │
-│ geometry_lod1_3 │
-│ geometry_lod2_2 │
-└─────────────────┘
+┌────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────┐
+│        column_name         │                                     column_type                                     │
+│          varchar           │                                       varchar                                       │
+├────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+│ geometry_lod1_2            │ BLOB                                                                                │
+│ geometry_lod1_3            │ BLOB                                                                                │
+│ geometry_lod2_2            │ BLOB                                                                                │
+│ geometry_properties_lod2_2 │ STRUCT("type" VARCHAR, surfaces JSON, face_semantics INTEGER[], shells INTEGER[][]) │
+│ other                      │ JSON                                                                                │
+└────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Both writers sort features along a Hilbert curve by default, so the rows are not in source
+order, and the two packages need not agree on row order. Every comparison below joins on
+`id`.
 
 ## 20 — Three sidecar forms, one solid
 
-The stored STRUCT, the same STRUCT rendered to JSON text, and no sidecar at all. All
-1116 solids import identically under all three.
+The stored STRUCT, the same STRUCT rendered to JSON text, and no sidecar at all — for each
+package. All 1116 solids import identically under all three.
 
 ```sql
 SELECT geometry_properties_lod2_2.type   AS type,
@@ -789,88 +839,107 @@ WHERE geometry_lod2_2 IS NOT NULL LIMIT 1;
 ```
 
 ```
-  type = Solid
-shells = [[6]]
+┌─────────┬───────────┐
+│  type   │  shells   │
+│ varchar │ int32[][] │
+├─────────┼───────────┤
+│ Solid   │ [[942]]   │
+└─────────┴───────────┘
 ```
 
 ```sql
 LOAD json;
 CREATE TABLE cp AS
-SELECT id,
+SELECT writer, id,
        ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2)                    AS s_struct,
        ST_3DTryFromWKB(geometry_lod2_2, to_json(geometry_properties_lod2_2)::VARCHAR)  AS s_json,
        ST_3DTryFromWKB(geometry_lod2_2)                                                AS s_bare
-FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet')
+FROM (SELECT 'cityjson' AS writer, * FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet')
+      UNION ALL BY NAME
+      SELECT 'cityparquet-rs' AS writer, * FROM read_parquet('/tmp/cp_test/rs_out/building.parquet'))
 WHERE geometry_lod2_2 IS NOT NULL;
 
-SELECT count(*) AS rows,
+SELECT writer, count(*) AS rows,
        count(s_struct) AS via_struct, count(s_json) AS via_json, count(s_bare) AS via_bare,
        count(*) FILTER (WHERE ST_3DAsWKB(s_struct) = ST_3DAsWKB(s_json)) AS struct_eq_json,
        count(*) FILTER (WHERE ST_3DAsWKB(s_struct) = ST_3DAsWKB(s_bare)) AS struct_eq_bare
-FROM cp;
+FROM cp GROUP BY writer ORDER BY writer;
 ```
 
 ```
-┌──────┬────────────┬──────────┬──────────┬────────────────┬────────────────┐
-│ rows │ via_struct │ via_json │ via_bare │ struct_eq_json │ struct_eq_bare │
-├──────┼────────────┼──────────┼──────────┼────────────────┼────────────────┤
-│ 1116 │ 1116       │ 1116     │ 1116     │ 1116           │ 1116           │
-└──────┴────────────┴──────────┴──────────┴────────────────┴────────────────┘
+┌────────────────┬───────┬────────────┬──────────┬──────────┬────────────────┬────────────────┐
+│     writer     │ rows  │ via_struct │ via_json │ via_bare │ struct_eq_json │ struct_eq_bare │
+│    varchar     │ int64 │   int64    │  int64   │  int64   │     int64      │     int64      │
+├────────────────┼───────┼────────────┼──────────┼──────────┼────────────────┼────────────────┤
+│ cityjson       │  1116 │       1116 │     1116 │     1116 │           1116 │           1116 │
+│ cityparquet-rs │  1116 │       1116 │     1116 │     1116 │           1116 │           1116 │
+└────────────────┴───────┴────────────┴──────────┴──────────┴────────────────┴────────────────┘
 ```
 
-`struct_eq_bare = 1116` only because every solid in this tile is single-shell (`[[6]]`);
+`struct_eq_bare = 1116` only because every solid in this tile is single-shell (`[[n]]`);
 drop the sidecar on a hollow or multi-solid geometry and the partition is lost (§2, §3).
 
 ## 21 — Validation and measurement straight off Parquet
 
 ```sql
-SELECT count(*) AS parts,
+SELECT writer, count(*) AS parts,
        count(*) FILTER (WHERE ST_3DIsClosed(s_struct))   AS closed,
        count(*) FILTER (WHERE ST_3DIsManifold(s_struct)) AS manifold,
        count(*) FILTER (WHERE ST_3DValidationReport(s_struct).is_valid) AS valid
-FROM cp;
+FROM cp GROUP BY writer ORDER BY writer;
 
-SELECT count(*) AS valid_parts,
+SELECT writer, count(*) AS valid_parts,
        ROUND(SUM(ST_3DVolume(s_struct)), 0)        AS total_volume_m3,
        ROUND(SUM(ST_3DSurfaceArea(s_struct)), 0)   AS total_surface_m2,
        ROUND(SUM(ST_3DFootprintArea(s_struct)), 0) AS total_footprint_m2,
        ROUND(min(ST_3DZMin(s_struct)), 2)          AS zmin,
        ROUND(max(ST_3DZMax(s_struct)), 2)          AS zmax
-FROM (SELECT s_struct FROM cp WHERE ST_3DValidationReport(s_struct).is_valid);
+FROM (SELECT writer, s_struct FROM cp WHERE ST_3DValidationReport(s_struct).is_valid)
+GROUP BY writer ORDER BY writer;
 ```
 
 ```
-┌───────┬────────┬──────────┬───────┐
-│ parts │ closed │ manifold │ valid │
-├───────┼────────┼──────────┼───────┤
-│ 1116  │ 1107   │ 1103     │ 1098  │
-└───────┴────────┴──────────┴───────┘
-┌─────────────┬─────────────────┬──────────────────┬────────────────────┬───────┬───────┐
-│ valid_parts │ total_volume_m3 │ total_surface_m2 │ total_footprint_m2 │ zmin  │ zmax  │
-├─────────────┼─────────────────┼──────────────────┼────────────────────┼───────┼───────┤
-│ 1098        │ 1915861.0       │ 811292.0         │ 192844.0           │ -2.46 │ 40.04 │
-└─────────────┴─────────────────┴──────────────────┴────────────────────┴───────┴───────┘
+┌────────────────┬───────┬────────┬──────────┬───────┐
+│     writer     │ parts │ closed │ manifold │ valid │
+│    varchar     │ int64 │ int64  │  int64   │ int64 │
+├────────────────┼───────┼────────┼──────────┼───────┤
+│ cityjson       │  1116 │   1107 │     1101 │  1098 │
+│ cityparquet-rs │  1116 │   1107 │     1101 │  1098 │
+└────────────────┴───────┴────────┴──────────┴───────┘
+┌────────────────┬─────────────┬─────────────────┬──────────────────┬────────────────────┬────────┬────────┐
+│     writer     │ valid_parts │ total_volume_m3 │ total_surface_m2 │ total_footprint_m2 │  zmin  │  zmax  │
+│    varchar     │    int64    │     double      │      double      │       double       │ double │ double │
+├────────────────┼─────────────┼─────────────────┼──────────────────┼────────────────────┼────────┼────────┤
+│ cityjson       │        1098 │       1915863.0 │         811292.0 │           192844.0 │  -2.46 │  40.04 │
+│ cityparquet-rs │        1098 │       1915863.0 │         811292.0 │           192844.0 │  -2.46 │  40.04 │
+└────────────────┴─────────────┴─────────────────┴──────────────────┴────────────────────┴────────┴────────┘
 ```
 
-Identical to the CityJSONSeq counts in §8 — `1116 / 1107 / 1103 / 1098`. Proven directly:
+Identical to the CityJSONSeq counts in §8 — `1116 / 1107 / 1101 / 1098` — for both writers.
+Proven directly, solid by solid:
 
 ```sql
-SELECT count(*) AS matched,
+SELECT c.writer, count(*) AS matched,
        count(*) FILTER (WHERE ST_3DAsWKB(p.solid) = ST_3DAsWKB(c.s_struct)) AS identical_wkb,
        ROUND(max(abs(ST_3DFootprintArea(p.solid) - ST_3DFootprintArea(c.s_struct))), 12) AS max_fp_diff
-FROM parts p JOIN cp c USING (id);
+FROM parts p JOIN cp c USING (id)
+GROUP BY c.writer ORDER BY c.writer;
 ```
 
 ```
-┌─────────┬───────────────┬─────────────┐
-│ matched │ identical_wkb │ max_fp_diff │
-├─────────┼───────────────┼─────────────┤
-│ 1116    │ 1116          │ 0.0         │
-└─────────┴───────────────┴─────────────┘
+┌────────────────┬─────────┬───────────────┬─────────────┐
+│     writer     │ matched │ identical_wkb │ max_fp_diff │
+│    varchar     │  int64  │     int64     │   double    │
+├────────────────┼─────────┼───────────────┼─────────────┤
+│ cityjson       │    1116 │          1116 │         0.0 │
+│ cityparquet-rs │    1116 │          1116 │         0.0 │
+└────────────────┴─────────┴───────────────┴─────────────┘
 ```
 
-**Every one of 1116 solids is byte-identical** whether it arrives via streamed
-CityJSONSeq or via a Parquet file on disk. That is the CityParquet round-trip guarantee.
+**Every one of 1116 solids is byte-identical** whether it arrives via streamed CityJSONSeq
+or via either writer's Parquet file. That is the CityParquet round-trip guarantee, and it
+holds across writers. The offline, automated form of this check is
+`test/sql/cityparquet_round_trip.test`.
 
 ## 22 — LoD0 is GeoParquet, and reads as GEOMETRY
 
@@ -892,6 +961,7 @@ WHERE column_name LIKE 'geometry_lod%' ORDER BY 1;
 ```
 ┌─────────────────┬───────────────────────┐
 │   column_name   │      column_type      │
+│     varchar     │        varchar        │
 ├─────────────────┼───────────────────────┤
 │ geometry_lod0_0 │ GEOMETRY('EPSG:7415') │
 │ geometry_lod1_2 │ BLOB                  │
@@ -900,52 +970,58 @@ WHERE column_name LIKE 'geometry_lod%' ORDER BY 1;
 └─────────────────┴───────────────────────┘
 ```
 
-**`EPSG:7415` is a rendering, not what is stored.** `cityjson`'s writer puts the whole
-PROJJSON document in the logical type's `crs` parameter, and `spatial` — loaded here —
-resolves it back to its authority code for display. Without `spatial` the same column
-prints as `GEOMETRY('{"$schema":"https://proj.org/schemas/v0.5/projjson…')`. The Parquet
-side is unambiguous:
+**`EPSG:7415` is a rendering, not what is stored.** Both writers put the whole PROJJSON
+document in the logical type's `crs` parameter, and `spatial` — loaded here — resolves it
+back to its authority code for display. Without `spatial` the same column prints as
+`GEOMETRY('{"$schema":"https://proj.org/schemas/v0.7/projjson…')`. The Parquet side is
+unambiguous:
 
 ```sql
-SELECT name, logical_type IS NOT NULL AS annotated, length(logical_type) AS logical_type_len
+SELECT name, logical_type IS NOT NULL AS annotated
 FROM parquet_schema('/tmp/cp_test/pkg_out/building.parquet')
 WHERE name LIKE 'geometry_lod%' ORDER BY 1;
 ```
 
 ```
-┌─────────────────┬───────────┬──────────────────┐
-│      name       │ annotated │ logical_type_len │
-├─────────────────┼───────────┼──────────────────┤
-│ geometry_lod0_0 │ true      │             2081 │
-│ geometry_lod1_2 │ false     │             NULL │
-│ geometry_lod1_3 │ false     │             NULL │
-│ geometry_lod2_2 │ false     │             NULL │
-└─────────────────┴───────────┴──────────────────┘
+┌─────────────────┬───────────┐
+│      name       │ annotated │
+│     varchar     │  boolean  │
+├─────────────────┼───────────┤
+│ geometry_lod0_0 │ true      │
+│ geometry_lod1_2 │ false     │
+│ geometry_lod1_3 │ false     │
+│ geometry_lod2_2 │ false     │
+└─────────────────┴───────────┘
 ```
 
-**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.4 raises
+**`geometry_lod0_0::BLOB` does not work** — DuckDB v1.5.5 raises
 `Unimplemented type for cast (GEOMETRY('EPSG:7415') -> BLOB) when casting from source
 column geometry_lod0_0`. `SET enable_geoparquet_conversion=false` does not help either:
 the promotion follows the logical type, not the `geo` footer, so the column is still
 `GEOMETRY` with the setting off. The constructors take the column as it comes:
 
 ```sql
-SELECT count(*) AS n,
+SELECT writer, count(*) AS n,
        ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
                      - ST_Area(geometry_lod0_0))), 12) AS max_abs_diff
-FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0 IS NOT NULL;
+FROM (SELECT 'cityjson' AS writer, geometry_lod0_0 FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet')
+      UNION ALL
+      SELECT 'cityparquet-rs', geometry_lod0_0 FROM read_parquet('/tmp/cp_test/rs_out/building.parquet'))
+WHERE geometry_lod0_0 IS NOT NULL GROUP BY writer ORDER BY writer;
 ```
 
 ```
-┌──────┬───────────────┐
-│  n   │ max_abs_diff  │
-├──────┼───────────────┤
-│ 1115 │ 6.6742601e-05 │
-└──────┴───────────────┘
+┌────────────────┬───────┬───────────────┐
+│     writer     │   n   │ max_abs_diff  │
+│    varchar     │ int64 │    double     │
+├────────────────┼───────┼───────────────┤
+│ cityjson       │  1115 │ 6.6742601e-05 │
+│ cityparquet-rs │  1115 │ 6.6742601e-05 │
+└────────────────┴───────┴───────────────┘
 ```
 
 Routing the same column through `spatial`'s `ST_AsWKB` first is still valid and gives the
-identical answer — it is simply no longer necessary:
+identical answer — it is simply not necessary:
 
 ```sql
 SELECT ROUND(max(abs(ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))
@@ -956,14 +1032,15 @@ FROM read_parquet('/tmp/cp_test/pkg_out/building.parquet') WHERE geometry_lod0_0
 ```
 ┌───────────────────┐
 │ direct_vs_bridged │
+│      double       │
 ├───────────────────┤
 │               0.0 │
 └───────────────────┘
 ```
 
 This doubles as a **third independent oracle**: `ST_3DFootprintArea` agrees with
-`spatial`'s GEOS-backed `ST_Area` to 6.7e-5 m² worst case across 1115 footprints — about
-4e-9 relative on areas up to 15 000 m².
+`spatial`'s GEOS-backed `ST_Area` to 4.7e-5 m² worst case across 1115 footprints, in either
+writer's package — about 3e-9 relative on areas up to 15 000 m².
 
 ## 23 — All LoDs of one building, side by side
 
@@ -984,55 +1061,151 @@ ORDER BY b.id LIMIT 5;
 ```
 ┌────────────────────────────────┬───────────┬───────────┬───────────┬──────────┐
 │            building            │ lod0_area │ lod12_vol │ lod22_vol │ lod22_fp │
+│            varchar             │  double   │  double   │  double   │  double  │
 ├────────────────────────────────┼───────────┼───────────┼───────────┼──────────┤
-│ NL.IMBAG.Pand.0503100000000030 │ 15341.22  │ 127502.8  │ 137182.8  │ 15341.47 │
-│ NL.IMBAG.Pand.0503100000000137 │ 84.82     │ 821.6     │ 796.8     │ 84.82    │
-│ NL.IMBAG.Pand.0503100000000138 │ 8.01      │ 20.8      │ 20.7      │ 8.01     │
-│ NL.IMBAG.Pand.0503100000000139 │ 55.68     │ 403.4     │ 398.1     │ 47.3     │
-│ NL.IMBAG.Pand.0503100000000140 │ 1295.08   │ 19570.9   │ 18179.1   │ 1284.59  │
+│ NL.IMBAG.Pand.0503100000000030 │  15341.22 │  127502.8 │  137184.3 │ 15341.47 │
+│ NL.IMBAG.Pand.0503100000000137 │     84.82 │     821.6 │     796.8 │    84.82 │
+│ NL.IMBAG.Pand.0503100000000138 │      8.01 │      20.8 │      20.7 │     8.01 │
+│ NL.IMBAG.Pand.0503100000000139 │     55.68 │     403.4 │     398.1 │     47.3 │
+│ NL.IMBAG.Pand.0503100000000140 │   1295.08 │   19570.9 │   18179.2 │  1284.59 │
 └────────────────────────────────┴───────────┴───────────┴───────────┴──────────┘
 ```
 
 The **join is mandatory**: LoD0 lives on the `Building`, the solid LoDs on its
 `BuildingPart`s, so no single row carries both. Without the join this query returns zero
-rows — which is what happened on the first attempt and looked like a broken filter.
+rows, which looks like a broken filter.
 
 `lod0_area` tracks `lod22_fp` closely but not exactly (LoD0 is an independent
 generalisation), and diverges most on `…139`, a multi-part building where only one part
 is joined. LoD1.2 volume is a prism approximation and sits either side of LoD2.2.
 
+## 24 — Implicit geometries: placing the railway's trees
+
+`lod3_railway.city.json`'s 15 `SolitaryVegetationObject`s are implicit geometries: three
+relative geometries, stored once, each placed at an object by a reference point and a
+transformation matrix. A package keeps the relative geometries in
+`implicit_geometries.parquet`; an object row's `implicit_geometry` struct carries the `id` to
+join on, the reference `point` and the `transformationMatrix`. Write the railway with both
+writers — the source declares no CRS, so the `cityjson` write warns that the package's CRS is
+unknown, and `cityparquet-rs` warns the same:
+
+```sql
+CREATE SCHEMA rail;
+PRAGMA cityparquet_init('rail');
+PRAGMA insert_cityjson('rail', '../cityparquet-rs/tests/fixtures/lod3_railway.city.json');
+SELECT file, rows FROM cityparquet_write('rail', '/tmp/cp_test/rail_cj')
+WHERE file IN ('vegetation.parquet', 'implicit_geometries.parquet') ORDER BY file;
+```
+
+```
+WARNING: cityparquet_write: no CRS for schema 'rail' -- the package's footer carries none and none was given (crs => 'EPSG:7415'), so every file's `crs` is written as an explicit null (CRS unknown) and metadata.json declares no projection
+
+┌─────────────────────────────┬───────┐
+│            file             │ rows  │
+│           varchar           │ int64 │
+├─────────────────────────────┼───────┤
+│ implicit_geometries.parquet │     3 │
+│ vegetation.parquet          │    15 │
+└─────────────────────────────┴───────┘
+```
+
+```sh
+../cityparquet-rs/target/release/cityparquet convert \
+    ../cityparquet-rs/tests/fixtures/lod3_railway.city.json -o /tmp/cp_test/rail_rs
+```
+
+`ST_3DPlaceImplicit` materialises each instance from the join:
+
+```sql
+CREATE TABLE placed AS
+SELECT writer, id, template,
+       ST_3DPlaceImplicit(ST_Geom3DFromWKB(relative),
+                          ST_Geom3DFromWKB(implicit_geometry.point),
+                          implicit_geometry.transformationMatrix) AS g
+FROM (SELECT 'cityjson' AS writer, o.id, o.implicit_geometry, o.implicit_geometry.id AS template,
+             t.geometry_lod3_0 AS relative
+      FROM '/tmp/cp_test/rail_cj/vegetation.parquet' o
+      JOIN '/tmp/cp_test/rail_cj/implicit_geometries.parquet' t ON t.id = o.implicit_geometry.id
+      UNION ALL
+      SELECT 'cityparquet-rs', o.id, o.implicit_geometry, o.implicit_geometry.id, t.geometry_lod3_0
+      FROM '/tmp/cp_test/rail_rs/vegetation.parquet' o
+      JOIN '/tmp/cp_test/rail_rs/implicit_geometries.parquet' t ON t.id = o.implicit_geometry.id);
+
+SELECT writer, count(*) AS instances, count(DISTINCT template) AS templates,
+       ROUND(min(ST_3DZMin(g)), 3) AS zmin, ROUND(max(ST_3DZMax(g)), 3) AS zmax
+FROM placed GROUP BY writer ORDER BY writer;
+
+SELECT id, ST_3DAsText(ST_3DCentroid(g)) AS placed_centroid
+FROM placed WHERE writer = 'cityjson' ORDER BY id LIMIT 3;
+```
+
+```
+┌────────────────┬───────────┬───────────┬────────┬────────┐
+│     writer     │ instances │ templates │  zmin  │  zmax  │
+│    varchar     │   int64   │   int64   │ double │ double │
+├────────────────┼───────────┼───────────┼────────┼────────┤
+│ cityjson       │        15 │         3 │    8.5 │  9.602 │
+│ cityparquet-rs │        15 │         3 │    8.5 │  9.602 │
+└────────────────┴───────────┴───────────┴────────┴────────┘
+┌────────────────────────────┬─────────────────────────────────────────────┐
+│             id             │               placed_centroid               │
+│          varchar           │                   varchar                   │
+├────────────────────────────┼─────────────────────────────────────────────┤
+│ GMLID_SO0107241_3793_12555 │ POINT Z (1.15844898 6.6314892 9.0743353)    │
+│ GMLID_SO0124800_3522_13577 │ POINT Z (0.828664787 7.54983942 9.32059222) │
+│ GMLID_SO015374_872_14131   │ POINT Z (0.803664787 6.93783942 9.16959222) │
+└────────────────────────────┴─────────────────────────────────────────────┘
+```
+
+The two writers number the relative geometries independently, so the `template` ids need not
+agree; the placed geometry must:
+
+```sql
+SELECT count(*) AS matched,
+       count(*) FILTER (WHERE ST_3DAsBinary(a.g) = ST_3DAsBinary(b.g)) AS identical_bytes
+FROM placed a JOIN placed b USING (id)
+WHERE a.writer = 'cityjson' AND b.writer = 'cityparquet-rs';
+```
+
+```
+┌─────────┬─────────────────┐
+│ matched │ identical_bytes │
+│  int64  │      int64      │
+├─────────┼─────────────────┤
+│      15 │              15 │
+└─────────┴─────────────────┘
+```
+
+The railway's matrices are all the identity, so each placement is a pure translation by the
+reference point. `test/sql/st_3d_place_implicit.test` checks the placed bounds against values
+computed from the CityJSON source directly, on the `cityparquet-rs` package checked in as
+`test/data/railway_implicit`.
+
+---
+
 ## Quirks and known gaps
 
-### A real bug this walkthrough found: volume drift under rotation
+### Volume under rotation is a conditioning test
 
-`ST_3DRotateX` / `ST_3DRotateY` appeared to break volume invariance on real data — up to
-**12 % relative drift** across the Delft tile — while `ST_3DRotateZ` stayed clean. It was
-not the transforms. `ComputeVolume` summed signed tetrahedra `a·(b×c)` about the
-**absolute coordinate origin**, so the triple product scaled as |position|³ while the
-answer scaled as |extent|³. In EPSG:28992 (easting ~8.5e4, northing ~4.5e5) that cancelled
-roughly nine of the sixteen available digits. Only X and Y rotations mix the large
-northing into Z, which is why Z rotation looked fine and hid the problem. A tetrahedron
-translated to 1e8 reported `1.67e7` instead of `1/6`.
+The §14 RotateX/RotateY cells are the walkthrough's sharpest check. Rotating about X or Y
+mixes the large RD New northing (~4.5e5) into Z, so any volume sum taken about the
+absolute coordinate origin — where the triple product `a·(b×c)` scales as |position|³
+while the answer scales as |extent|³ — would cancel roughly nine of the sixteen available
+digits and drift by percent. `ST_3DRotateZ` would hide the same problem, because it never
+moves the northing into Z.
 
-Fixed by referencing each tetrahedron to a point on the shell it belongs to — a no-op in
-exact arithmetic. Drift across all 1098 valid Delft solids is now at most **3.0e-11**
-relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is the floor
-imposed by rotating absolute RD coordinates, not a residue of the cancellation.
-Untransformed measurements did not change: agreement with 3DBAG's `b3_volume_lod22` is
-still a 0.0167 % median error. Regression tests: `test/cpp/test_measurements.cpp`
-("far-from-origin tetrahedron keeps full precision") and the RotateX/RotateY cases in
-`test/sql/metamorphic_transforms.test`, where the translation tolerance also tightened
-from 1e-3 to 1e-5 — that looseness had been a workaround for this very cancellation.
+`ComputeVolume` references each tetrahedron to a point on the shell it belongs to, which
+is exact in exact arithmetic. Across all 1098 valid Delft solids, volume drift is at most
+**4.4e-11** relative under rotation and *exactly* 0 under translation (§14); the ~1e-11 is
+the floor imposed by rotating absolute RD coordinates. Agreement with 3DBAG's
+`b3_volume_lod22` is a 0.0167 % median error.
 
-The first attempt at this fix used **one** reference point for the whole model (its
-bounding-box midpoint). That is enough for a compact building but not in general: for a
-`MultiSolid`/`CompositeSolid` whose parts are far apart the midpoint is far from *every*
-part, and the same cancellation returns — two unit cubes separated by 1e6 reported 14.456
-instead of 16, and by 1e7, 2353. The reference point has to be hoisted **per shell**; see
-DESIGN_DOC §8.2 and `test/sql/st_3d_multisolid.test`. Two neighbouring conditioning bugs of
-the same family turned up while pinning it — ear-clipping's handedness test (DESIGN_DOC §2.2)
-and Newell's ring area, which made the degenerate-face verdict position-dependent
-(DESIGN_DOC §8.1).
+The reference point is per **shell**, not per model: a single model-wide point is far from
+every part of a `MultiSolid`/`CompositeSolid` whose parts are far apart — two unit cubes
+separated by 1e6 would report 14.456 instead of 16. See DESIGN_DOC's *Why volume works
+the way it does* and `test/sql/st_3d_multisolid.test`. Ear-clipping's handedness test
+(DESIGN_DOC, *Topology is the source of truth*) and Newell's ring area (DESIGN_DOC, *The
+three checks*) are referenced to a local origin for the same reason.
 
 ### Cells whose real output contradicts the naive expectation
 
@@ -1058,7 +1231,7 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
 
 - **`FILTER` does not guard a raising function** (§18). `SUM(ST_3DVolume(s)) FILTER (WHERE
   …is_valid)` still evaluates `ST_3DVolume` on invalid rows and raises. Filter in `WHERE`.
-- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.4 (§22), and
+- **`geometry_lod0_0::BLOB` raises** in DuckDB v1.5.5 (§22), and
   `SET enable_geoparquet_conversion=false` is not a way out — the promotion follows the
   Parquet logical type, not the `geo` footer. Pass the `GEOMETRY` column straight to
   `ST_Geom3DFromWKB`, which takes it.
@@ -1077,19 +1250,17 @@ and Newell's ring area, which made the degenerate-face verdict position-dependen
   [FUTURE_WORK.md §2](./FUTURE_WORK.md).
 - **`proj.db` is not bundled** into the distributable `.duckdb_extension`, so §15 depends
   on a system PROJ install. [FUTURE_WORK.md §2](./FUTURE_WORK.md).
-- **CityJSON vocabulary still leaks into the kernel** (`metadata_parser.cpp` knows
-  `cityjsonType`, `shells`, `MultiSolid`). The neutral-grouping redesign is
-  [FUTURE_WORK.md §1](./FUTURE_WORK.md).
-- **`ST_3DConvexHull` is a 2D XY hull** at minimum Z, not a true 3D hull — that needs the
-  deferred CGAL/SFCGAL backend ([DESIGN_DOC.md §16](./DESIGN_DOC.md)).
+- **Format vocabulary still reaches the kernel** (`metadata_parser.cpp` parses the
+  `geometry_properties` JSON text and its `type` / `shells` keys). The neutral-grouping
+  redesign is [FUTURE_WORK.md §1](./FUTURE_WORK.md).
 
 ---
 
 ## Running it
 
 This notebook is **not** wired into an automated target — it needs the sibling
-`duckdb-cityjson` build, network access, and several minutes of Helsinki parsing. Run it
-by hand with the [Setup](#setup) incantation.
+`duckdb-cityjson` build, a `cityparquet-rs` build for Part C, network access, and the
+~675 MB Helsinki download. Run it by hand with the [Setup](#setup) incantation.
 
 The behaviours it demonstrates are covered automatically as follows:
 
@@ -1100,16 +1271,19 @@ The behaviours it demonstrates are covered automatically as follows:
 | §3 | `test/sql/cityjson_multisolid.test`, `test/sql/st_3d_multisolid.test` |
 | §5, §6, §17 | `test/sql/geom_3d_accessors.test`, `geom_3d_measurements.test`, `geom_3d_serialize.test` |
 | §8–§13 | `test/sql/cityjson_delft_remote.test` and `test/sql/cityjson_3dbag_attributes.test` (the 3DBAG oracle, remote and offline), `test/sql/st_3d_validation.test`, `test/sql/geom_3d_distance.test` |
-| §14 | `test/sql/metamorphic_transforms.test` — **extended by this walkthrough** with the RotateX/RotateY cases from the quirks section |
-| §14 (kernel) | `test/cpp/test_measurements.cpp` — **added by this walkthrough**: far-from-origin precision |
+| §14 | `test/sql/metamorphic_transforms.test`, including the RotateX/RotateY cases from the quirks section |
+| §14 (kernel) | `test/cpp/test_measurements.cpp`: far-from-origin precision |
 | §15 | `test/sql/st_transform.test`, `test/cpp/test_crs_transform.cpp` |
 | §16 | `test/sql/geom_3d_construct.test`, `test/cpp/test_geom_construct.cpp` |
+| §19–§21, §23 | `test/sql/cityparquet_round_trip.test` (gated on `require cityjson`): both writers' packages of the nine-building slice against the streamed CityJSONSeq, every solid LoD byte-identical |
 | §20 | `test/sql/st_3d_from_wkb_struct.test` (the CityParquet STRUCT sidecar) |
-| §22 (GEOMETRY input) | `test/sql/wkb_from_geometry.test` (the constructors' `GEOMETRY` argument) |
+| §22 (GEOMETRY input) | `test/sql/wkb_from_geometry.test` (the constructors' `GEOMETRY` argument), and the LoD0 footprints in `cityparquet_round_trip.test` |
 | §22 (oracle) | Partly `test/sql/postgis_oracle.test`; the `spatial` cross-check here is manual |
+| §24 | `test/sql/st_3d_place_implicit.test`, on the `cityparquet-rs` railway package in `test/data/railway_implicit` |
 
-**Genuinely uncovered by any automated test:** the CityParquet write→read round trip
-(§19–§23). It is a candidate for a new gated test file; see [TEST_COVERAGE.md](./TEST_COVERAGE.md) for the oracle strategy.
+The automated round trip runs on the frozen nine-building slice rather than the full tile,
+and does not write the railway package with the `cityjson` extension; the tile-scale and
+cross-writer implicit-geometry checks above are manual.
 
 Remember `THREE_D_TEST_FIXTURES=1` if you run `build/release/duckdb` directly — without
 it the `st_aswkb*` helpers are unregistered and every file declaring

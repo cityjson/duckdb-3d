@@ -11,7 +11,7 @@ require-env THREE_D_TEST_FIXTURES
 # BLOB. Reading such a column used to need ST_AsWKB in between. These overloads
 # remove that step; the bytes and the answers are identical either way.
 #
-# Only the footprint constructor has a reachable positive case. DuckDB v1.5.4's
+# Only the footprint constructor has a reachable positive case. DuckDB v1.5.5's
 # geometry model has no polyhedral surface, so ST_GeomFromWKB raises
 # `Unsupported geometry type in WKB` on solid bytes and a solid cannot become a
 # GEOMETRY at all; the kernel in turn takes a GeometryCollection Z only when its
@@ -84,3 +84,39 @@ SELECT ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube())),
        ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolygonZ()));
 ----
 56.0	ST_Polygon
+
+# The geometry_properties overloads take GEOMETRY too, with the sidecar as a
+# CityParquet STRUCT or as JSON text. No successful case exists: a solid cannot be
+# a GEOMETRY in DuckDB v1.5.5 (no polyhedral surface), and the CityParquet
+# specification types geometry_lod* as BLOB, so a conforming solid column never
+# arrives as GEOMETRY. What the overload buys is binding — a GEOMETRY column paired with a
+# sidecar binds and fails per row, NULL under TRY, instead of failing to bind —
+# so the assertions below are the binding and null contracts.
+query II
+SELECT ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), {'type': 'Solid', 'shells': [[1]]}) IS NULL,
+       ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), '{"type": "Solid", "shells": [[1]]}') IS NULL;
+----
+true	true
+
+# A NULL GEOMETRY gives NULL whatever the sidecar; a NULL sidecar is "no metadata".
+query III
+SELECT ST_3DFromWKB(NULL::GEOMETRY, {'type': 'Solid', 'shells': [[6, 6]]}) IS NULL,
+       ST_3DFromWKB(NULL::GEOMETRY, '{}') IS NULL,
+       ST_3DTryFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), NULL) IS NULL;
+----
+true	true	true
+
+# The STRUCT bind runs for GEOMETRY as for BLOB: a struct without `shells` is
+# not a geometry_properties struct.
+statement error
+SELECT ST_3DFromWKB(ST_GeomFromWKB(ST_AsWKBPolygonZ()), {'type': 'Solid'});
+----
+shells
+
+# An untyped NULL geometry with a sidecar still binds (BLOB and GEOMETRY are
+# equally good casts for it).
+query II
+SELECT ST_3DFromWKB(NULL, '{}') IS NULL,
+       ST_3DTryFromWKB(NULL, {'type': 'Solid', 'shells': [[6, 6]]}) IS NULL;
+----
+true	true

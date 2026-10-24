@@ -41,11 +41,12 @@ SELECT
 ----
 ST_MultiPolygon	2	2
 
-# PolyhedralSurface Z (closed tetrahedron) parses as a single surface
+# PolyhedralSurface Z (closed tetrahedron) parses as one surface of four
+# patches; ST_3DNumGeometries counts the patches, as PostGIS ST_NumGeometries does
 query III
 SELECT
     ST_3DGeometryType(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
     ST_3DDimension(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra())),
     ST_3DNumGeometries(ST_Geom3DFromWKB(ST_AsWKBPolyhedralTetra()));
 ----
-ST_PolyhedralSurface	2	1
+ST_PolyhedralSurface	2	4

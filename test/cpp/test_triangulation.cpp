@@ -2,7 +2,14 @@
 #include "kernel/triangulation.hpp"
 #include "kernel/measurements.hpp"
 #include "kernel/solid_model.hpp"
+#include "kernel/validation.hpp"
+#include "real_rings.hpp"
+#include <array>
+#include <cstdint>
+#include "mapbox/earcut.hpp"
 #include <cmath>
+#include <map>
+#include <tuple>
 
 // Direct unit coverage for kernel/triangulation (ear-clipping). Previously the
 // triangulator was only exercised transitively through whole-solid measurement
@@ -29,6 +36,75 @@ SolidModel OneFace(const std::vector<Vertex3D> &ring) {
 	}
 	TriangulateSolidModel(m);
 	return m;
+}
+
+//! A SolidModel holding one face made of `rings` (ring 0 exterior, the rest
+//! holes), with vertices deduplicated exactly as the model builder does, so a
+//! pinched ring references its repeated vertex by one index.
+SolidModel FaceWithRings(const real_rings::Rings &rings) {
+	SolidModel m;
+	std::map<std::tuple<double, double, double>, uint32_t> index;
+	m.solid_shell_offsets = {0, 1};
+	m.shell_face_offsets = {0, 1};
+	m.face_ring_offsets = {0, static_cast<uint32_t>(rings.size())};
+	m.ring_vertex_offsets = {0};
+	for (const auto &ring : rings) {
+		for (const auto &v : ring) {
+			auto key = std::make_tuple(v.x, v.y, v.z);
+			auto it = index.find(key);
+			if (it == index.end()) {
+				it = index.emplace(key, static_cast<uint32_t>(m.vertices.size())).first;
+				m.vertices.push_back(v);
+			}
+			m.ring_vertex_indices.push_back(it->second);
+		}
+		m.ring_vertex_offsets.push_back(static_cast<uint32_t>(m.ring_vertex_indices.size()));
+	}
+	TriangulateSolidModel(m);
+	return m;
+}
+
+//! Twice the vector area of triangle t, taken about vertex `o` for conditioning.
+Vertex3D TriangleAreaVector2(const SolidModel &m, uint32_t t, const Vertex3D &o) {
+	const auto &a = m.vertices[m.triangle_vertex_indices[t * 3 + 0]];
+	const auto &b = m.vertices[m.triangle_vertex_indices[t * 3 + 1]];
+	const auto &c = m.vertices[m.triangle_vertex_indices[t * 3 + 2]];
+	double ax = a.x - o.x, ay = a.y - o.y, az = a.z - o.z;
+	double bx = b.x - o.x - ax, by = b.y - o.y - ay, bz = b.z - o.z - az;
+	double cx = c.x - o.x - ax, cy = c.y - o.y - ay, cz = c.z - o.z - az;
+	return {by * cz - bz * cy, bz * cx - bx * cz, bx * cy - by * cx};
+}
+
+//! The triangulation tiles the face. Two checks, both against the face's
+//! independently computed area:
+//!   * the triangles' summed vector area equals it — the vector area of a closed
+//!     polygon is the same for every triangulation that uses all of its vertices
+//!     with consistent winding, planar or not, so a triangulation that stops
+//!     early or skips a vertex falls short;
+//!   * their unsigned areas along the face normal add up to it, up to
+//!     `fold_slack` — a hole triangulated on its own lays triangles over the
+//!     exterior's, which the vector sum alone cannot see. On a planar face the
+//!     slack is rounding; a non-planar face has genuine folds, so the caller
+//!     states how much.
+void RequireTilesFace(const SolidModel &m, double expected_area, double fold_slack = 1e-9) {
+	REQUIRE(m.TriangleCount() > 0);
+	const Vertex3D o = m.vertices[0];
+	Vertex3D sum = {0, 0, 0};
+	for (uint32_t t = 0; t < m.TriangleCount(); t++) {
+		auto v = TriangleAreaVector2(m, t, o);
+		sum.x += v.x;
+		sum.y += v.y;
+		sum.z += v.z;
+	}
+	double len = std::sqrt(sum.x * sum.x + sum.y * sum.y + sum.z * sum.z);
+	REQUIRE(0.5 * len == Approx(expected_area).epsilon(1e-9));
+	Vertex3D n = {sum.x / len, sum.y / len, sum.z / len};
+	double unsigned_along = 0;
+	for (uint32_t t = 0; t < m.TriangleCount(); t++) {
+		auto v = TriangleAreaVector2(m, t, o);
+		unsigned_along += std::abs(0.5 * (v.x * n.x + v.y * n.y + v.z * n.z));
+	}
+	REQUIRE(unsigned_along <= expected_area * (1 + fold_slack));
 }
 
 } // namespace
@@ -103,4 +179,149 @@ TEST_CASE("Triangulation: ring winding is decided about a local origin", "[trian
 			REQUIRE(ComputeSurfaceArea(m) == Approx(5.0).epsilon(1e-9));
 		}
 	}
+}
+
+TEST_CASE("Triangulation: a hole is bridged into its face, not triangulated on its own", "[triangulation]") {
+	// 4 x 4 square with a 2 x 2 hole, the hole wound opposite the exterior as a
+	// polygon's interior ring is. The face's area is 16 - 4 = 12; triangulating the
+	// hole as a separate polygon would lay 4 extra units over the exterior's own
+	// triangles, so the triangles would not tile the face.
+	auto m =
+	    FaceWithRings({{{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {0, 4, 0}}, {{1, 1, 0}, {1, 3, 0}, {3, 3, 0}, {3, 1, 0}}});
+	RequireTilesFace(m, 12.0);
+	REQUIRE(m.TriangleCount() == 8); // n + 2h - 2 = 8 + 2 - 2
+}
+
+TEST_CASE("Triangulation: real rings pinched at a repeated vertex triangulate completely", "[triangulation]") {
+	// 3DBAG roof faces whose exterior ring touches itself at one vertex; the
+	// repeated vertex is one model vertex, so the ring visits it twice.
+	SECTION("NL.IMBAG.Pand.0503100000029374-0 face 39") {
+		RequireTilesFace(FaceWithRings(real_rings::kDelft29374Face39), real_rings::kDelft29374Face39Area);
+	}
+	SECTION("NL.IMBAG.Pand.0503100000019817-0 face 82") {
+		RequireTilesFace(FaceWithRings(real_rings::kDelft19817Face82), real_rings::kDelft19817Face82Area);
+	}
+	SECTION("NL.IMBAG.Pand.0503100000000010-0 face 928, with a hole") {
+		RequireTilesFace(FaceWithRings(real_rings::kDelft00010Face928), real_rings::kDelft00010Face928Area);
+	}
+}
+
+TEST_CASE("Triangulation: a real face with four holes tiles its area", "[triangulation]") {
+	// lod3_railway.city.json: a 30-vertex exterior ring with four interior rings.
+	RequireTilesFace(FaceWithRings(real_rings::kRailway5c9d78e9Face12), real_rings::kRailway5c9d78e9Face12Area);
+}
+
+TEST_CASE("Triangulation: real faces where ear clipping stopped early triangulate completely", "[triangulation]") {
+	SECTION("a twisted quad, GMLID_46150217_194492_1237 face 771") {
+		RequireTilesFace(FaceWithRings(real_rings::kRailway46150217Face771), real_rings::kRailway46150217Face771Area);
+	}
+	SECTION("a face with collinear runs, GMLID_6162422_289094_1279 face 168") {
+		// Not planar: five vertices lie in x = 10.34, two do not, so the part in
+		// x = 10.34 folds against the face's mean plane by a sliver of about
+		// 1.7e-6 against an area of 7.2e-4.
+		RequireTilesFace(FaceWithRings(real_rings::kRailway6162422Face168), real_rings::kRailway6162422Face168Area,
+		                 1e-2);
+	}
+}
+
+TEST_CASE("Triangulation: a vertex earcut drops at the tip of a spike is restored without folding", "[triangulation]") {
+	// (3,0,0) is collinear with its neighbours (0,0,0) and (2,0,0) but lies
+	// beyond them, not between: the ring runs out along the x axis and back.
+	// Restoring it must not lay a triangle over the face the wrong way round.
+	RequireTilesFace(FaceWithRings({{{0, 0, 0}, {3, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}}}), 4.0);
+}
+
+TEST_CASE("Triangulation: a face it cannot tile gets no triangles and is degenerate", "[triangulation]") {
+	// A self-intersecting ring: edges (0,0)-(4,4) and (4,0)-(0,2) cross at
+	// (4/3, 4/3). Its signed area is 4, its two lobes cover 16/3 + 4/3 = 20/3, so
+	// no set of triangles both tiles it and matches its area. The triangulation
+	// must not hand back a partial or overlapping result: the face gets no
+	// triangles, and validation counts it degenerate, which gates ST_3DVolume and
+	// ST_3DSurfaceArea.
+	auto m = FaceWithRings({{{0, 0, 0}, {4, 4, 0}, {4, 0, 0}, {0, 2, 0}}});
+	REQUIRE(m.TriangleCount() == 0);
+	ValidateSolidModel(m);
+	REQUIRE(m.validation.degenerate_face_count == 1);
+	REQUIRE_FALSE(m.validation.is_valid);
+}
+
+namespace {
+
+//! A self-overlapping ring: an 8000-step lattice random walk from a fixed-seed
+//! linear congruential generator, consecutive repeats dropped. Earcut finds no
+//! ear on such a ring and falls back to splitting it, and the splits nest:
+//! unbounded, this ring nests 51 deep (measured on earcut 2.2.4), past the
+//! 32-level bound, while a fixture face nests at most once. The ring is the size
+//! it is because the nesting grows with it — about 15 at 1000 steps, 35 at 4000
+//! — and 8000 steps clear the bound with margin while triangulating in well
+//! under a second.
+std::vector<Vertex3D> SelfOverlappingWalk() {
+	std::vector<Vertex3D> ring;
+	uint32_t state = 12345;
+	double x = 0, y = 0;
+	for (int i = 0; i < 8000; i++) {
+		state = state * 1664525u + 1013904223u;
+		x += static_cast<double>((state >> 16) % 3) - 1;
+		state = state * 1664525u + 1013904223u;
+		y += static_cast<double>((state >> 16) % 3) - 1;
+		if (!ring.empty() && ring.back().x == x && ring.back().y == y) {
+			continue;
+		}
+		ring.push_back({x, y, 0});
+	}
+	while (ring.size() > 1 && ring.front().x == ring.back().x && ring.front().y == ring.back().y) {
+		ring.pop_back();
+	}
+	return ring;
+}
+
+} // namespace
+
+TEST_CASE("Triangulation: earcut's split recursion is bounded", "[triangulation]") {
+	// Each split recurses on both halves, so on a self-overlapping ring the nesting
+	// tracks the ring's size; ring input arrives from SQL, so unbounded nesting
+	// could exhaust a worker thread's stack. The vendored earcut caps it.
+	auto ring = SelfOverlappingWalk();
+	std::vector<std::vector<std::array<double, 2>>> polygon(1);
+	for (const auto &v : ring) {
+		polygon[0].push_back({v.x, v.y});
+	}
+	mapbox::detail::Earcut<uint32_t> earcut;
+	earcut(polygon);
+	REQUIRE(earcut.splitDepthExceeded);
+}
+
+TEST_CASE("Triangulation: a face that hits earcut's split bound gets no triangles and is degenerate",
+          "[triangulation]") {
+	auto m = FaceWithRings({SelfOverlappingWalk()});
+	REQUIRE(m.TriangleCount() == 0);
+	ValidateSolidModel(m);
+	REQUIRE(m.validation.degenerate_face_count == 1);
+}
+
+TEST_CASE("Triangulation: a face whose areas overflow is degenerate, not handed to earcut", "[triangulation]") {
+	// An 81-vertex polygon (one more than earcut's 80-vertex threshold for its
+	// z-order hash, which casts projected coordinates to int32) of radius 1e200
+	// centred at 1e200. Its area, and so its Newell normal, is about 1e400:
+	// past the double range. A non-finite normal yields a non-finite plane frame
+	// and NaN 2D coordinates, which earcut's hash would convert to an integer —
+	// undefined behaviour — and the tiling check, all of whose comparisons with NaN
+	// are false, would wave the result through. The face must be rejected first.
+	const double pi = std::acos(-1.0);
+	std::vector<Vertex3D> ring;
+	for (int i = 0; i < 81; i++) {
+		double a = 2 * pi * i / 81;
+		ring.push_back({1e200 + 1e200 * std::cos(a), 1e200 + 1e200 * std::sin(a), 0});
+	}
+	auto m = FaceWithRings({ring});
+	REQUIRE(m.TriangleCount() == 0);
+	ValidateSolidModel(m);
+	REQUIRE(m.validation.degenerate_face_count == 1);
+}
+
+TEST_CASE("Triangulation: a face of large but representable extent still triangulates", "[triangulation]") {
+	// Coordinates of 1e150 square to 1e300, inside the double range: such a face
+	// is not rejected for its size alone. Area of the 2e150-sided square: 4e300.
+	auto m = FaceWithRings({{{0, 0, 0}, {2e150, 0, 0}, {2e150, 2e150, 0}, {0, 2e150, 0}}});
+	REQUIRE(m.TriangleCount() == 2);
 }

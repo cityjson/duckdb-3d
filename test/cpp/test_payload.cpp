@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "kernel/model_builder.hpp"
 #include "kernel/payload.hpp"
 #include "kernel/solid_model.hpp"
 #include <cstring>
@@ -68,8 +69,57 @@ TEST_CASE("Payload header magic and version", "[payload]") {
 	uint16_t major, minor;
 	std::memcpy(&major, bytes.data() + 4, 2);
 	std::memcpy(&minor, bytes.data() + 6, 2);
-	REQUIRE(major == 1);
+	REQUIRE(major == 2);
 	REQUIRE(minor == 0);
+}
+
+TEST_CASE("Payload carries the CRS", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	REQUIRE(model.crs.empty());
+	model.crs = "EPSG:7415";
+	auto bytes = SerializePayload(model);
+	REQUIRE(bytes.size() == SerializedPayloadSize(model));
+	REQUIRE(DeserializePayload(bytes.data(), bytes.size()).crs == "EPSG:7415");
+	REQUIRE(ReadSolidPayloadHeader(bytes.data(), bytes.size()).crs == "EPSG:7415");
+
+	model.crs.clear();
+	bytes = SerializePayload(model);
+	REQUIRE(DeserializePayload(bytes.data(), bytes.size()).crs.empty());
+	REQUIRE(ReadSolidPayloadHeader(bytes.data(), bytes.size()).crs.empty());
+}
+
+TEST_CASE("Payload carries every validation counter", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	model.validation.open_edge_count = 1;
+	model.validation.non_manifold_edge_count = 2;
+	model.validation.degenerate_face_count = 3;
+	model.validation.orientation_error_count = 4;
+	model.validation.non_manifold_vertex_count = 5;
+	model.validation.disconnected_shell_count = 6;
+	model.validation.self_intersection_count = 7;
+	model.validation.is_valid = false;
+	auto bytes = SerializePayload(model);
+	for (const auto &vc : {DeserializePayload(bytes.data(), bytes.size()).validation,
+	                       ReadSolidPayloadHeader(bytes.data(), bytes.size()).validation}) {
+		REQUIRE(vc.open_edge_count == 1);
+		REQUIRE(vc.non_manifold_edge_count == 2);
+		REQUIRE(vc.degenerate_face_count == 3);
+		REQUIRE(vc.orientation_error_count == 4);
+		REQUIRE(vc.non_manifold_vertex_count == 5);
+		REQUIRE(vc.disconnected_shell_count == 6);
+		REQUIRE(vc.self_intersection_count == 7);
+		REQUIRE_FALSE(vc.is_valid);
+		REQUIRE(vc.is_closed);
+	}
+}
+
+TEST_CASE("Payload refuses a version 1 payload and says to rebuild it", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	auto bytes = SerializePayload(model);
+	uint16_t v1 = 1;
+	std::memcpy(bytes.data() + 4, &v1, 2);
+	REQUIRE_THROWS_WITH(DeserializePayload(bytes.data(), bytes.size()), Catch::Contains("rebuild"));
+	REQUIRE_THROWS_WITH(ReadSolidPayloadHeader(bytes.data(), bytes.size()), Catch::Contains("rebuild"));
 }
 
 TEST_CASE("Payload round-trip for tetrahedron", "[payload]") {
@@ -122,6 +172,27 @@ TEST_CASE("Payload round-trip for tetrahedron", "[payload]") {
 	REQUIRE(restored.validation.non_manifold_edge_count == 0);
 	REQUIRE(restored.validation.degenerate_face_count == 0);
 	REQUIRE(restored.validation.orientation_error_count == 0);
+}
+
+TEST_CASE("SerializedPayloadSize is the serialized size", "[payload]") {
+	auto model = MakeTetrahedron();
+	REQUIRE(SerializedPayloadSize(model) == SerializePayload(model).size());
+}
+
+TEST_CASE("DeserializePayloadInto overwrites every field of a reused model", "[payload]") {
+	auto bytes = SerializePayload(MakeTetrahedron());
+
+	// A model left over from a previous, larger row with a different cache.
+	SolidModel reused = MakeTetrahedron();
+	reused.vertices.push_back({9, 9, 9});
+	reused.ring_vertex_indices.push_back(4);
+	reused.triangle_vertex_indices.insert(reused.triangle_vertex_indices.end(), {0, 1, 4});
+	reused.face_triangle_offsets.back() = 5;
+	reused.bbox.max_x = 9;
+	reused.validation = {7, 7, 7, 7, false, false, false, false};
+
+	DeserializePayloadInto(bytes.data(), bytes.size(), reused);
+	REQUIRE(SerializePayload(reused) == bytes);
 }
 
 TEST_CASE("Payload rejects invalid magic", "[payload]") {
@@ -248,4 +319,38 @@ TEST_CASE("SolidModel ComputeBBox empty", "[solid_model]") {
 	model.ComputeBBox();
 	REQUIRE(model.bbox.min_x == 0.0);
 	REQUIRE(model.bbox.max_x == 0.0);
+}
+
+TEST_CASE("RebuildSolidPayload re-derives triangles and validation", "[payload]") {
+	// An open tetrahedron (three faces) whose trailer claims it is valid and
+	// whose triangle cache is empty: what a hand-made or stale BLOB can carry.
+	SolidModel model = MakeTetrahedron();
+	model.shell_face_offsets = {0, 3};
+	model.face_ring_offsets = {0, 1, 2, 3};
+	model.ring_vertex_offsets = {0, 3, 6, 9};
+	model.ring_vertex_indices.resize(9);
+	model.face_triangle_offsets = {0, 0, 0, 0};
+	model.triangle_vertex_indices.clear();
+	model.validation.self_intersection_count = 0;
+	auto forged = SerializePayload(model);
+	REQUIRE(ReadSolidPayloadHeader(forged.data(), forged.size()).validation.is_valid);
+
+	auto rebuilt_bytes = RebuildSolidPayload(forged.data(), forged.size());
+	auto rebuilt = DeserializePayload(rebuilt_bytes.data(), rebuilt_bytes.size());
+	REQUIRE(rebuilt.validation.is_valid == false);
+	REQUIRE(rebuilt.validation.is_closed == false);
+	REQUIRE(rebuilt.validation.open_edge_count == 3);
+	REQUIRE(rebuilt.TriangleCount() == 3);
+	REQUIRE(rebuilt.vertices.size() == 4);
+}
+
+TEST_CASE("RebuildSolidPayload keeps a valid solid valid and its CRS", "[payload]") {
+	SolidModel model = MakeTetrahedron();
+	model.crs = "EPSG:7415";
+	auto bytes = SerializePayload(model);
+	auto rebuilt_bytes = RebuildSolidPayload(bytes.data(), bytes.size());
+	auto rebuilt = DeserializePayload(rebuilt_bytes.data(), rebuilt_bytes.size());
+	REQUIRE(rebuilt.validation.is_valid);
+	REQUIRE(rebuilt.crs == "EPSG:7415");
+	REQUIRE(rebuilt.ring_vertex_indices == model.ring_vertex_indices);
 }

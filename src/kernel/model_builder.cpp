@@ -1,26 +1,85 @@
 #include "kernel/model_builder.hpp"
+#include "kernel/payload.hpp"
 #include "kernel/validation.hpp"
 #include "kernel/triangulation.hpp"
-#include <unordered_map>
-#include <functional>
+#include <cstring>
 #include <stdexcept>
 
 namespace duckdb_3d {
 
 namespace {
 
-//! Hash function for Vertex3D to support deduplication via unordered_map
-struct Vertex3DHash {
-	size_t operator()(const Vertex3D &v) const {
-		// Combine hashes of x, y, z using a standard approach
-		size_t h1 = std::hash<double> {}(v.x);
-		size_t h2 = std::hash<double> {}(v.y);
-		size_t h3 = std::hash<double> {}(v.z);
-		h1 ^= h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2);
-		h1 ^= h3 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2);
-		return h1;
+//! Maps each distinct vertex to its index in the model's vertex array, in order
+//! of first appearance. An open-addressing table sized once for the surface's
+//! vertex count (an upper bound on the distinct ones), so it never rehashes and
+//! allocates once per model. Vertices are equal when operator== says so, as for
+//! an unordered_map: +0 and -0 match, and a NaN coordinate matches nothing, so
+//! each such vertex gets its own index.
+class VertexDedup {
+public:
+	explicit VertexDedup(size_t max_vertices) {
+		size_t capacity = 16;
+		while (capacity < 2 * max_vertices) {
+			capacity <<= 1;
+		}
+		slots.assign(capacity, kEmpty);
+		mask = capacity - 1;
+	}
+
+	uint32_t GetOrAdd(const Vertex3D &v, std::vector<Vertex3D> &vertices) {
+		for (size_t h = Hash(v) & mask;; h = (h + 1) & mask) {
+			uint32_t slot = slots[h];
+			if (slot == kEmpty) {
+				auto idx = static_cast<uint32_t>(vertices.size());
+				vertices.push_back(v);
+				slots[h] = idx;
+				return idx;
+			}
+			if (vertices[slot] == v) {
+				return slot;
+			}
+		}
+	}
+
+private:
+	static constexpr uint32_t kEmpty = UINT32_MAX;
+	std::vector<uint32_t> slots;
+	size_t mask;
+
+	static uint64_t Bits(double d) {
+		if (d == 0.0) {
+			d = 0.0; // -0 == +0, so both must hash alike
+		}
+		uint64_t b;
+		std::memcpy(&b, &d, sizeof(b));
+		return b;
+	}
+	static size_t Hash(const Vertex3D &v) {
+		uint64_t h = Bits(v.x) * 0x9e3779b97f4a7c15ULL;
+		h = (h ^ (h >> 29) ^ Bits(v.y)) * 0xbf58476d1ce4e5b9ULL;
+		h = (h ^ (h >> 31) ^ Bits(v.z)) * 0x94d049bb133111ebULL;
+		return static_cast<size_t>(h ^ (h >> 32));
 	}
 };
+
+//! Upper bound on the distinct vertices of `surfaces`: all their ring points.
+size_t TotalVertices(const std::vector<ParsedPolyhedralSurface> &surfaces) {
+	size_t n = 0;
+	for (const auto &surface : surfaces) {
+		n += surface.vertices.size();
+	}
+	return n;
+}
+
+//! The last ring's first and last vertices are consecutive too: drop a last
+//! vertex that repeats the first, as a doubled closing vertex in WKB leaves.
+void DropWrapAroundDuplicates(SolidModel &model) {
+	const uint32_t start = model.ring_vertex_offsets.back();
+	while (model.ring_vertex_indices.size() > start + 1 &&
+	       model.ring_vertex_indices.back() == model.ring_vertex_indices[start]) {
+		model.ring_vertex_indices.pop_back();
+	}
+}
 
 //! Returns true if two consecutive vertices are duplicates (exact match)
 bool IsConsecutiveDuplicate(const Vertex3D &a, const Vertex3D &b) {
@@ -32,18 +91,12 @@ bool IsConsecutiveDuplicate(const Vertex3D &a, const Vertex3D &b) {
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces) {
 	SolidModel model;
 
-	// Global vertex deduplication map
-	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
-
+	// Global vertex deduplication
+	size_t total_vertices = TotalVertices(surfaces);
+	VertexDedup dedup(total_vertices);
+	model.ring_vertex_indices.reserve(total_vertices);
 	auto GetOrAddVertex = [&](const Vertex3D &v) -> uint32_t {
-		auto it = vertex_map.find(v);
-		if (it != vertex_map.end()) {
-			return it->second;
-		}
-		uint32_t idx = static_cast<uint32_t>(model.vertices.size());
-		model.vertices.push_back(v);
-		vertex_map[v] = idx;
-		return idx;
+		return dedup.GetOrAdd(v, model.vertices);
 	};
 
 	// Each ParsedPolyhedralSurface becomes one solid with one shell (plain WKB)
@@ -85,6 +138,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 					has_prev = true;
 				}
 
+				DropWrapAroundDuplicates(model);
 				vertex_cursor += ring_vcount;
 				ring_idx++;
 				total_rings++;
@@ -102,42 +156,40 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces)
 	model.face_ring_offsets.push_back(total_rings);
 	model.ring_vertex_offsets.push_back(static_cast<uint32_t>(model.ring_vertex_indices.size()));
 
-	// Triangulation cache: placeholder (empty for now, filled in Phase 3)
+	// Triangulation cache: sized here, filled by TriangulateSolidModel below.
 	model.face_triangle_offsets.resize(total_faces + 1, 0);
 
 	model.ComputeBBox();
 	TriangulateSolidModel(model);
 	ValidateSolidModel(model);
 
+	model.crs = surfaces.empty() ? std::string() : surfaces.front().crs;
 	return model;
 }
 
 SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces, const GeometryMetadata &metadata) {
 	// No `shells` metadata: one solid / one shell per WKB member (a plain Solid,
 	// or a MultiSolid/CompositeSolid whose solids have no inner shells).
-	if (metadata.shells.empty()) {
+	if (!metadata.shells.has_value()) {
 		return BuildSolidModel(surfaces);
 	}
 
 	// With `shells`, one per-shell-count array must map to one WKB member (solid).
 	// A Solid gives a single member; a MultiSolid/CompositeSolid one per solid.
-	if (metadata.shells.size() != surfaces.size()) {
-		throw std::runtime_error("geometry_properties: shells solid count (" + std::to_string(metadata.shells.size()) +
+	const auto &all_shells = *metadata.shells;
+	if (all_shells.size() != surfaces.size()) {
+		throw std::runtime_error("geometry_properties: shells solid count (" + std::to_string(all_shells.size()) +
 		                         ") does not match WKB member count (" + std::to_string(surfaces.size()) + ")");
 	}
 
 	SolidModel model;
-	std::unordered_map<Vertex3D, uint32_t, Vertex3DHash> vertex_map;
 
+	// Global vertex deduplication
+	size_t total_vertices = TotalVertices(surfaces);
+	VertexDedup dedup(total_vertices);
+	model.ring_vertex_indices.reserve(total_vertices);
 	auto GetOrAddVertex = [&](const Vertex3D &v) -> uint32_t {
-		auto it = vertex_map.find(v);
-		if (it != vertex_map.end()) {
-			return it->second;
-		}
-		uint32_t idx = static_cast<uint32_t>(model.vertices.size());
-		model.vertices.push_back(v);
-		vertex_map[v] = idx;
-		return idx;
+		return dedup.GetOrAdd(v, model.vertices);
 	};
 
 	uint32_t total_faces = 0;
@@ -150,7 +202,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	// matching per-shell face-count array (spec §8 `shells`).
 	for (size_t solid_idx = 0; solid_idx < surfaces.size(); solid_idx++) {
 		const auto &surface = surfaces[solid_idx];
-		const auto &shell_counts = metadata.shells[solid_idx];
+		const auto &shell_counts = all_shells[solid_idx];
 
 		// Accumulate in 64-bit so a crafted count near UINT32_MAX cannot wrap the
 		// sum back to a value that spuriously matches the WKB face count.
@@ -209,6 +261,7 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 						has_prev = true;
 					}
 
+					DropWrapAroundDuplicates(model);
 					vertex_cursor += ring_vcount;
 					ring_idx++;
 					total_rings++;
@@ -235,7 +288,16 @@ SolidModel BuildSolidModel(const std::vector<ParsedPolyhedralSurface> &surfaces,
 	TriangulateSolidModel(model);
 	ValidateSolidModel(model);
 
+	model.crs = surfaces.empty() ? std::string() : surfaces.front().crs;
 	return model;
+}
+
+std::vector<uint8_t> RebuildSolidPayload(const uint8_t *data, size_t size) {
+	auto model = DeserializePayload(data, size);
+	model.ComputeBBox();
+	TriangulateSolidModel(model);
+	ValidateSolidModel(model);
+	return SerializePayload(model);
 }
 
 } // namespace duckdb_3d
