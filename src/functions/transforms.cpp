@@ -1,6 +1,8 @@
 #include "functions/three_d_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -28,209 +30,101 @@ using duckdb_3d::DeserializeGeomPayload;
 using duckdb_3d::DeserializePayload;
 using duckdb_3d::EpsgToAuthString;
 
+//! Runs a (payload, x, y, z DOUBLE) → payload transform row by row. A NULL in
+//! any argument gives NULL. `transform` maps the payload bytes and the three
+//! factors to the new payload.
+template <class FUNC>
+static void ExecutePayloadXYZ(DataChunk &args, Vector &result, FUNC &&transform) {
+	auto count = args.size();
+	auto payloads = args.data[0].Values<string_t>();
+	auto xs = args.data[1].Values<double>();
+	auto ys = args.data[2].Values<double>();
+	auto zs = args.data[3].Values<double>();
+	auto writer = FlatVector::Writer<string_t>(result, count);
+	for (idx_t i = 0; i < count; i++) {
+		auto payload = payloads[i];
+		auto x = xs[i];
+		auto y = ys[i];
+		auto z = zs[i];
+		if (!payload.IsValid() || !x.IsValid() || !y.IsValid() || !z.IsValid()) {
+			writer.WriteNull();
+			continue;
+		}
+		auto &blob = payload.GetValue();
+		auto bytes = transform(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(), x.GetValue(),
+		                       y.GetValue(), z.GetValue());
+		writer.WriteValue(string_t(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+	}
+}
+
+//! Shift every vertex and the cached bbox of a model by (dx, dy, dz).
+template <class MODEL>
+static void TranslateModel(MODEL &model, double dx, double dy, double dz) {
+	for (auto &v : model.vertices) {
+		v.x += dx;
+		v.y += dy;
+		v.z += dz;
+	}
+	model.bbox.min_x += dx;
+	model.bbox.max_x += dx;
+	model.bbox.min_y += dy;
+	model.bbox.max_y += dy;
+	model.bbox.min_z += dz;
+	model.bbox.max_z += dz;
+}
+
+//! Scale every vertex of a model about the origin by (sx, sy, sz).
+template <class MODEL>
+static void ScaleModel(MODEL &model, double sx, double sy, double sz) {
+	for (auto &v : model.vertices) {
+		v.x *= sx;
+		v.y *= sy;
+		v.z *= sz;
+	}
+	model.ComputeBBox();
+}
+
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DTranslate(solid SOLID_3D, dx, dy, dz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_3DTranslateSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-
-	UnifiedVectorFormat solid_data, dx_data, dy_data, dz_data;
-	args.data[0].ToUnifiedFormat(count, solid_data);
-	args.data[1].ToUnifiedFormat(count, dx_data);
-	args.data[2].ToUnifiedFormat(count, dy_data);
-	args.data[3].ToUnifiedFormat(count, dz_data);
-
-	auto solid_strings = UnifiedVectorFormat::GetData<string_t>(solid_data);
-	auto dx_vals = UnifiedVectorFormat::GetData<double>(dx_data);
-	auto dy_vals = UnifiedVectorFormat::GetData<double>(dy_data);
-	auto dz_vals = UnifiedVectorFormat::GetData<double>(dz_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto solid_idx = solid_data.sel->get_index(i);
-		auto dx_idx = dx_data.sel->get_index(i);
-		auto dy_idx = dy_data.sel->get_index(i);
-		auto dz_idx = dz_data.sel->get_index(i);
-
-		if (!solid_data.validity.RowIsValid(solid_idx) || !dx_data.validity.RowIsValid(dx_idx) ||
-		    !dy_data.validity.RowIsValid(dy_idx) || !dz_data.validity.RowIsValid(dz_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		auto &blob = solid_strings[solid_idx];
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-
-		double dx = dx_vals[dx_idx], dy = dy_vals[dy_idx], dz = dz_vals[dz_idx];
+	ExecutePayloadXYZ(args, result, [](const uint8_t *data, idx_t size, double dx, double dy, double dz) {
+		auto model = DeserializePayload(data, size);
 		// Translation is a rigid motion: shift every vertex and the cached bbox;
 		// topology, triangulation indices, and validation flags are unchanged.
-		for (auto &v : model.vertices) {
-			v.x += dx;
-			v.y += dy;
-			v.z += dz;
-		}
-		model.bbox.min_x += dx;
-		model.bbox.max_x += dx;
-		model.bbox.min_y += dy;
-		model.bbox.max_y += dy;
-		model.bbox.min_z += dz;
-		model.bbox.max_z += dz;
-
-		auto payload = SerializePayload(model);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
+		TranslateModel(model, dx, dy, dz);
+		return SerializePayload(model);
+	});
 }
 
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DTranslate(geom GEOM_3D, dx, dy, dz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_3DTranslateGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-
-	UnifiedVectorFormat geom_data, dx_data, dy_data, dz_data;
-	args.data[0].ToUnifiedFormat(count, geom_data);
-	args.data[1].ToUnifiedFormat(count, dx_data);
-	args.data[2].ToUnifiedFormat(count, dy_data);
-	args.data[3].ToUnifiedFormat(count, dz_data);
-
-	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
-	auto dx_vals = UnifiedVectorFormat::GetData<double>(dx_data);
-	auto dy_vals = UnifiedVectorFormat::GetData<double>(dy_data);
-	auto dz_vals = UnifiedVectorFormat::GetData<double>(dz_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto geom_idx = geom_data.sel->get_index(i);
-		auto dx_idx = dx_data.sel->get_index(i);
-		auto dy_idx = dy_data.sel->get_index(i);
-		auto dz_idx = dz_data.sel->get_index(i);
-
-		if (!geom_data.validity.RowIsValid(geom_idx) || !dx_data.validity.RowIsValid(dx_idx) ||
-		    !dy_data.validity.RowIsValid(dy_idx) || !dz_data.validity.RowIsValid(dz_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		auto &blob = geom_strings[geom_idx];
-		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-
-		double dx = dx_vals[dx_idx], dy = dy_vals[dy_idx], dz = dz_vals[dz_idx];
-		for (auto &v : model.vertices) {
-			v.x += dx;
-			v.y += dy;
-			v.z += dz;
-		}
-		model.bbox.min_x += dx;
-		model.bbox.max_x += dx;
-		model.bbox.min_y += dy;
-		model.bbox.max_y += dy;
-		model.bbox.min_z += dz;
-		model.bbox.max_z += dz;
-
-		auto payload = SerializeGeomPayload(model);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
+	ExecutePayloadXYZ(args, result, [](const uint8_t *data, idx_t size, double dx, double dy, double dz) {
+		auto model = DeserializeGeomPayload(data, size);
+		TranslateModel(model, dx, dy, dz);
+		return SerializeGeomPayload(model);
+	});
 }
 
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DScale(geom GEOM_3D, sx, sy, sz DOUBLE) → GEOM_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_3DScaleGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-
-	UnifiedVectorFormat geom_data, sx_data, sy_data, sz_data;
-	args.data[0].ToUnifiedFormat(count, geom_data);
-	args.data[1].ToUnifiedFormat(count, sx_data);
-	args.data[2].ToUnifiedFormat(count, sy_data);
-	args.data[3].ToUnifiedFormat(count, sz_data);
-
-	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
-	auto sx_vals = UnifiedVectorFormat::GetData<double>(sx_data);
-	auto sy_vals = UnifiedVectorFormat::GetData<double>(sy_data);
-	auto sz_vals = UnifiedVectorFormat::GetData<double>(sz_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto geom_idx = geom_data.sel->get_index(i);
-		auto sx_idx = sx_data.sel->get_index(i);
-		auto sy_idx = sy_data.sel->get_index(i);
-		auto sz_idx = sz_data.sel->get_index(i);
-
-		if (!geom_data.validity.RowIsValid(geom_idx) || !sx_data.validity.RowIsValid(sx_idx) ||
-		    !sy_data.validity.RowIsValid(sy_idx) || !sz_data.validity.RowIsValid(sz_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		auto &blob = geom_strings[geom_idx];
-		auto model = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-
-		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
-		for (auto &v : model.vertices) {
-			v.x *= sx;
-			v.y *= sy;
-			v.z *= sz;
-		}
-		model.ComputeBBox();
-
-		auto payload = SerializeGeomPayload(model);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
+	ExecutePayloadXYZ(args, result, [](const uint8_t *data, idx_t size, double sx, double sy, double sz) {
+		auto model = DeserializeGeomPayload(data, size);
+		ScaleModel(model, sx, sy, sz);
+		return SerializeGeomPayload(model);
+	});
 }
 
 // ──────────────────────────────────────────────────────────────
 // Transforms: ST_3DScale(solid SOLID_3D, sx, sy, sz DOUBLE) → SOLID_3D
 // ──────────────────────────────────────────────────────────────
 static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-
-	UnifiedVectorFormat solid_data, sx_data, sy_data, sz_data;
-	args.data[0].ToUnifiedFormat(count, solid_data);
-	args.data[1].ToUnifiedFormat(count, sx_data);
-	args.data[2].ToUnifiedFormat(count, sy_data);
-	args.data[3].ToUnifiedFormat(count, sz_data);
-
-	auto solid_strings = UnifiedVectorFormat::GetData<string_t>(solid_data);
-	auto sx_vals = UnifiedVectorFormat::GetData<double>(sx_data);
-	auto sy_vals = UnifiedVectorFormat::GetData<double>(sy_data);
-	auto sz_vals = UnifiedVectorFormat::GetData<double>(sz_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto solid_idx = solid_data.sel->get_index(i);
-		auto sx_idx = sx_data.sel->get_index(i);
-		auto sy_idx = sy_data.sel->get_index(i);
-		auto sz_idx = sz_data.sel->get_index(i);
-
-		if (!solid_data.validity.RowIsValid(solid_idx) || !sx_data.validity.RowIsValid(sx_idx) ||
-		    !sy_data.validity.RowIsValid(sy_idx) || !sz_data.validity.RowIsValid(sz_idx)) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
-			continue;
-		}
-
-		auto &blob = solid_strings[solid_idx];
-		auto model = DeserializePayload(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
-
-		double sx = sx_vals[sx_idx], sy = sy_vals[sy_idx], sz = sz_vals[sz_idx];
+	ExecutePayloadXYZ(args, result, [](const uint8_t *data, idx_t size, double sx, double sy, double sz) {
+		auto model = DeserializePayload(data, size);
 		// Scale about the origin. A uniform factor is a similarity: like a rigid
 		// motion it keeps every validation verdict, each of which is measured
 		// relative to the solid's own extent, and a negative factor reverses every
@@ -254,14 +148,8 @@ static void ST_3DScaleSolidFun(DataChunk &args, ExpressionState &state, Vector &
 			ValidateSolidModel(model);
 		}
 
-		auto payload = SerializePayload(model);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
+		return SerializePayload(model);
+	});
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -303,19 +191,19 @@ static string_t RotateSolidBlob(Vector &result, string_t solid, double radians, 
 
 static void ST_3DRotateXSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::X); });
 }
 
 static void ST_3DRotateYSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Y); });
 }
 
 static void ST_3DRotateZSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t solid, double radians) { return RotateSolidBlob(result, solid, radians, RotationAxis::Z); });
 }
 
@@ -353,19 +241,19 @@ static string_t RotateGeomBlob(Vector &result, string_t geom, double radians, Ro
 
 static void ST_3DRotateXGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::X); });
 }
 
 static void ST_3DRotateYGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Y); });
 }
 
 static void ST_3DRotateZGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, double, string_t>(
-	    args.data[0], args.data[1], result, args.size(),
+	    args.data[0], args.data[1], result,
 	    [&](string_t geom, double radians) { return RotateGeomBlob(result, geom, radians, RotationAxis::Z); });
 }
 
@@ -425,27 +313,20 @@ TransformInitLocalState(ExpressionState &state, const BoundFunctionExpression &e
 template <class GetCrs>
 static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &result, GetCrs get_crs) {
 	auto count = args.size();
-
-	UnifiedVectorFormat geom_data;
-	args.data[0].ToUnifiedFormat(count, geom_data);
-	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
-	auto &result_validity = FlatVector::Validity(result);
-
+	auto geoms = args.data[0].Values<string_t>();
 	auto &cache = ExecuteFunctionState::GetFunctionState(state)->Cast<TransformLocalState>().cache;
 
+	auto writer = FlatVector::Writer<string_t>(result, count);
 	for (idx_t i = 0; i < count; i++) {
-		auto geom_idx = geom_data.sel->get_index(i);
-
-		bool crs_valid = true;
+		auto geom = geoms[i];
 		std::string source;
 		std::string target;
-		if (!geom_data.validity.RowIsValid(geom_idx) || !get_crs(i, source, target, crs_valid) || !crs_valid) {
-			result_validity.SetInvalid(i);
-			FlatVector::GetData<string_t>(result)[i] = string_t();
+		if (!geom.IsValid() || !get_crs(i, source, target)) {
+			writer.WriteNull();
 			continue;
 		}
 
-		auto &blob = geom_strings[geom_idx];
+		auto &blob = geom.GetValue();
 		source = TransformSourceCrs(PayloadCrs(blob), source);
 		std::string key = source;
 		key.push_back('\x1f');
@@ -457,87 +338,64 @@ static void TransformChunk(DataChunk &args, ExpressionState &state, Vector &resu
 
 		auto payload = ReprojectPayloadBlob(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize(),
 		                                    *it->second, target);
-		FlatVector::GetData<string_t>(result)[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		writer.WriteValue(string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	}
 }
 
 // ST_3DTransform(geom, source_crs VARCHAR, target_crs VARCHAR)
 static void ST_3DTransformStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-	UnifiedVectorFormat src_data, tgt_data;
-	args.data[1].ToUnifiedFormat(count, src_data);
-	args.data[2].ToUnifiedFormat(count, tgt_data);
-	auto src_strings = UnifiedVectorFormat::GetData<string_t>(src_data);
-	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
-
-	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
-		auto si = src_data.sel->get_index(i);
-		auto ti = tgt_data.sel->get_index(i);
-		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
-			valid = false;
+	auto sources = args.data[1].Values<string_t>();
+	auto targets = args.data[2].Values<string_t>();
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target) {
+		auto source_entry = sources[i];
+		auto target_entry = targets[i];
+		if (!source_entry.IsValid() || !target_entry.IsValid()) {
 			return false;
 		}
-		source = src_strings[si].GetString();
-		target = tgt_strings[ti].GetString();
+		source = source_entry.GetValue().GetString();
+		target = target_entry.GetValue().GetString();
 		return true;
 	});
 }
 
 // ST_3DTransform(geom, source_srid INTEGER, target_srid INTEGER)
 static void ST_3DTransformIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto count = args.size();
-	UnifiedVectorFormat src_data, tgt_data;
-	args.data[1].ToUnifiedFormat(count, src_data);
-	args.data[2].ToUnifiedFormat(count, tgt_data);
-	auto src_vals = UnifiedVectorFormat::GetData<int32_t>(src_data);
-	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
-
-	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
-		auto si = src_data.sel->get_index(i);
-		auto ti = tgt_data.sel->get_index(i);
-		if (!src_data.validity.RowIsValid(si) || !tgt_data.validity.RowIsValid(ti)) {
-			valid = false;
+	auto sources = args.data[1].Values<int32_t>();
+	auto targets = args.data[2].Values<int32_t>();
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target) {
+		auto source_entry = sources[i];
+		auto target_entry = targets[i];
+		if (!source_entry.IsValid() || !target_entry.IsValid()) {
 			return false;
 		}
-		source = EpsgToAuthString(src_vals[si]);
-		target = EpsgToAuthString(tgt_vals[ti]);
+		source = EpsgToAuthString(source_entry.GetValue());
+		target = EpsgToAuthString(target_entry.GetValue());
 		return true;
 	});
 }
 
 // ST_3DTransform(geom, target_crs VARCHAR): from the value's own CRS
 static void ST_3DTransformToStrFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnifiedVectorFormat tgt_data;
-	args.data[1].ToUnifiedFormat(args.size(), tgt_data);
-	auto tgt_strings = UnifiedVectorFormat::GetData<string_t>(tgt_data);
-	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
-		auto ti = tgt_data.sel->get_index(i);
-		if (!tgt_data.validity.RowIsValid(ti)) {
-			valid = false;
+	auto targets = args.data[1].Values<string_t>();
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target) {
+		auto target_entry = targets[i];
+		if (!target_entry.IsValid()) {
 			return false;
 		}
-		target = tgt_strings[ti].GetString();
+		target = target_entry.GetValue().GetString();
 		return true;
 	});
 }
 
 // ST_3DTransform(geom, target_srid INTEGER): from the value's own CRS
 static void ST_3DTransformToIntFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnifiedVectorFormat tgt_data;
-	args.data[1].ToUnifiedFormat(args.size(), tgt_data);
-	auto tgt_vals = UnifiedVectorFormat::GetData<int32_t>(tgt_data);
-	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target, bool &valid) -> bool {
-		auto ti = tgt_data.sel->get_index(i);
-		if (!tgt_data.validity.RowIsValid(ti)) {
-			valid = false;
+	auto targets = args.data[1].Values<int32_t>();
+	TransformChunk(args, state, result, [&](idx_t i, std::string &source, std::string &target) {
+		auto target_entry = targets[i];
+		if (!target_entry.IsValid()) {
 			return false;
 		}
-		target = EpsgToAuthString(tgt_vals[ti]);
+		target = EpsgToAuthString(target_entry.GetValue());
 		return true;
 	});
 }
@@ -555,29 +413,22 @@ static void ST_3DTransformToIntFun(DataChunk &args, ExpressionState &state, Vect
 
 //! The placement transform for one row: the matrix (identity when NULL), then a
 //! translation to the reference point.
-static AffineTransform3D PlacementFor(Vector &point_vec, const UnifiedVectorFormat &point_data, idx_t point_idx,
-                                      Vector &matrix_vec, const UnifiedVectorFormat &matrix_data, idx_t matrix_idx) {
-	auto &point_blob = UnifiedVectorFormat::GetData<string_t>(point_data)[point_idx];
+static AffineTransform3D PlacementFor(const string_t &point_blob,
+                                      const VectorIterator<VectorListType<double>>::ValueEntry &matrix) {
 	auto point = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(point_blob.GetData()), point_blob.GetSize());
 	if (point.type != duckdb_3d::GeomType::Point || point.vertices.size() != 1) {
 		throw InvalidInputException("ST_3DPlaceImplicit: reference point must be a Point");
 	}
 
 	AffineTransform3D placement = duckdb_3d::AffineIdentity();
-	if (matrix_data.validity.RowIsValid(matrix_idx)) {
-		auto entry = UnifiedVectorFormat::GetData<list_entry_t>(matrix_data)[matrix_idx];
-		auto &child = ListVector::GetEntry(matrix_vec);
-		UnifiedVectorFormat child_data;
-		child.ToUnifiedFormat(ListVector::GetListSize(matrix_vec), child_data);
-		auto child_values = UnifiedVectorFormat::GetData<double>(child_data);
+	if (matrix.IsValid()) {
 		std::vector<double> values;
-		values.reserve(entry.length);
-		for (idx_t k = 0; k < entry.length; k++) {
-			auto child_idx = child_data.sel->get_index(entry.offset + k);
-			if (!child_data.validity.RowIsValid(child_idx)) {
+		values.reserve(matrix.GetListLength());
+		for (auto element : matrix.GetChildValues()) {
+			if (!element.IsValid()) {
 				throw InvalidInputException("ST_3DPlaceImplicit: transformation matrix contains a NULL value");
 			}
-			values.push_back(child_values[child_idx]);
+			values.push_back(element.GetValue());
 		}
 		try {
 			placement = duckdb_3d::AffineFromMatrix4x4(values);
@@ -591,28 +442,27 @@ static AffineTransform3D PlacementFor(Vector &point_vec, const UnifiedVectorForm
 template <bool SOLID>
 static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto count = args.size();
-	UnifiedVectorFormat geom_data, point_data, matrix_data;
-	args.data[0].ToUnifiedFormat(count, geom_data);
-	args.data[1].ToUnifiedFormat(count, point_data);
-	args.data[2].ToUnifiedFormat(count, matrix_data);
-	auto geom_strings = UnifiedVectorFormat::GetData<string_t>(geom_data);
-	auto &result_validity = FlatVector::Validity(result);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto geoms = args.data[0].Values<string_t>();
+	auto points = args.data[1].Values<string_t>();
+	// The list iterator does not take a dictionary vector.
+	if (args.data[2].GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+		args.data[2].Flatten();
+	}
+	auto matrices = args.data[2].Values<VectorListType<double>>();
 
+	auto writer = FlatVector::Writer<string_t>(result, count);
 	for (idx_t i = 0; i < count; i++) {
-		auto geom_idx = geom_data.sel->get_index(i);
-		auto point_idx = point_data.sel->get_index(i);
-		if (!geom_data.validity.RowIsValid(geom_idx) || !point_data.validity.RowIsValid(point_idx)) {
-			result_validity.SetInvalid(i);
-			result_data[i] = string_t();
+		auto geom = geoms[i];
+		auto point = points[i];
+		if (!geom.IsValid() || !point.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
-		auto placement =
-		    PlacementFor(args.data[1], point_data, point_idx, args.data[2], matrix_data, matrix_data.sel->get_index(i));
+		auto placement = PlacementFor(point.GetValue(), matrices[i]);
 		// The placed geometry is in the reference point's CRS; the relative one's
 		// coordinates are local.
-		auto crs = PayloadCrs(UnifiedVectorFormat::GetData<string_t>(point_data)[point_idx]);
-		auto &blob = geom_strings[geom_idx];
+		auto crs = PayloadCrs(point.GetValue());
+		auto &blob = geom.GetValue();
 		std::vector<uint8_t> payload;
 		if constexpr (SOLID) {
 			// A singular linear part maps every solid to zero volume, and the result
@@ -637,12 +487,7 @@ static void ST_3DPlaceImplicitFun(DataChunk &args, ExpressionState &state, Vecto
 			model.ComputeBBox();
 			payload = SerializeGeomPayload(model);
 		}
-		result_data[i] = StringVector::AddStringOrBlob(
-		    result, string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		writer.WriteValue(string_t(reinterpret_cast<const char *>(payload.data()), payload.size()));
 	}
 }
 

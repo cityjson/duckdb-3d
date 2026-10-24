@@ -7,6 +7,14 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
+# DuckDB derives its version from duckdb/scripts/ci/release_version.txt and a commit
+# count, so a build of a release tag reports v2.0.0-dev<N> unless DUCKDB_VERSION names
+# the release. An extension built that way carries a dev version footer, which a
+# released DuckDB refuses to load, and no extensions are published for it. CI sets
+# DUCKDB_VERSION; this does the same locally whenever the submodule sits on a tag.
+DUCKDB_VERSION ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
+export DUCKDB_VERSION
+
 # The SQL test suite depends on the st_aswkb* fixture generators, which are
 # only registered when this is set (see src/functions/fixtures.cpp). Exported
 # so `make test` / `make test_debug` / `make test_all` pass it to the runner.
@@ -77,9 +85,8 @@ test_all: test_debug test_cpp
 #      build, NOT `INSTALL cityjson FROM community`. The published community
 #      build emits the pre-per-LoD column shape the interop tests no longer
 #      target, so a community copy makes them fail rather than skip.
-#   3. httpfs is already installed in the runner's HOME, because the remote
-#      Delft test autoloads it and autoinstall resolves against the official
-#      repository rather than the local one.
+#   3. httpfs is in the local repository too: the remote Delft test autoloads
+#      it, and the runner's autoinstall resolves against LOCAL_EXTENSION_REPO.
 #
 # Steps run in one recipe, not as prerequisites, so ordering survives `make -j`.
 # Requires network access: the httpfs/spatial download on the first run, and the
@@ -114,6 +121,8 @@ test_full:
 	mkdir -p $$repo_dir; \
 	cp $$cache_dir/spatial.duckdb_extension $$repo_dir/; \
 	cp $$cache_dir/spatial.duckdb_extension.info $$repo_dir/; \
+	cp $$cache_dir/httpfs.duckdb_extension $$repo_dir/; \
+	cp $$cache_dir/httpfs.duckdb_extension.info $$repo_dir/; \
 	cp "$(CITYJSON_EXTENSION)" $$repo_dir/cityjson.duckdb_extension; \
 	cp build/release/extension/three_d/three_d.duckdb_extension $$repo_dir/; \
 	echo "==> cityjson staged from $(CITYJSON_EXTENSION)"; \

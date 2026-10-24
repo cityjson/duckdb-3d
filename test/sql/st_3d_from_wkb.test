@@ -39,6 +39,14 @@ SELECT ST_3DTryFromWKB('\x00\x00\x00\x00'::BLOB) IS NULL;
 ----
 true
 
+# A declared count the bytes cannot hold is a row-level error too, not an
+# allocation failure: TRY and the TRY constructor both give NULL.
+query II
+SELECT ST_3DTryFromWKB('\x01\xF7\x03\x00\x00\xF0\xFF\xFF\xFF'::BLOB) IS NULL,
+       TRY(ST_Geom3DFromWKB('\x01\xF7\x03\x00\x00\xF0\xFF\xFF\xFF'::BLOB)) IS NULL;
+----
+true	true
+
 # Test: ST_3DFromWKB raises on invalid WKB
 statement error
 SELECT ST_3DFromWKB('\x00\x00\x00\x00'::BLOB);

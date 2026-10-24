@@ -44,7 +44,7 @@ CityJSON and CityJSONSeq:
 `three_d` does not read CityJSON itself; the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
 extension does, and hands over `(geometry_lod<X> BLOB, geometry_properties_lod<X> STRUCT)`
 pairs. Build it from the sibling checkout and load it by path — it is the build these
-examples were run against; the community build for DuckDB v1.5.5 emits the same columns
+examples were run against; no community build exists for DuckDB v2.0.0 yet
 ([which build](./CITYJSON_INTEROP.md#which-cityjson-build)):
 
 ```sh
@@ -145,6 +145,16 @@ STRUCT, a wrong argument type — still raise. There is **no** `ST_Geom3DTryFrom
 row-level error any function raises is an `Invalid Input Error`, so DuckDB's `TRY(...)` turns
 it into `NULL` — `TRY(ST_Geom3DFromWKB(wkb))`, `TRY(ST_3DVolume(solid))`.
 
+**Named arguments.** Every parameter carries the name `duckdb_functions()` reports, so arguments can be passed by
+name, in any order after the positional ones:
+
+```sql
+SELECT ST_3DAsText(ST_3DTranslate(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY), dz := 1.0, dx := 10.0, dy := 0.0));
+```
+```
+POINT Z (11 2 4)
+```
+
 **Errors, not repair.** The extension never silently fixes geometry. `ST_3DVolume` on a
 non-manifold solid raises rather than returning a plausible-looking wrong number:
 
@@ -217,8 +227,8 @@ logical type needs no `ST_AsWKB` in between — see
 
 A CityParquet package annotates its GeoParquet-legal geometry columns with the Parquet
 `GEOMETRY` logical type, and DuckDB promotes such a column to its native `GEOMETRY` on
-read. `geometry_lod0_0::BLOB` is not a way back — the cast is unimplemented — so the
-constructors accept `GEOMETRY` directly:
+read. `geometry_lod0_0::BLOB` returns the same WKB as `ST_AsWKB(geometry_lod0_0)`, and the
+constructors also accept `GEOMETRY` directly, without either:
 
 ```sql
 SELECT count(*) AS n,

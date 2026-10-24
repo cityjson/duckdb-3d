@@ -33,8 +33,7 @@ static double Geom3DDistanceSQL(string_t g1, string_t g2) {
 
 static void ST_3DDistanceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, double>(
-	    args.data[0], args.data[1], result, args.size(),
-	    [](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2); });
+	    args.data[0], args.data[1], result, [](string_t g1, string_t g2) { return Geom3DDistanceSQL(g1, g2); });
 }
 
 // ST_3DDWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
@@ -57,7 +56,7 @@ static bool Geom3DWithinSQL(string_t g1, string_t g2, double dist) {
 
 static void ST_3DDWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
-	                                                           args.size(), [](string_t g1, string_t g2, double dist) {
+	                                                           [](string_t g1, string_t g2, double dist) {
 		                                                           if (dist < 0.0) {
 			                                                           return false;
 		                                                           }
@@ -76,14 +75,13 @@ static double Geom3DMaxDistanceSQL(string_t g1, string_t g2) {
 
 static void ST_3DMaxDistanceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, double>(
-	    args.data[0], args.data[1], result, args.size(),
-	    [](string_t g1, string_t g2) { return Geom3DMaxDistanceSQL(g1, g2); });
+	    args.data[0], args.data[1], result, [](string_t g1, string_t g2) { return Geom3DMaxDistanceSQL(g1, g2); });
 }
 
 // ST_3DDFullyWithin(g1 GEOM_3D, g2 GEOM_3D, dist DOUBLE) → BOOLEAN
 static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
-	                                                           args.size(), [](string_t g1, string_t g2, double dist) {
+	                                                           [](string_t g1, string_t g2, double dist) {
 		                                                           if (dist < 0.0) {
 			                                                           return false;
 		                                                           }
@@ -95,7 +93,7 @@ static void ST_3DDFullyWithinFun(DataChunk &args, ExpressionState &state, Vector
 // Exact: whether the two closed geometries share a point (touching counts).
 static void ST_3DIntersectsFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, bool>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
+	    args.data[0], args.data[1], result, [&](string_t g1, string_t g2) {
 		    auto d1 = reinterpret_cast<const uint8_t *>(g1.GetData());
 		    auto d2 = reinterpret_cast<const uint8_t *>(g2.GetData());
 		    if (!duckdb_3d::BoxesOverlap(ReadGeomPayloadHeader(d1, g1.GetSize()).bbox,
@@ -143,7 +141,7 @@ static GeomModel ReadGeom(string_t geom) {
 template <bool SOLID_FIRST, class RESULT, class OP>
 static void SolidGeomExecute(DataChunk &args, Vector &result, OP op) {
 	SolidModel model;
-	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result, args.size(),
+	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result,
 	                                                    [&](string_t a, string_t b) {
 		                                                    string_t solid = SOLID_FIRST ? a : b;
 		                                                    string_t geom = SOLID_FIRST ? b : a;
@@ -154,7 +152,7 @@ static void SolidGeomExecute(DataChunk &args, Vector &result, OP op) {
 template <class RESULT, class OP>
 static void SolidSolidExecute(DataChunk &args, Vector &result, OP op) {
 	SolidModel m1, m2;
-	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result, args.size(),
+	BinaryExecutor::Execute<string_t, string_t, RESULT>(args.data[0], args.data[1], result,
 	                                                    [&](string_t a, string_t b) { return op(a, b, m1, m2); });
 }
 
@@ -191,7 +189,7 @@ template <bool SOLID_FIRST>
 static void ST_3DDWithinSolidGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	SolidModel model;
 	TernaryExecutor::Execute<string_t, string_t, double, bool>(args.data[0], args.data[1], args.data[2], result,
-	                                                           args.size(), [&](string_t a, string_t b, double dist) {
+	                                                           [&](string_t a, string_t b, double dist) {
 		                                                           string_t solid = SOLID_FIRST ? a : b;
 		                                                           string_t geom = SOLID_FIRST ? b : a;
 		                                                           if (dist < 0.0) {
@@ -222,7 +220,7 @@ static void ST_3DIntersectsSolidSolidFun(DataChunk &args, ExpressionState &state
 static void ST_3DDWithinSolidSolidFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	SolidModel m1, m2;
 	TernaryExecutor::Execute<string_t, string_t, double, bool>(
-	    args.data[0], args.data[1], args.data[2], result, args.size(), [&](string_t a, string_t b, double dist) {
+	    args.data[0], args.data[1], args.data[2], result, [&](string_t a, string_t b, double dist) {
 		    auto box_a = ValidSolidBox(a);
 		    auto box_b = ValidSolidBox(b);
 		    if (dist < 0.0 || duckdb_3d::BBoxDistance(box_a, box_b) > dist) {
@@ -236,7 +234,7 @@ static void ST_3DDWithinSolidSolidFun(DataChunk &args, ExpressionState &state, V
 // Returns the point on g1 that is closest to g2.
 static void ST_3DClosestPointFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
+	    args.data[0], args.data[1], result, [&](string_t g1, string_t g2) {
 		    auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 		    auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 		    auto pair = Geom3DClosestPoints(m1, m2);
@@ -255,7 +253,7 @@ static void ST_3DClosestPointFun(DataChunk &args, ExpressionState &state, Vector
 // Returns the shortest line segment connecting g1 and g2.
 static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t g1, string_t g2) {
+	    args.data[0], args.data[1], result, [&](string_t g1, string_t g2) {
 		    auto m1 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g1.GetData()), g1.GetSize());
 		    auto m2 = DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(g2.GetData()), g2.GetSize());
 		    auto pair = Geom3DClosestPoints(m1, m2);
@@ -274,15 +272,15 @@ static void ST_3DShortestLineFun(DataChunk &args, ExpressionState &state, Vector
 template <void (*INTERSECTS)(DataChunk &, ExpressionState &, Vector &)>
 static void ST_3DDisjointFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	INTERSECTS(args, state, result);
-	UnaryExecutor::Execute<bool, bool>(result, result, args.size(), [](bool intersects) { return !intersects; });
+	UnaryExecutor::Execute<bool, bool>(result, result, [](bool intersects) { return !intersects; });
 }
 
 //! Every function registered here relates two values, which must be in one CRS;
 //! `name` is how the error names the function.
 static ScalarFunctionSet InOneCrs(ScalarFunctionSet set, const char *name) {
-	for (auto &function : set.functions) {
+	set.ApplyToFunctions([&](ScalarFunction &function) {
 		function.SetFunctionCallback(WithSameCrs(function.GetFunctionCallback(), name));
-	}
+	});
 	return set;
 }
 
