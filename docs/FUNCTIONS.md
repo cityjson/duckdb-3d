@@ -44,7 +44,7 @@ CityJSON and CityJSONSeq:
 `three_d` does not read CityJSON itself; the [`cityjson`](https://github.com/cityjson/duckdb-cityjson)
 extension does, and hands over `(geometry_lod<X> BLOB, geometry_properties_lod<X> STRUCT)`
 pairs. Build it from the sibling checkout and load it by path — it is the build these
-examples were run against; the community build for DuckDB v1.5.5 emits the same columns
+examples were run against; no community build exists for DuckDB v2.0.0 yet
 ([which build](./CITYJSON_INTEROP.md#which-cityjson-build)):
 
 ```sh

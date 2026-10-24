@@ -16,8 +16,9 @@ conditional on which `cityjson` build produced the bytes.
 ## Which `cityjson` build
 
 **The sibling `../duckdb-cityjson` checkout, built locally.** `make test_full`
-stages that file, and every example in this repo is run against it. The community
-build for DuckDB v1.5.5 (`INSTALL cityjson FROM community`) emits the same shape.
+stages that file, and every example in this repo is run against it. No community
+build of `cityjson` exists for DuckDB v2.0.0 yet, so `INSTALL cityjson FROM community`
+has nothing to install.
 
 `cityjson` emits **one column pair per LoD present**: a `geometry_lod2_2` `BLOB`
 (WKB) and a `geometry_properties_lod2_2` `STRUCT` sidecar, and so on for each LoD.
