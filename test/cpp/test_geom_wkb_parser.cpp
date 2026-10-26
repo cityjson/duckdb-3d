@@ -389,3 +389,18 @@ TEST_CASE("ParseGeomWKB: refuses a non-finite coordinate", "[geom_wkb_parser]") 
 		REQUIRE(ParseGeomWKB(b.buffer.data(), b.buffer.size()).vertices.size() == 1);
 	}
 }
+
+TEST_CASE("ParseGeomWKB rejects counts the data cannot hold, before allocating", "[geom_wkb_parser]") {
+	// Type code, then a declared count with no bytes behind it.
+	for (uint32_t type : {1002u, 1003u, 1004u, 1005u, 1006u, 1015u}) {
+		GeomWKBBuilder b;
+		b.U8(1);
+		b.U32(type);
+		if (type == 1003u) {
+			b.U32(1); // one ring ...
+		}
+		b.U32(0xFFFFFFF0); // ... or one of everything else, absurdly many
+		INFO("type " << type);
+		REQUIRE_THROWS_AS(ParseGeomWKB(b.buffer.data(), b.buffer.size()), std::runtime_error);
+	}
+}

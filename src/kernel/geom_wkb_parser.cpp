@@ -9,6 +9,13 @@ namespace duckdb_3d {
 
 namespace {
 
+//! The fewest bytes one declared element can occupy: a bound on a count read from
+//! the WKB before anything is reserved for it, so a corrupt count is a truncation
+//! error rather than an allocation of gigabytes.
+constexpr uint64_t kPointZBytes = 3 * sizeof(double);
+constexpr uint64_t kChildHeaderAndCountBytes = 1 + 2 * sizeof(uint32_t);
+constexpr uint64_t kChildPointZBytes = 1 + sizeof(uint32_t) + kPointZBytes;
+
 //! Read one XYZ coordinate, refusing a non-finite ordinate: a NaN or infinite
 //! vertex has no place in a box, a distance or an index. The one exception is
 //! a point whose three ordinates are all NaN, which is how WKB writes POINT
@@ -29,6 +36,7 @@ Vertex3D ReadPointZ(WkbCursor &cur, bool empty_allowed = false) {
 
 void ReadLineStringZ(WkbCursor &cur, GeomModel &model) {
 	uint32_t point_count = cur.ReadU32();
+	cur.RequireCount(point_count, kPointZBytes, "point");
 	model.vertices.reserve(model.vertices.size() + point_count);
 	for (uint32_t i = 0; i < point_count; i++) {
 		model.vertices.push_back(ReadPointZ(cur));
@@ -39,6 +47,7 @@ void ReadLineStringZ(WkbCursor &cur, GeomModel &model) {
 //! push the trailing ring boundary onto `ring_offsets`.
 void ReadRingZ(WkbCursor &cur, GeomModel &model) {
 	uint32_t point_count = cur.ReadU32();
+	cur.RequireCount(point_count, kPointZBytes, "point");
 	std::vector<Vertex3D> ring;
 	ring.reserve(point_count);
 	for (uint32_t i = 0; i < point_count; i++) {
@@ -68,6 +77,7 @@ void ReadPolygonZ(WkbCursor &cur, GeomModel &model) {
 //! a triangle is a polygon of one four-point ring.
 void ReadPolygonPartsZ(WkbCursor &cur, GeomModel &model, uint32_t child_code = 1003) {
 	uint32_t polygon_count = cur.ReadU32();
+	cur.RequireCount(polygon_count, kChildHeaderAndCountBytes, "polygon");
 	model.ring_offsets.push_back(0);
 	model.part_offsets.reserve(polygon_count + 1);
 	model.part_offsets.push_back(0);
@@ -115,6 +125,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	case 1004: { // MultiPoint Z
 		model.type = GeomType::MultiPoint;
 		uint32_t point_count = cur.ReadU32();
+		cur.RequireCount(point_count, kChildPointZBytes, "point");
 		model.part_offsets.reserve(point_count + 1);
 		model.part_offsets.push_back(0);
 		bool outer_swap = cur.swap_bytes;
@@ -133,6 +144,7 @@ GeomModel ParseGeomWKB(const uint8_t *data, size_t size) {
 	case 1005: { // MultiLineString Z
 		model.type = GeomType::MultiLineString;
 		uint32_t line_count = cur.ReadU32();
+		cur.RequireCount(line_count, kChildHeaderAndCountBytes, "line string");
 		model.part_offsets.reserve(line_count + 1);
 		model.part_offsets.push_back(0);
 		bool outer_swap = cur.swap_bytes;

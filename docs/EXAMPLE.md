@@ -38,8 +38,8 @@ GEN=ninja make                                   # ./build/release/duckdb, three
 ```
 
 `cityjson` is loaded **by path** from the sibling build, which is what every example below
-was run against. On DuckDB v1.5.5 the community build (`INSTALL cityjson FROM community`)
-emits the same column pairs and runs this walkthrough unchanged:
+was run against. No community build of `cityjson` exists for DuckDB v2.0.0 yet, so
+`INSTALL cityjson FROM community` is not an option:
 
 ```sql
 LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
@@ -268,7 +268,7 @@ Construction:
 - **Filter `WHERE geometry_lod<X> IS NOT NULL`** upstream — objects lacking the requested
   LoD have a NULL geometry.
 - **Load `cityjson` by path from the sibling build.** It is the build this document was
-  run against; the community build for DuckDB v1.5.5 emits the same column shape.
+  run against; no community build exists for DuckDB v2.0.0 yet.
 - **Attributes are on the parent `Building`**, geometry is on the `BuildingPart`; join
   via `parents` / `children` (§2).
 - **Validate before `ST_3DVolume` / `ST_3DSurfaceArea`** — they raise on invalid solids.

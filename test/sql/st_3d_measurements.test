@@ -96,5 +96,16 @@ SELECT ROUND(ST_3DPerimeter(solid), 5) FROM open_solid;
 ----
 3.41421
 
+# A kernel error is an input error: it reads as one, and TRY turns it into NULL.
+statement error
+SELECT ST_3DVolume(solid) FROM open_solid;
+----
+Invalid Input Error
+
+query I
+SELECT TRY(ST_3DVolume(solid)) IS NULL FROM open_solid;
+----
+true
+
 statement ok
 DROP TABLE open_solid;

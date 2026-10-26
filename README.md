@@ -124,7 +124,7 @@ FROM buildings;
 
 ## Building
 
-Targets DuckDB `v1.5.x`. Clone with submodules, then build:
+Targets DuckDB `v2.0.x`. Clone with submodules, then build:
 
 ```sh
 git clone --recurse-submodules <repo-url>

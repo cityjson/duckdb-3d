@@ -3,6 +3,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 
 #include "kernel/geom_analysis.hpp"
 #include "kernel/measurements.hpp"
@@ -26,21 +28,21 @@ using duckdb_3d::ReadSolidPayloadHeader;
 // These accessors only need element counts, which live in the fixed front
 // header, so they read the header rather than deserialising the whole solid.
 static void ST_3DNumSolidsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.solid_count);
 	});
 }
 
 static void ST_3DNumShellsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.shell_count);
 	});
 }
 
 static void ST_3DNumFacesFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return static_cast<int64_t>(info.face_count);
 	});
@@ -52,41 +54,41 @@ static void ST_3DNumFacesFun(DataChunk &args, ExpressionState &state, Vector &re
 // The validation summary is cached in the payload (trailing block), so these
 // read the header rather than re-running validation or parsing the body.
 static void ST_3DIsClosedFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_closed;
 	});
 }
 
 static void ST_3DIsValidFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_valid;
 	});
 }
 
 static void ST_3DAreaGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t geom) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [](string_t geom) {
 		return Geom3DArea(DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize()));
 	});
 }
 
 static void ST_3DPerimeterGeomFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [](string_t geom) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [](string_t geom) {
 		return Geom3DPerimeter(
 		    DeserializeGeomPayload(reinterpret_cast<const uint8_t *>(geom.GetData()), geom.GetSize()));
 	});
 }
 
 static void ST_3DIsManifoldFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_manifold;
 	});
 }
 
 static void ST_3DIsOrientedFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, [](string_t solid) {
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize());
 		return info.validation.is_oriented;
 	});
@@ -95,100 +97,86 @@ static void ST_3DIsOrientedFun(DataChunk &args, ExpressionState &state, Vector &
 // ──────────────────────────────────────────────────────────────
 // ST_3DValidationReport
 // ──────────────────────────────────────────────────────────────
+//! The code and message ST_3DValidationReport reports for a validation summary.
+static void DescribeValidation(const duckdb_3d::ValidationCache &vc, string &code, string &message) {
+	if (vc.is_valid) {
+		code = "VALID";
+		message = "Valid solid";
+		return;
+	}
+	std::vector<string> issues;
+	if (!vc.is_closed) {
+		issues.emplace_back("not closed");
+	}
+	if (vc.non_manifold_edge_count > 0) {
+		issues.emplace_back("non-manifold edges");
+	}
+	if (vc.non_manifold_vertex_count > 0) {
+		issues.emplace_back("non-manifold vertices");
+	}
+	if (!vc.is_oriented) {
+		issues.emplace_back("orientation inconsistent");
+	}
+	if (vc.degenerate_face_count > 0) {
+		issues.emplace_back("degenerate faces");
+	}
+	if (vc.disconnected_shell_count > 0) {
+		issues.emplace_back("disconnected shells");
+	}
+	if (vc.self_intersection_count > 0) {
+		issues.emplace_back("self-intersecting faces");
+	}
+	code = "INVALID";
+	message = "Invalid solid: ";
+	for (size_t j = 0; j < issues.size(); j++) {
+		if (j > 0) {
+			message += ", ";
+		}
+		message += issues[j];
+	}
+}
+
 static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input = args.data[0];
 	auto count = args.size();
-
-	auto &entries = StructVector::GetEntries(result);
-	auto &is_valid_vec = *entries[0];
-	auto &is_closed_vec = *entries[1];
-	auto &is_manifold_vec = *entries[2];
-	auto &is_oriented_vec = *entries[3];
-	auto &solid_count_vec = *entries[4];
-	auto &shell_count_vec = *entries[5];
-	auto &face_count_vec = *entries[6];
-	auto &open_edge_vec = *entries[7];
-	auto &non_manifold_vec = *entries[8];
-	auto &degenerate_vec = *entries[9];
-	auto &orientation_err_vec = *entries[10];
-	auto &non_manifold_vertex_vec = *entries[11];
-	auto &disconnected_shell_vec = *entries[12];
-	auto &self_intersection_vec = *entries[13];
-	auto &code_vec = *entries[14];
-	auto &message_vec = *entries[15];
-
-	UnifiedVectorFormat input_data;
-	input.ToUnifiedFormat(count, input_data);
-	auto input_strings = UnifiedVectorFormat::GetData<string_t>(input_data);
-	auto &result_validity = FlatVector::Validity(result);
-
-	for (idx_t i = 0; i < count; i++) {
-		auto idx = input_data.sel->get_index(i);
-		if (!input_data.validity.RowIsValid(idx)) {
-			result_validity.SetInvalid(i);
+	auto writer =
+	    FlatVector::Writer<VectorStructType<bool, bool, bool, bool, int64_t, int64_t, int64_t, int64_t, int64_t,
+	                                        int64_t, int64_t, int64_t, int64_t, int64_t, string_t, string_t>>(result,
+	                                                                                                          count);
+	for (auto entry : args.data[0].Values<string_t>()) {
+		if (!entry.IsValid()) {
+			writer.WriteNull();
 			continue;
 		}
-
-		auto &blob = input_strings[idx];
+		auto &blob = entry.GetValue();
 		// Both the validation summary and counts are header/trailer data, so the
 		// report is served without materialising vertices or topology.
 		auto info = ReadSolidPayloadHeader(reinterpret_cast<const uint8_t *>(blob.GetData()), blob.GetSize());
 		auto &vc = info.validation;
-
-		FlatVector::GetData<bool>(is_valid_vec)[i] = vc.is_valid;
-		FlatVector::GetData<bool>(is_closed_vec)[i] = vc.is_closed;
-		FlatVector::GetData<bool>(is_manifold_vec)[i] = vc.is_manifold;
-		FlatVector::GetData<bool>(is_oriented_vec)[i] = vc.is_oriented;
-		FlatVector::GetData<int64_t>(solid_count_vec)[i] = info.solid_count;
-		FlatVector::GetData<int64_t>(shell_count_vec)[i] = info.shell_count;
-		FlatVector::GetData<int64_t>(face_count_vec)[i] = info.face_count;
-		FlatVector::GetData<int64_t>(open_edge_vec)[i] = vc.open_edge_count;
-		FlatVector::GetData<int64_t>(non_manifold_vec)[i] = vc.non_manifold_edge_count;
-		FlatVector::GetData<int64_t>(degenerate_vec)[i] = vc.degenerate_face_count;
-		FlatVector::GetData<int64_t>(orientation_err_vec)[i] = vc.orientation_error_count;
-		FlatVector::GetData<int64_t>(non_manifold_vertex_vec)[i] = vc.non_manifold_vertex_count;
-		FlatVector::GetData<int64_t>(disconnected_shell_vec)[i] = vc.disconnected_shell_count;
-		FlatVector::GetData<int64_t>(self_intersection_vec)[i] = vc.self_intersection_count;
-
-		// Generate code and message
-		string code_str, msg_str;
-		if (vc.is_valid) {
-			code_str = "VALID";
-			msg_str = "Valid solid";
-		} else {
-			std::vector<string> issues;
-			if (!vc.is_closed) {
-				issues.emplace_back("not closed");
-			}
-			if (vc.non_manifold_edge_count > 0) {
-				issues.emplace_back("non-manifold edges");
-			}
-			if (vc.non_manifold_vertex_count > 0) {
-				issues.emplace_back("non-manifold vertices");
-			}
-			if (!vc.is_oriented) {
-				issues.emplace_back("orientation inconsistent");
-			}
-			if (vc.degenerate_face_count > 0) {
-				issues.emplace_back("degenerate faces");
-			}
-			if (vc.disconnected_shell_count > 0) {
-				issues.emplace_back("disconnected shells");
-			}
-			if (vc.self_intersection_count > 0) {
-				issues.emplace_back("self-intersecting faces");
-			}
-			code_str = "INVALID";
-			msg_str = "Invalid solid: ";
-			for (size_t j = 0; j < issues.size(); j++) {
-				if (j > 0) {
-					msg_str += ", ";
-				}
-				msg_str += issues[j];
-			}
-		}
-		FlatVector::GetData<string_t>(code_vec)[i] = StringVector::AddString(code_vec, code_str);
-		FlatVector::GetData<string_t>(message_vec)[i] = StringVector::AddString(message_vec, msg_str);
+		string code;
+		string message;
+		DescribeValidation(vc, code, message);
+		writer.WriteValue([&](auto &is_valid, auto &is_closed, auto &is_manifold, auto &is_oriented, auto &solid_count,
+		                      auto &shell_count, auto &face_count, auto &open_edges, auto &non_manifold_edges,
+		                      auto &degenerate_faces, auto &orientation_errors, auto &non_manifold_vertices,
+		                      auto &disconnected_shells, auto &self_intersections, auto &code_writer,
+		                      auto &message_writer) {
+			is_valid.WriteValue(vc.is_valid);
+			is_closed.WriteValue(vc.is_closed);
+			is_manifold.WriteValue(vc.is_manifold);
+			is_oriented.WriteValue(vc.is_oriented);
+			solid_count.WriteValue(static_cast<int64_t>(info.solid_count));
+			shell_count.WriteValue(static_cast<int64_t>(info.shell_count));
+			face_count.WriteValue(static_cast<int64_t>(info.face_count));
+			open_edges.WriteValue(static_cast<int64_t>(vc.open_edge_count));
+			non_manifold_edges.WriteValue(static_cast<int64_t>(vc.non_manifold_edge_count));
+			degenerate_faces.WriteValue(static_cast<int64_t>(vc.degenerate_face_count));
+			orientation_errors.WriteValue(static_cast<int64_t>(vc.orientation_error_count));
+			non_manifold_vertices.WriteValue(static_cast<int64_t>(vc.non_manifold_vertex_count));
+			disconnected_shells.WriteValue(static_cast<int64_t>(vc.disconnected_shell_count));
+			self_intersections.WriteValue(static_cast<int64_t>(vc.self_intersection_count));
+			code_writer.WriteValue(string_t(code));
+			message_writer.WriteValue(string_t(message));
+		});
 	}
 }
 
@@ -199,7 +187,7 @@ static void ST_3DValidationReportFun(DataChunk &args, ExpressionState &state, Ve
 // chunk, so a row costs no allocation once the arrays have grown to fit.
 static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [&](string_t solid) {
 		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
@@ -210,7 +198,7 @@ static void ST_3DSurfaceAreaFun(DataChunk &args, ExpressionState &state, Vector 
 
 static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [&](string_t solid) {
 		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		if (model.TriangleCount() == 0) {
 			TriangulateSolidModel(model);
@@ -221,7 +209,7 @@ static void ST_3DVolumeFun(DataChunk &args, ExpressionState &state, Vector &resu
 
 static void ST_3DPerimeterFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t solid) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [&](string_t solid) {
 		DeserializePayloadInto(reinterpret_cast<const uint8_t *>(solid.GetData()), solid.GetSize(), model);
 		return ComputePerimeter(model);
 	});
@@ -236,12 +224,12 @@ int32_t CoordinateDimension3D() {
 }
 
 static void ST_NDimsFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result, args.size(),
+	UnaryExecutor::Execute<string_t, int32_t>(args.data[0], result,
 	                                          [](string_t solid) { return CoordinateDimension3D(); });
 }
 
 static void ST_3DHasZFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [](string_t solid) {
+	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, [](string_t solid) {
 		// v1 geometries always carry a Z ordinate.
 		return true;
 	});
@@ -251,7 +239,7 @@ static void ST_3DHasZFun(DataChunk &args, ExpressionState &state, Vector &result
 // (footprint of the geometry, e.g. a convex hull) — both the XY projection.
 static void ST_3DFootprintAreaFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	duckdb_3d::SolidModel model;
-	UnaryExecutor::Execute<string_t, double>(args.data[0], result, args.size(), [&](string_t blob) {
+	UnaryExecutor::Execute<string_t, double>(args.data[0], result, [&](string_t blob) {
 		auto data = reinterpret_cast<const uint8_t *>(blob.GetData());
 		auto size = blob.GetSize();
 		switch (GetPayloadKind(data, size)) {
@@ -435,7 +423,8 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	                    "Returns the coordinate dimension of a SOLID_3D or GEOM_3D value, always 3. A constant for "
 	                    "PostGIS compatibility; the payload is not read.",
 	                    "ST_NDims(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
-	                    {"introspection"}});
+	                    {"introspection"},
+	                    false});
 
 	ScalarFunctionSet hasz_set("st_3dhasz");
 	hasz_set.AddFunction(ScalarFunction({solid_3d_type}, LogicalType::BOOLEAN, ST_3DHasZFun));
@@ -445,7 +434,8 @@ void RegisterSolidAccessorFunctions(ExtensionLoader &loader, const LogicalType &
 	                    "Returns whether a SOLID_3D or GEOM_3D value has Z coordinates, always true. A constant for "
 	                    "PostGIS compatibility; the payload is not read.",
 	                    "ST_3DHasZ(ST_Geom3DFromWKB('POINT Z (1 2 3)'::GEOMETRY))",
-	                    {"introspection"}});
+	                    {"introspection"},
+	                    false});
 }
 
 } // namespace duckdb

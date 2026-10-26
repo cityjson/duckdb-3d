@@ -15,22 +15,22 @@ statement ok
 COPY (SELECT ST_3DFromWKB(ST_AsWKBTwoCubes(0.5)) AS overlapping,
              ST_3DFromWKB(ST_AsWKBPolyhedralTetra()) AS tetra,
              ST_Geom3DFromWKB(ST_AsWKBPolygonZ()) AS polygon)
-TO '__TEST_DIR__/payloads.parquet';
+TO '{TEST_DIR}/payloads.parquet';
 
 query III
-SELECT typeof(overlapping), typeof(tetra), typeof(polygon) FROM '__TEST_DIR__/payloads.parquet';
+SELECT typeof(overlapping), typeof(tetra), typeof(polygon) FROM '{TEST_DIR}/payloads.parquet';
 ----
 BLOB	BLOB	BLOB
 
 statement error
-SELECT ST_3DVolume(tetra) FROM '__TEST_DIR__/payloads.parquet';
+SELECT ST_3DVolume(tetra) FROM '{TEST_DIR}/payloads.parquet';
 ----
 No function matches
 
 query IIII
 SELECT ST_3DVolume(tetra::SOLID_3D) > 0, ST_3DAsWKB(tetra::SOLID_3D) = ST_AsWKBPolyhedralTetra(),
        ST_3DFootprintArea(polygon::GEOM_3D), typeof(polygon::GEOM_3D)
-FROM '__TEST_DIR__/payloads.parquet';
+FROM '{TEST_DIR}/payloads.parquet';
 ----
 true	true	12.0	GEOM_3D
 
@@ -41,13 +41,13 @@ SELECT ST_3DIsClosed(b::SOLID_3D), (ST_3DValidationReport(b::SOLID_3D)).is_valid
        (ST_3DValidationReport(b::SOLID_3D)).self_intersection_count > 0
 FROM (SELECT unhex(substring(hex(overlapping), 1, 2 * (octet_length(overlapping) - 32)) || repeat('00', 28) ||
              '0F000000') AS b
-      FROM '__TEST_DIR__/payloads.parquet');
+      FROM '{TEST_DIR}/payloads.parquet');
 ----
 true	false	true
 
 # The cast refuses what is not a payload of its type; TRY_CAST gives NULL.
 statement error
-SELECT polygon::SOLID_3D FROM '__TEST_DIR__/payloads.parquet';
+SELECT polygon::SOLID_3D FROM '{TEST_DIR}/payloads.parquet';
 ----
 not a SOLID_3D payload
 
@@ -57,7 +57,7 @@ SELECT ST_AsWKBPolyhedralTetra()::SOLID_3D;
 build one from WKB with ST_3DFromWKB
 
 query II
-SELECT TRY_CAST(polygon AS SOLID_3D) IS NULL, TRY_CAST(tetra AS GEOM_3D) IS NULL FROM '__TEST_DIR__/payloads.parquet';
+SELECT TRY_CAST(polygon AS SOLID_3D) IS NULL, TRY_CAST(tetra AS GEOM_3D) IS NULL FROM '{TEST_DIR}/payloads.parquet';
 ----
 true	true
 

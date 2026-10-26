@@ -8,7 +8,7 @@
 # streamed CityJSONSeq yields. Two writers are checked against that baseline,
 # over the frozen nine-building 3DBAG slice (test/data/3dbag.city.jsonl):
 #
-#   * the cityjson extension: the package is written here, into __TEST_DIR__;
+#   * the cityjson extension: the package is written here, into {TEST_DIR};
 #   * cityparquet-rs: test/data/3dbag_rs is the package
 #     `cityparquet convert -o <dir> test/data/3dbag.city.jsonl` writes.
 #
@@ -48,7 +48,7 @@ statement ok
 PRAGMA insert_cityjsonseq('pkg', 'test/data/3dbag.city.jsonl');
 
 query II
-SELECT file, rows FROM cityparquet_write('pkg', '__TEST_DIR__/cityparquet_round_trip') ORDER BY file;
+SELECT file, rows FROM cityparquet_write('pkg', '{TEST_DIR}/cityparquet_round_trip') ORDER BY file;
 ----
 building.parquet	18
 metadata.json	0
@@ -60,7 +60,7 @@ SELECT writer, id,
        ST_3DFromWKB(geometry_lod1_3, geometry_properties_lod1_3) AS s13,
        ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s22,
        geometry_lod0_0 AS lod0
-FROM (SELECT 'cityjson' AS writer, * FROM read_parquet('__TEST_DIR__/cityparquet_round_trip/building.parquet')
+FROM (SELECT 'cityjson' AS writer, * FROM read_parquet('{TEST_DIR}/cityparquet_round_trip/building.parquet')
       UNION ALL BY NAME
       SELECT 'cityparquet-rs' AS writer, * FROM read_parquet('test/data/3dbag_rs/building.parquet'));
 
