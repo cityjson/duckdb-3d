@@ -14,10 +14,10 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@32100e613d23558024786a932622c08cea0a6299 # v2.0-cyanoptera
     with:
       duckdb_version: v2.0.0
-      ci_tools_version: v2.0-cyanoptera
+      ci_tools_version: 32100e613d23558024786a932622c08cea0a6299 # v2.0-cyanoptera
       extension_name: three_d
       # MinGW's ld cannot dedupe DuckDB's static LogicalType constants (e.g.
       # LogicalType::DOUBLE), producing "multiple definition" link errors. This
@@ -26,10 +26,10 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@32100e613d23558024786a932622c08cea0a6299 # v2.0-cyanoptera
     with:
       duckdb_version: v2.0.0
-      ci_tools_version: v2.0-cyanoptera
+      ci_tools_version: 32100e613d23558024786a932622c08cea0a6299 # v2.0-cyanoptera
       extension_name: three_d
       # Format only — the tidy pass runs in the local job below.
       format_checks: 'format'
@@ -52,7 +52,7 @@ jobs:
       TIDY_THREADS: 4
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: 'recursive'
